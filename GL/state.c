@@ -103,7 +103,7 @@ static int _calcPVRBlendFactor(GLenum factor) {
     case GL_ONE:
         return PVR_BLEND_ONE;
     default:
-        fprintf(stderr, "Invalid blend mode: %d\n", factor);
+        printf("Invalid blend mode: %d\n", factor);
         return PVR_BLEND_ONE;
     }
 }

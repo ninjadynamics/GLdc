@@ -153,7 +153,8 @@ TextureObject* getBoundTexture() {
 }
 
 void APIENTRY glActiveTextureARB(GLenum texture) {
-    TRACE();
+    //@TODO: Uncomment
+    //TRACE();
 
     if(texture < GL_TEXTURE0_ARB || texture > GL_TEXTURE0_ARB + MAX_TEXTURE_UNITS)
         _glKosThrowError(GL_INVALID_ENUM, "glActiveTextureARB");
@@ -575,6 +576,7 @@ static inline void _i8_to_i8(const GLubyte* source, GLubyte* dest) {
 }
 
 static TextureConversionFunc _determineConversion(GLint internalFormat, GLenum format, GLenum type) {
+    printf("attempted conversion: %x -> %x, %x \n", internalFormat, format, type);
     switch(internalFormat) {
     case GL_ALPHA: {
         if(type == GL_UNSIGNED_BYTE && format == GL_RGBA) {
@@ -632,7 +634,7 @@ static TextureConversionFunc _determineConversion(GLint internalFormat, GLenum f
         }
     break;
     default:
-        fprintf(stderr, "Unsupported conversion: %x -> %x, %x\n", internalFormat, format, type);
+        printf("Unsupported conversion: %x -> %x, %x\n", internalFormat, format, type);
         break;
     }
     return 0;
@@ -671,14 +673,15 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                            GLenum format, GLenum type, const GLvoid *data) {
 
     TRACE();
+    printf("glTexImage2D(%x, %d, %x, %d, %d, %d ,%x, %x, *data) \n", target, level, internalFormat,width, height, border, format, type);
 
     if(target != GL_TEXTURE_2D) {
-        _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D-tex2d");
     }
 
     if(format != GL_COLOR_INDEX) {
         if(!_isSupportedFormat(format)) {
-            _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D");
+            _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D-color_index");
         }
 
         /* Abuse determineStride to see if type is valid */
@@ -688,43 +691,43 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
         internalFormat = _cleanInternalFormat(internalFormat);
         if(internalFormat == -1) {
-            _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+            _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D-internal_fmt");
         }
     } else {
         if(internalFormat != GL_COLOR_INDEX8_EXT) {
-            _glKosThrowError(GL_INVALID_ENUM, __func__);
+            _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D-8EXT");
         }
     }
 
     GLint w = width;
     if(w < 8 || (w & -w) != w) {
         /* Width is not a power of two. Must be!*/
-        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D-width");
     }
 
     GLint h = height;
     if(h < 8 || (h & -h) != h) {
         /* height is not a power of two. Must be!*/
-        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D-height");
     }
 
     if(level < 0) {
-        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D-level");
     }
 
     if(border) {
-        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D-border");
     }
 
     if(!TEXTURE_UNITS[ACTIVE_TEXTURE]) {
-        _glKosThrowError(GL_INVALID_OPERATION, "glTexImage2D");
+        _glKosThrowError(GL_INVALID_OPERATION, "glTexImage2D-active_tex");
     }
 
     GLboolean isPaletted = (internalFormat == GL_COLOR_INDEX8_EXT) ? GL_TRUE : GL_FALSE;
 
     if(isPaletted && level > 0) {
         /* Paletted textures can't have mipmaps */
-        _glKosThrowError(GL_INVALID_OPERATION, __func__);
+        _glKosThrowError(GL_INVALID_OPERATION, "glTexImage2D-palette_level");
     }
 
     if(_glKosHasError()) {
@@ -826,7 +829,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         );
 
         if(!convert) {
-            _glKosThrowError(GL_INVALID_OPERATION, __func__);
+            _glKosThrowError(GL_INVALID_OPERATION, "glTexImage2D-convert");
             return;
         }
 
@@ -836,7 +839,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         GLint stride = _determineStride(format, type);
 
         if(stride == -1) {
-            _glKosThrowError(GL_INVALID_OPERATION, __func__);
+            _glKosThrowError(GL_INVALID_OPERATION, "glTexImage2D-stride");
             return;
         }
 
@@ -849,6 +852,9 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             source += stride;
         }
     }
+}
+void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLint param) {
+    glTexParameteri(target, pname, (GLint)param);
 }
 
 void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
