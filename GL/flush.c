@@ -94,9 +94,10 @@ void APIENTRY glKosSwapBuffers() {
 
     TRACE();
 
-    profiler_push(__func__);
+    PROFILER_PUSH(__func__);
 
     pvr_wait_ready();
+
 
     pvr_scene_begin();
         QACR0 = QACRTA;
@@ -104,14 +105,17 @@ void APIENTRY glKosSwapBuffers() {
 
         pvr_list_begin(PVR_LIST_OP_POLY);
         pvr_list_submit(OP_LIST.vector.data, OP_LIST.vector.size);
+        printf("OP_POLY: data: %p size:%d\n",OP_LIST.vector.data,OP_LIST.vector.size);
         pvr_list_finish();
 
         pvr_list_begin(PVR_LIST_PT_POLY);
         pvr_list_submit(PT_LIST.vector.data, PT_LIST.vector.size);
+        printf("PT_POLY: data: %p size:%d\n",PT_LIST.vector.data,PT_LIST.vector.size);
         pvr_list_finish();
 
         pvr_list_begin(PVR_LIST_TR_POLY);
         pvr_list_submit(TR_LIST.vector.data, TR_LIST.vector.size);
+        printf("TR_POLY: data: %p size:%d\n",TR_LIST.vector.data,TR_LIST.vector.size);
         pvr_list_finish();
     pvr_scene_finish();
 
@@ -119,11 +123,12 @@ void APIENTRY glKosSwapBuffers() {
     aligned_vector_clear(&PT_LIST.vector);
     aligned_vector_clear(&TR_LIST.vector);
 
-    profiler_checkpoint("scene");
-    profiler_pop();
-
+    PROFILER_CHECKPOINT("scene");
+    PROFILER_POP();
+    #ifdef PROFILER_COMPILE
     if(frame_count++ > 100) {
         profiler_print_stats();
         frame_count = 0;
     }
+    #endif
 }

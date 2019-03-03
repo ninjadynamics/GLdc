@@ -1288,7 +1288,7 @@ void APIENTRY glEnableClientState(GLenum cap) {
             (ENABLED_VERTEX_ATTRIBUTES |= UV_ENABLED_FLAG);
     break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glEnableClientState");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 }
 
@@ -1311,7 +1311,7 @@ void APIENTRY glDisableClientState(GLenum cap) {
             (ENABLED_VERTEX_ATTRIBUTES &= ~UV_ENABLED_FLAG);
     break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glDisableClientState");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 }
 
@@ -1324,7 +1324,7 @@ void APIENTRY glClientActiveTextureARB(GLenum texture) {
     //TRACE();
 
     if(texture < GL_TEXTURE0_ARB || texture > GL_TEXTURE0_ARB + MAX_TEXTURE_UNITS) {
-        _glKosThrowError(GL_INVALID_ENUM, "glClientActiveTextureARB");
+        _glKosThrowError(GL_INVALID_ENUM,  __func__);
     }
 
     if(_glKosHasError()) {

@@ -55,7 +55,7 @@ void _glApplyColorTable() {
     GLushort i = 0;
     for(; i < src->width; ++i) {
         GLubyte* entry = &src->data[i * 4];
-        pvr_set_pal_entry(i, PACK_ARGB8888(entry[3], entry[1], entry[2], entry[0]));
+        pvr_set_pal_entry(i, PACK_ARGB8888(entry[3], entry[0], entry[1], entry[2]));
     }
 }
 
@@ -241,14 +241,13 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
         return;
     }
 
-    /* If this didn't come from glGenTextures, then we should initialize the
-     * texture the first time it's bound */
-    if(!named_array_used(&TEXTURE_OBJECTS, texture)) {
-        TextureObject* txr = named_array_reserve(&TEXTURE_OBJECTS, texture);
-        _glInitializeTextureObject(txr, texture);
-    }
-
     if(texture) {
+        /* If this didn't come from glGenTextures, then we should initialize the
+        * texture the first time it's bound */
+        if(!named_array_used(&TEXTURE_OBJECTS, texture)) {
+            TextureObject* txr = named_array_reserve(&TEXTURE_OBJECTS, texture);
+            _glInitializeTextureObject(txr, texture);
+        }
         TEXTURE_UNITS[ACTIVE_TEXTURE] = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texture);
     } else {
         TEXTURE_UNITS[ACTIVE_TEXTURE] = NULL;
@@ -264,9 +263,9 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
 
     GLubyte failures = 0;
 
-    failures += _glCheckValidEnum(target, target_values, __func__);
+    /*failures += _glCheckValidEnum(target, target_values, __func__);
     failures += _glCheckValidEnum(pname, pname_values, __func__);
-    failures += _glCheckValidEnum(param, param_values, __func__);
+    failures += _glCheckValidEnum(param, param_values, __func__);*/
 
     TextureObject* active = TEXTURE_UNITS[ACTIVE_TEXTURE];
 
@@ -591,7 +590,6 @@ static inline void _i8_to_i8(const GLubyte* source, GLubyte* dest) {
 }
 
 static TextureConversionFunc _determineConversion(GLint internalFormat, GLenum format, GLenum type) {
-    printf("attempted conversion: %x -> %x, %x \n", internalFormat, format, type);
     switch(internalFormat) {
     case GL_ALPHA: {
         if(type == GL_UNSIGNED_BYTE && format == GL_RGBA) {
@@ -690,8 +688,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                            GLenum format, GLenum type, const GLvoid *data) {
 
     TRACE();
-    printf("glTexImage2D(%x, %d, %x, %d, %d, %d ,%x, %x, *data) \n", target, level, internalFormat,width, height, border, format, type);
-
+    
     if(target != GL_TEXTURE_2D) {
         _glKosThrowError(GL_INVALID_ENUM, "glTexImage2D-tex2d");
     }
@@ -870,6 +867,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         }
     }
 }
+
 void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLint param) {
     glTexParameteri(target, pname, (GLint)param);
 }

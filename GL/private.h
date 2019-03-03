@@ -6,7 +6,7 @@
 #include "../containers/named_array.h"
 #include "./clip.h"
 
-#define TRACE_ENABLED 1
+#define TRACE_ENABLED 0
 #define TRACE() if(TRACE_ENABLED) {fprintf(stderr, "%s\n", __func__);}
 
 #define VERTEX_ENABLED_FLAG     (1 << 0)

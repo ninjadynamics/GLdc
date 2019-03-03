@@ -135,8 +135,9 @@ GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func) {
     }
 
     if(!found) {
-        _glKosThrowError(GL_INVALID_ENUM, func);
-        _glKosPrintError();
+        //_glKosThrowError(GL_INVALID_ENUM, func);
+        //_glKosPrintError();
+        printf("GL_INVALID_ENUM when calling %s\n",func);
         return GL_TRUE;
     }
 
@@ -567,9 +568,11 @@ void APIENTRY glGetFloatv(GLenum pname, GLfloat* params) {
     switch(pname) {
         case GL_PROJECTION_MATRIX:
             memcpy(params, _glGetProjectionMatrix(), sizeof(float) * 16);
+        case GL_MODELVIEW_MATRIX:
+            memcpy(params, _glGetModelViewMatrix(), sizeof(float) * 16);
         break;
         default:
-            _glKosThrowError(GL_INVALID_ENUM, "glGetIntegerv");
+            _glKosThrowError(GL_INVALID_ENUM, __func__);
             _glKosPrintError();
             break;
     }
@@ -611,7 +614,7 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint *params) {
             }
         } break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glGetIntegerv");
+        _glKosThrowError(GL_INVALID_ENUM,  __func__);
         _glKosPrintError();
         break;
     }

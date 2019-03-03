@@ -9,7 +9,7 @@
 #define DEG2RAD (0.01745329251994329576923690768489)
 
 /* Viewport mapping */
-static GLfloat gl_viewport_scale[3], gl_viewport_offset[3];
+//static GLfloat gl_viewport_scale[3], gl_viewport_offset[3];
 
 /* Depth range */
 static GLclampf gl_depthrange_near, gl_depthrange_far;
@@ -32,6 +32,10 @@ static const matrix_t IDENTITY = {
 };
 
 void APIENTRY glDepthRange(GLclampf n, GLclampf f);
+
+matrix_t* _glGetModelViewMatrix() {
+    return (matrix_t*) stack_top(&MATRIX_STACKS[0]);
+}
 
 matrix_t* _glGetProjectionMatrix() {
     return (matrix_t*) stack_top(&MATRIX_STACKS[1]);
