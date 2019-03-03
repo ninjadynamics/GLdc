@@ -890,10 +890,6 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     }
 }
 
-void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLint param) {
-    glTexParameteri(target, pname, (GLint)param);
-}
-
 void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
     TRACE();
 

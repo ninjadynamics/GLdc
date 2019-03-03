@@ -105,17 +105,14 @@ void APIENTRY glKosSwapBuffers() {
 
         pvr_list_begin(PVR_LIST_OP_POLY);
         pvr_list_submit(OP_LIST.vector.data, OP_LIST.vector.size);
-        printf("OP_POLY: data: %p size:%d\n",OP_LIST.vector.data,OP_LIST.vector.size);
         pvr_list_finish();
 
         pvr_list_begin(PVR_LIST_PT_POLY);
         pvr_list_submit(PT_LIST.vector.data, PT_LIST.vector.size);
-        printf("PT_POLY: data: %p size:%d\n",PT_LIST.vector.data,PT_LIST.vector.size);
         pvr_list_finish();
 
         pvr_list_begin(PVR_LIST_TR_POLY);
         pvr_list_submit(TR_LIST.vector.data, TR_LIST.vector.size);
-        printf("TR_POLY: data: %p size:%d\n",TR_LIST.vector.data,TR_LIST.vector.size);
         pvr_list_finish();
     pvr_scene_finish();
 
