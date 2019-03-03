@@ -32,12 +32,14 @@ void _glApplyColorTable() {
      * - Store the active palette, don't resubmit eah time
      */
 
+    static TexturePalette* last_bound = NULL;
+
     TexturePalette* src = NULL;
 
     if(_glIsSharedTexturePaletteEnabled()) {
         src = SHARED_PALETTE;
     } else {
-        TextureObject* active = getBoundTexture();
+        TextureObject* active = _glGetBoundTexture();
 
         if(!active) {
             return;  //? Unload the palette? Make White?
@@ -49,6 +51,13 @@ void _glApplyColorTable() {
 
         src = active->palette;
     }
+
+    /* Don't reapply the palette if it was the last one we applied */
+    if(src == last_bound) {
+        return;
+    }
+
+    last_bound = src;
 
     pvr_set_pal_format(PVR_PAL_ARGB8888);
 
@@ -133,22 +142,25 @@ static GLuint _glGetMipmapDataSize(TextureObject* obj) {
     return size;
 }
 
-GLubyte _glKosInitTextures() {
+GLubyte _glInitTextures() {
     named_array_init(&TEXTURE_OBJECTS, sizeof(TextureObject), MAX_TEXTURE_COUNT);
+
+    // Reserve zero so that it is never given to anyone as an ID!
+    named_array_reserve(&TEXTURE_OBJECTS, 0);
 
     SHARED_PALETTE = (TexturePalette*) malloc(sizeof(TexturePalette));
     return 1;
 }
 
-TextureObject* getTexture0() {
+TextureObject* _glGetTexture0() {
     return TEXTURE_UNITS[0];
 }
 
-TextureObject* getTexture1() {
+TextureObject* _glGetTexture1() {
     return TEXTURE_UNITS[1];
 }
 
-TextureObject* getBoundTexture() {
+TextureObject* _glGetBoundTexture() {
     return TEXTURE_UNITS[ACTIVE_TEXTURE];
 }
 
@@ -192,6 +204,9 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
     while(n--) {
         GLuint id = 0;
         TextureObject* txr = (TextureObject*) named_array_alloc(&TEXTURE_OBJECTS, &id);
+
+        assert(id);  // Generated IDs must never be zero
+
         _glInitializeTextureObject(txr, id);
 
         *textures = id;
@@ -207,7 +222,7 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
         TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, *textures);
 
         /* Make sure we update framebuffer objects that have this texture attached */
-        wipeTextureOnFramebuffers(*textures);
+        _glWipeTextureOnFramebuffers(*textures);
 
         if(txr == TEXTURE_UNITS[ACTIVE_TEXTURE]) {
             TEXTURE_UNITS[ACTIVE_TEXTURE] = NULL;
@@ -219,7 +234,7 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
         }
 
         if(txr->palette && txr->palette->data) {
-            free(txr->palette->data);
+            pvr_mem_free(txr->palette->data);
             txr->palette->data = NULL;
         }
 
@@ -243,12 +258,15 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
 
     if(texture) {
         /* If this didn't come from glGenTextures, then we should initialize the
-        * texture the first time it's bound */
+         * texture the first time it's bound */
         if(!named_array_used(&TEXTURE_OBJECTS, texture)) {
             TextureObject* txr = named_array_reserve(&TEXTURE_OBJECTS, texture);
             _glInitializeTextureObject(txr, texture);
         }
         TEXTURE_UNITS[ACTIVE_TEXTURE] = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texture);
+
+        /* Apply the texture palette if necessary */
+        _glApplyColorTable();
     } else {
         TEXTURE_UNITS[ACTIVE_TEXTURE] = NULL;
     }
@@ -521,7 +539,11 @@ static GLuint _determinePVRFormat(GLint internalFormat, GLenum type) {
         case GL_COMPRESSED_ARGB_1555_VQ_MIPMAP_TWID_KOS:
             return PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED | PVR_TXRFMT_VQ_ENABLE;
         case GL_COLOR_INDEX8_EXT:
-            return PVR_TXRFMT_PAL8BPP;
+            if(type == GL_UNSIGNED_BYTE_TWID_KOS) {
+                return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_TWIDDLED;
+            } else {
+                return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_NONTWIDDLED;
+            }
         default:
             return 0;
     }
@@ -875,7 +897,7 @@ void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLint param) {
 void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
     TRACE();
 
-    TextureObject* active = getBoundTexture();
+    TextureObject* active = _glGetBoundTexture();
 
     if(!active) {
         return;
@@ -942,6 +964,10 @@ void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
     }
 }
 
+void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLint param) {
+    glTexParameteri(target, pname, (GLint) param);
+}
+
 GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsizei width, GLenum format, GLenum type, const GLvoid *data) {
     GLenum validTargets[] = {GL_TEXTURE_2D, GL_SHARED_TEXTURE_PALETTE_EXT, 0};
     GLenum validInternalFormats[] = {GL_RGB8, GL_RGBA8, 0};
@@ -990,7 +1016,7 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
     if(target == GL_SHARED_TEXTURE_PALETTE_EXT) {
         palette = SHARED_PALETTE;
     } else {
-        TextureObject* active = getBoundTexture();
+        TextureObject* active = _glGetBoundTexture();
         if(!active->palette) {
             active->palette = (TexturePalette*) malloc(sizeof(TexturePalette));
         }
@@ -999,11 +1025,11 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
     }
 
     if(target) {
-        free(palette->data);
+        pvr_mem_free(palette->data);
         palette->data = NULL;
     }
 
-    palette->data = (GLubyte*) malloc(width * 4);
+    palette->data = (GLubyte*) pvr_mem_malloc(width * 4);
     palette->format = format;
     palette->width = width;
 
@@ -1018,6 +1044,9 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
         src += sourceStride;
         dst += 4;
     }
+
+    /* Apply the texture palette if necessary */
+    _glApplyColorTable();
 }
 
 GLAPI void APIENTRY glColorSubTableEXT(GLenum target, GLsizei start, GLsizei count, GLenum format, GLenum type, const GLvoid *data) {

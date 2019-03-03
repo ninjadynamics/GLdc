@@ -19,7 +19,7 @@ static AttribPointer DIFFUSE_POINTER;
 static GLuint ENABLED_VERTEX_ATTRIBUTES = 0;
 static GLubyte ACTIVE_CLIENT_TEXTURE = 0;
 
-void initAttributePointers() {
+void _glInitAttributePointers() {
     TRACE();
 
     VERTEX_POINTER.ptr = NULL;
@@ -263,12 +263,12 @@ static inline IndexParseFunc _calcParseIndexFunc(GLenum type) {
 
 
 static inline void transformToEyeSpace(GLfloat* point) {
-    _matrixLoadModelView();
+    _glMatrixLoadModelView();
     mat_trans_single3_nodiv(point[0], point[1], point[2]);
 }
 
 static inline void transformNormalToEyeSpace(GLfloat* normal) {
-    _matrixLoadNormal();
+    _glMatrixLoadNormal();
     mat_trans_normal3(normal[0], normal[1], normal[2]);
 }
 
@@ -933,7 +933,7 @@ static void transform(ClipVertex* output, const GLsizei count) {
 
     ClipVertex* vertex = output;
 
-    _applyRenderMatrix(); /* Apply the Render Matrix Stack */
+    _glApplyRenderMatrix(); /* Apply the Render Matrix Stack */
 
     GLsizei i = count;
     while(i--) {
@@ -999,7 +999,7 @@ static void mat_transform_normal3(const float* xyz, const float* xyzOut, const u
 }
 
 static void light(ClipVertex* output, const GLsizei count) {
-    if(!isLightingEnabled()) {
+    if(!_glIsLightingEnabled()) {
         return;
     }
 
@@ -1021,10 +1021,10 @@ static void light(ClipVertex* output, const GLsizei count) {
     ClipVertex* vertex = output;
     EyeSpaceData* eye_space = (EyeSpaceData*) eye_space_data->data;
 
-    _matrixLoadModelView();
+    _glMatrixLoadModelView();
     mat_transform3(vertex->xyz, eye_space->xyz, count, sizeof(ClipVertex), sizeof(EyeSpaceData));
 
-    _matrixLoadNormal();
+    _glMatrixLoadNormal();
     mat_transform_normal3(vertex->nxyz, eye_space->n, count, sizeof(ClipVertex), sizeof(EyeSpaceData));
 
     GLsizei i;
@@ -1038,7 +1038,7 @@ static void light(ClipVertex* output, const GLsizei count) {
         GLfloat to_add [] = {0.0f, 0.0f, 0.0f, 0.0f};
         GLubyte j;
         for(j = 0; j < MAX_LIGHTS; ++j) {
-            if(isLightEnabled(j)) {
+            if(_glIsLightEnabled(j)) {
                 _glCalculateLightingContribution(j, ES->xyz, ES->n, vertex->bgra, to_add);
 
                 total[0] += to_add[0];
@@ -1070,7 +1070,7 @@ static void divide(ClipVertex* output, const GLsizei count) {
 
 static void push(PVRHeader* header, ClipVertex* output, const GLsizei count, PolyList* activePolyList, GLshort textureUnit) {
     // Compile the header
-    pvr_poly_cxt_t cxt = *getPVRContext();
+    pvr_poly_cxt_t cxt = *_glGetPVRContext();
     cxt.list_type = activePolyList->list_type;
 
     _glUpdatePVRTextureContext(&cxt, textureUnit);
@@ -1104,14 +1104,14 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
     glActiveTextureARB(GL_TEXTURE1);
     glGetBooleanv(GL_TEXTURE_2D, &doMultitexture);
 
-    doLighting = isLightingEnabled();
+    doLighting = _glIsLightingEnabled();
 
     glActiveTextureARB(activeTexture);
 
     profiler_push(__func__);
 
 
-    PolyList* activeList = activePolyList();
+    PolyList* activeList = _glActivePolyList();
 
     /* Make room in the list buffer */
     GLsizei spaceNeeded = (mode == GL_POLYGON || mode == GL_TRIANGLE_FAN) ? ((count - 2) * 3) : count;
@@ -1139,7 +1139,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     profiler_checkpoint("transform");
 
-    if(isClippingEnabled()) {
+    if(_glIsClippingEnabled()) {
 
         uint32_t offset = ((start - 1) - (ClipVertex*) activeList->vector.data);
 
@@ -1183,7 +1183,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     profiler_checkpoint("divide");
 
-    push(header, start, spaceNeeded, activePolyList(), 0);
+    push(header, start, spaceNeeded, _glActivePolyList(), 0);
 
     profiler_checkpoint("push");
     /*
@@ -1200,7 +1200,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
         return;
     }
 
-    TextureObject* texture1 = getTexture1();
+    TextureObject* texture1 = _glGetTexture1();
 
     if(!texture1 || ((ENABLED_VERTEX_ATTRIBUTES & ST_ENABLED_FLAG) != ST_ENABLED_FLAG)) {
         /* Multitexture implicitly disabled */
@@ -1212,7 +1212,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
         (hence the - 1)
     */
     ClipVertex* vertex = aligned_vector_push_back(
-        &transparentPolyList()->vector, start - 1, spaceNeeded + 1
+        &_glTransparentPolyList()->vector, start - 1, spaceNeeded + 1
     );
 
     PVRHeader* mtHeader = (PVRHeader*) vertex++;
@@ -1240,7 +1240,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     /* Send the buffer again to the transparent list */
-    push(mtHeader, mtStart, spaceNeeded, transparentPolyList(), 1);
+    push(mtHeader, mtStart, spaceNeeded, _glTransparentPolyList(), 1);
 
     /* Reset state */
     glDepthFunc(depthFunc);
@@ -1252,7 +1252,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {
     TRACE();
 
-    if(checkImmediateModeInactive(__func__)) {
+    if(_glCheckImmediateModeInactive(__func__)) {
         return;
     }
 
@@ -1262,7 +1262,7 @@ void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvo
 void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     TRACE();
 
-    if(checkImmediateModeInactive(__func__)) {
+    if(_glCheckImmediateModeInactive(__func__)) {
         return;
     }
 
