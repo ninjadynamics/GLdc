@@ -36,6 +36,13 @@ void _glApplyColorTable() {
 
     if(_glIsSharedTexturePaletteEnabled()) {
         src = SHARED_PALETTE;
+
+        assert(src);
+
+        /* Don't apply a palette if we haven't uploaded one yet */
+        if(!src->data) {
+            return;
+        }
     } else {
         TextureObject* active = _glGetBoundTexture();
 
@@ -147,6 +154,9 @@ GLubyte _glInitTextures() {
     named_array_reserve(&TEXTURE_OBJECTS, 0);
 
     SHARED_PALETTE = (TexturePalette*) malloc(sizeof(TexturePalette));
+    SHARED_PALETTE->data = NULL;
+    SHARED_PALETTE->format = 0;
+    SHARED_PALETTE->width = 0;
     return 1;
 }
 
