@@ -95,6 +95,9 @@ void APIENTRY glKosSwapBuffers() {
     TRACE();
 
     PROFILER_PUSH(__func__);
+    
+    printf("Flush:\n\tOP:%d\n\tPT:%d\n\tTR:%d\n",OP_LIST.vector.size,PT_LIST.vector.size,TR_LIST.vector.size);
+    printf("Flush: glTexImage mem free:%d\n",pvr_mem_available());
 
     pvr_wait_ready();
 

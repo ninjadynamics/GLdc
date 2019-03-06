@@ -34,7 +34,7 @@ static const matrix_t IDENTITY = {
 void APIENTRY glDepthRange(GLclampf n, GLclampf f);
 
 matrix_t* _glGetModelViewMatrix() {
-    return (matrix_t*) stack_top(&MATRIX_STACKS[0]);
+    return (matrix_t*)stack_top(&MATRIX_STACKS[0]);
 }
 
 matrix_t* _glGetProjectionMatrix() {
