@@ -123,9 +123,9 @@ void APIENTRY glKosSwapBuffers() {
     aligned_vector_clear(&PT_LIST.vector);
     aligned_vector_clear(&TR_LIST.vector);
 
+    #ifdef PROFILER_COMPILE
     PROFILER_CHECKPOINT("scene");
     PROFILER_POP();
-    #ifdef PROFILER_COMPILE
     if(frame_count++ > 100) {
         profiler_print_stats();
         frame_count = 0;
