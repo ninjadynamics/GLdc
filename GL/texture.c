@@ -696,6 +696,7 @@ static GLboolean _isSupportedFormat(GLenum format) {
     case GL_RGBA:
     case GL_BGRA:
     case GL_COLOR_INDEX:
+    case GL_LUMINANCE:
         return GL_TRUE;
     default:
         return GL_FALSE;
@@ -942,7 +943,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             source += stride;
         }
     }
-    printf("GLdc: glTexImage mem free:%d\n",pvr_mem_available()); 
+    //printf("GLdc: glTexImage mem free:%d\n",pvr_mem_available()); 
 }
 
 void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {

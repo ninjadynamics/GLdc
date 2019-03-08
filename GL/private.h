@@ -16,6 +16,7 @@
 #define NORMAL_ENABLED_FLAG     (1 << 4)
 
 #define MAX_TEXTURE_SIZE 1024
+#define MAX_POLYGON_SIZE 18
 
 #define CLIP_VERTEX_INT_PADDING 6
 
