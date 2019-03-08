@@ -1070,7 +1070,7 @@ static void push(PVRHeader* header, ClipVertex* output, const GLsizei count, Pol
     cxt.list_type = activePolyList->list_type;
 
     _glUpdatePVRTextureContext(&cxt, textureUnit);
-    
+
     pvr_poly_compile(&header->hdr, &cxt);
 
     /* Post-process the vertex list */

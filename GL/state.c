@@ -179,6 +179,9 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     if(tx1->isCompressed && _glIsMipmapComplete(tx1)) {
         enableMipmaps = GL_TRUE;
     }
+    if(tx1->isPaletted){
+        enableMipmaps = GL_FALSE;
+    }
 
     if(enableMipmaps) {
         if(tx1->minFilter == GL_LINEAR_MIPMAP_NEAREST) {
@@ -193,6 +196,9 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     } else {
         if(tx1->minFilter == GL_LINEAR && tx1->magFilter == GL_LINEAR) {
             filter = PVR_FILTER_BILINEAR;
+        }
+        if(tx1->isPaletted){
+            filter = PVR_FILTER_NONE;
         }
     }
 
@@ -303,7 +309,7 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
             SHARED_PALETTE_ENABLED = GL_TRUE;
 
             /* Apply the texture palette if necessary */
-            _glApplyColorTable();
+            //_glApplyColorTable(); //@Todo: Actually Dont.
         }
         break;
         case GL_LIGHT0:
@@ -357,7 +363,7 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
             SHARED_PALETTE_ENABLED = GL_FALSE;
 
             /* Restore whatever palette may exist on a bound texture */
-            _glApplyColorTable();
+            //_glApplyColorTable(); //@Todo: Actually Dont.
         }
         break;
         case GL_LIGHT0:

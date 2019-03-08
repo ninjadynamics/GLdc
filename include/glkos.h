@@ -34,9 +34,13 @@ __BEGIN_DECLS
 
 #define GL_UNSIGNED_BYTE_TWID_KOS                   0xEEFB
 
+#define GL_EXT_PALLETE_0_8BPP                       0xEFA0 
+#define GL_EXT_PALLETE_1_8BPP                       0xEFA1 
+#define GL_EXT_PALLETE_2_8BPP                       0xEFA2 
+#define GL_EXT_PALLETE_3_8BPP                       0xEFA3
 
 GLAPI void APIENTRY glKosSwapBuffers();
-
+GLAPI void APIENTRY glKosSetPalette( GLenum palette );
 
 
 __END_DECLS

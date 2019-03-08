@@ -339,6 +339,8 @@ void DrawGLScene()
 
 int main(int argc, char **argv)
 {
+    vid_set_mode(DM_640x480, PM_RGB565);
+    
     glKosInit();
 
     InitGL(640, 480);

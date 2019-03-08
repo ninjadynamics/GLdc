@@ -7,14 +7,14 @@ all: rm-elf $(TARGET)
 include $(KOS_BASE)/Makefile.rules
 
 clean:
-	-rm -f $(TARGET) $(OBJS) romdisk.*
+	-rm -f $(TARGET) $(OBJS) romdisk.* 1ST_READ.BIN paletted.bin
 
 rm-elf:
-	-rm -f $(TARGET) romdisk.*
+	-rm -f $(TARGET) romdisk.* 1ST_READ.BIN paletted.bin
 
 $(TARGET): $(OBJS) romdisk.o
 	$(KOS_CC) $(KOS_CFLAGS) $(KOS_LDFLAGS) -o $(TARGET) $(KOS_START) \
-		$(OBJS) romdisk.o $(OBJEXTRA) $(LIBS) -lm -lkosutils $(KOS_LIBS)
+		$(OBJS) romdisk.o $(OBJEXTRA) $(LIBS) -lm -lkosutils $(KOS_LIBS) 
 
 romdisk.img:
 	$(KOS_GENROMFS) -f romdisk.img -d romdisk -v

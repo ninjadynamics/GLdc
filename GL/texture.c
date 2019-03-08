@@ -19,6 +19,7 @@ static NamedArray TEXTURE_OBJECTS;
 static GLubyte ACTIVE_TEXTURE = 0;
 
 static TexturePalette* SHARED_PALETTE = NULL;
+static GLbyte CURRENT_PALETTE = 0;
 
 static GLuint _determinePVRFormat(GLint internalFormat, GLenum type);
 
@@ -27,6 +28,7 @@ static GLuint _determinePVRFormat(GLint internalFormat, GLenum type);
 static TexturePalette* last_bound_palette = NULL;
 
 void _glApplyColorTable() {
+
     /*
      * FIXME:
      *
@@ -278,7 +280,7 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
         TEXTURE_UNITS[ACTIVE_TEXTURE] = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texture);
 
         /* Apply the texture palette if necessary */
-        _glApplyColorTable();
+        //_glApplyColorTable(); //@Todo: Actually Dont.
     } else {
         TEXTURE_UNITS[ACTIVE_TEXTURE] = NULL;
     }
@@ -551,11 +553,7 @@ static GLuint _determinePVRFormat(GLint internalFormat, GLenum type) {
         case GL_COMPRESSED_ARGB_1555_VQ_MIPMAP_TWID_KOS:
             return PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED | PVR_TXRFMT_VQ_ENABLE;
         case GL_COLOR_INDEX8_EXT:
-            if(type == GL_UNSIGNED_BYTE_TWID_KOS) {
-                return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_TWIDDLED;
-            } else {
-                return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_NONTWIDDLED;
-            }
+                return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_8BPP_PAL(CURRENT_PALETTE);
         default:
             return 0;
     }
@@ -570,11 +568,11 @@ static inline void _rgba8888_to_argb4444(const GLubyte* source, GLubyte* dest) {
 
 static inline void _rgba8888_to_rgba8888(const GLubyte* source, GLubyte* dest) {
     /* Noop */
-    GLubyte* dst = (GLubyte*) dest;
-    dst[0] = source[0];
-    dst[1] = source[1];
-    dst[2] = source[2];
-    dst[3] = source[3];
+    //GLubyte* dst = (GLubyte*) dest;
+    dest[0] = source[0];
+    dest[1] = source[1];
+    dest[2] = source[2];
+    dest[3] = source[3];
 }
 
 static inline void _rgba8888_to_rgb565(const GLubyte* source, GLubyte* dest) {
@@ -583,11 +581,11 @@ static inline void _rgba8888_to_rgb565(const GLubyte* source, GLubyte* dest) {
 
 static inline void _rgb888_to_rgba8888(const GLubyte* source, GLubyte* dest) {
     /* Noop */
-    GLubyte* dst = (GLubyte*) dest;
-    dst[0] = source[0];
-    dst[1] = source[1];
-    dst[2] = source[2];
-    dst[3] = 255;
+    //GLubyte* dst = (GLubyte*) dest;
+    dest[0] = source[0];
+    dest[1] = source[1];
+    dest[2] = source[2];
+    dest[3] = 255;
 }
 
 static inline void _rgb888_to_rgb565(const GLubyte* source, GLubyte* dest) {
@@ -841,12 +839,50 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     /* Let's assume we need to convert */
     GLboolean needsConversion = GL_TRUE;
 
+    GLubyte* targetData = _glGetMipmapLocation(active, level);
+    assert(targetData);
+
     /*
      * These are the only formats where the source format passed in matches the pvr format.
      * Note the REV formats + GL_BGRA will reverse to ARGB which is what the PVR supports
      */
     if(format == GL_COLOR_INDEX) {
-        /* Don't convert color indexes */
+        if(type == GL_UNSIGNED_BYTE_TWID_KOS){
+
+        } else {
+            /* Don't convert color indexes */
+            /* Linear/iterative twiddling algorithm from Marcus' tatest */
+            #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
+                                ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
+            #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+
+            #define MIN(a, b) ( (a)<(b)? (a):(b) )
+    
+            uint32 x, y, yout, min, mask, invert;
+
+            min = MIN(w, h);
+            mask = min - 1;
+            invert = 0;
+
+            uint8 * pixels;
+            uint16 * vtex;
+            pixels = (uint8 *) data;
+            vtex = (uint16*)targetData;
+
+            for(y = 0; y < h; y += 2) {
+                if(!invert)
+                    yout = y;
+                else
+                    yout = ((h - 1) - y);
+
+                for(x = 0; x < w; x++) {
+                    vtex[TWIDOUT((yout & mask) / 2, x & mask) +
+                            (x / min + yout / min)*min * min / 2] =
+                                pixels[y * w + x] | (pixels[(y + 1) * w + x] << 8);
+                }
+            }
+            data = NULL;
+        }
         needsConversion = GL_FALSE;
     } else if(format == GL_BGRA && type == GL_UNSIGNED_SHORT_4_4_4_4_REV && internalFormat == GL_RGBA) {
         needsConversion = GL_FALSE;
@@ -862,9 +898,6 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         needsConversion = GL_FALSE;
     }
 
-    GLubyte* targetData = _glGetMipmapLocation(active, level);
-    assert(targetData);
-
     if(!data) {
         /* No data? Do nothing! */
         return;
@@ -873,40 +906,8 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         assert(data);
         assert(bytes);
 
-        /* Linear/iterative twiddling algorithm from Marcus' tatest */
-        #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
-                            ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
-        #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
-
-        #define MIN(a, b) ( (a)<(b)? (a):(b) )
-   
-        uint32 x, y, yout, min, mask, invert;
-
-        min = MIN(w, h);
-        mask = min - 1;
-        invert = 0;
-
-        uint8 * pixels;
-        uint16 * vtex;
-        pixels = (uint8 *) data;
-        vtex = (uint16*)targetData;
-
-        for(y = 0; y < h; y += 2) {
-            if(!invert)
-                yout = y;
-            else
-                yout = ((h - 1) - y);
-
-            for(x = 0; x < w; x++) {
-                vtex[TWIDOUT((yout & mask) / 2, x & mask) +
-                        (x / min + yout / min)*min * min / 2] =
-                            pixels[y * w + x] | (pixels[(y + 1) * w + x] << 8);
-            }
-        }
-        active->color = PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_TWIDDLED;
-
         /* No conversion? Just copy the data, and the pvr_format is correct */
-        //sq_cpy(targetData, data, bytes);
+        sq_cpy(targetData, data, bytes);
         return;
     } else {
         TextureConversionFunc convert = _determineConversion(
@@ -1081,11 +1082,13 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
     assert(palette);
 
     if(target) {
-        pvr_mem_free(palette->data);
+        //pvr_mem_free(palette->data);
+        free(palette->data);
         palette->data = NULL;
     }
 
-    palette->data = (GLubyte*) pvr_mem_malloc(width * 4);
+    //palette->data = (GLubyte*) pvr_mem_malloc(width * 4);
+    palette->data = (GLubyte*) malloc(width * 4);
     palette->format = format;
     palette->width = width;
 
@@ -1130,3 +1133,23 @@ GLAPI void APIENTRY glGetColorTableParameterfvEXT(GLenum target, GLenum pname, G
     _glKosPrintError();
 }
 
+void APIENTRY glKosSetPalette( GLenum palette ) {
+    switch(palette) {
+        case GL_EXT_PALLETE_0_8BPP:
+            CURRENT_PALETTE = 0;
+            break;
+        case GL_EXT_PALLETE_1_8BPP:
+            CURRENT_PALETTE = 1;
+            break;
+        case GL_EXT_PALLETE_2_8BPP:
+            CURRENT_PALETTE = 2;
+            break;
+        case GL_EXT_PALLETE_3_8BPP:
+            CURRENT_PALETTE = 3;
+            break;
+    }
+}
+
+GLbyte APIENTRY glKosGetPalette() {
+    return CURRENT_PALETTE;
+}
