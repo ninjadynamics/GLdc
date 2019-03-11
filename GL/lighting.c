@@ -7,7 +7,7 @@
 static GLfloat SCENE_AMBIENT [] = {0.2, 0.2, 0.2, 1.0};
 static GLboolean VIEWER_IN_EYE_COORDINATES = GL_TRUE;
 static GLenum COLOR_CONTROL = GL_SINGLE_COLOR;
-//static GLboolean TWO_SIDED_LIGHTING = GL_FALSE;
+static GLboolean TWO_SIDED_LIGHTING = GL_FALSE;
 static GLenum COLOR_MATERIAL_MODE = GL_AMBIENT_AND_DIFFUSE;
 
 static LightSource LIGHTS[MAX_LIGHTS];

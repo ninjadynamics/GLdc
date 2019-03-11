@@ -30,6 +30,9 @@ static GLboolean COLOR_MATERIAL_ENABLED = GL_FALSE;
 /* Is the shared texture palette enabled? */
 static GLboolean SHARED_PALETTE_ENABLED = GL_FALSE;
 
+static GLboolean ALPHA_TEST_ENABLED = GL_FALSE;
+
+
 GLboolean _glIsSharedTexturePaletteEnabled() {
     return SHARED_PALETTE_ENABLED;
 }
@@ -84,6 +87,10 @@ GLboolean _glIsBlendingEnabled() {
     return BLEND_ENABLED;
 }
 
+GLboolean _glIsAlphaTestEnabled() {
+    return ALPHA_TEST_ENABLED;
+}
+
 static int _calcPVRBlendFactor(GLenum factor) {
     switch(factor) {
     case GL_ZERO:
@@ -103,7 +110,7 @@ static int _calcPVRBlendFactor(GLenum factor) {
     case GL_ONE:
         return PVR_BLEND_ONE;
     default:
-        printf("Invalid blend mode: %d\n", factor);
+        fprintf(stderr, "Invalid blend mode: %d\n", factor);
         return PVR_BLEND_ONE;
     }
 }
@@ -127,7 +134,7 @@ static void _updatePVRBlend(pvr_poly_cxt_t* context) {
 GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func) {
     GLubyte found = 0;
     while(*values != 0) {
-        if(*values == param) {
+        if(*values == (GLenum)param) {
             found++;
             break;
         }
@@ -135,9 +142,8 @@ GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func) {
     }
 
     if(!found) {
-        //_glKosThrowError(GL_INVALID_ENUM, func);
-        //_glKosPrintError();
-        printf("GL_INVALID_ENUM when calling %s\n",func);
+        _glKosThrowError(GL_INVALID_ENUM, func);
+        _glKosPrintError();
         return GL_TRUE;
     }
 
@@ -179,9 +185,6 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     if(tx1->isCompressed && _glIsMipmapComplete(tx1)) {
         enableMipmaps = GL_TRUE;
     }
-    if(tx1->isPaletted){
-        enableMipmaps = GL_FALSE;
-    }
 
     if(enableMipmaps) {
         if(tx1->minFilter == GL_LINEAR_MIPMAP_NEAREST) {
@@ -196,9 +199,6 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     } else {
         if(tx1->minFilter == GL_LINEAR && tx1->magFilter == GL_LINEAR) {
             filter = PVR_FILTER_BILINEAR;
-        }
-        if(tx1->isPaletted){
-            filter = PVR_FILTER_NONE;
         }
     }
 
@@ -221,6 +221,16 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         context->txr.height = tx1->height;
         context->txr.base = tx1->data;
         context->txr.format = tx1->color;
+
+        if(tx1->isPaletted) {
+            if(_glIsSharedTexturePaletteEnabled()) {
+                TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
+               context->txr.format |= PVR_TXRFMT_8BPP_PAL((palette) ? 0 : palette->bank);
+            } else {
+                context->txr.format |= PVR_TXRFMT_8BPP_PAL((tx1->palette) ? tx1->palette->bank : 0);
+            }
+        }
+
         context->txr.env = tx1->env;
         context->txr.uv_flip = PVR_UVFLIP_NONE;
         context->txr.uv_clamp = tx1->uv_clamp;
@@ -307,11 +317,11 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
         break;
         case GL_SHARED_TEXTURE_PALETTE_EXT: {
             SHARED_PALETTE_ENABLED = GL_TRUE;
-
-            /* Apply the texture palette if necessary */
-            //_glApplyColorTable(); //@Todo: Actually Dont.
         }
         break;
+        case GL_ALPHA_TEST: {
+            ALPHA_TEST_ENABLED = GL_TRUE;
+        } break;
         case GL_LIGHT0:
         case GL_LIGHT1:
         case GL_LIGHT2:
@@ -361,11 +371,11 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
         break;
         case GL_SHARED_TEXTURE_PALETTE_EXT: {
             SHARED_PALETTE_ENABLED = GL_FALSE;
-
-            /* Restore whatever palette may exist on a bound texture */
-            //_glApplyColorTable(); //@Todo: Actually Dont.
         }
         break;
+        case GL_ALPHA_TEST: {
+            ALPHA_TEST_ENABLED = GL_FALSE;
+        } break;
         case GL_LIGHT0:
         case GL_LIGHT1:
         case GL_LIGHT2:
@@ -408,6 +418,14 @@ GLAPI void APIENTRY glClearDepthf(GLfloat depth) {
 }
 
 GLAPI void APIENTRY glClearDepth(GLfloat depth) {
+
+}
+
+GLAPI void APIENTRY glDrawBuffer(GLenum mode) {
+
+}
+
+GLAPI void APIENTRY glReadBuffer(GLenum mode) {
 
 }
 
@@ -457,8 +475,20 @@ GLAPI void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor) {
     _updatePVRBlend(&GL_CONTEXT);
 }
 
-void glAlphaFunc(GLenum func, GLclampf ref) {
-    ;
+#define PT_ALPHA_REF 0x011c
+
+GLAPI void APIENTRY glAlphaFunc(GLenum func, GLclampf ref) {
+    GLenum validFuncs[] = {
+        GL_GREATER,
+        0
+    };
+
+    if(_glCheckValidEnum(func, validFuncs, __func__) != 0) {
+        return;
+    }
+
+    GLubyte val = (GLubyte)(ref * 255.0f);
+    PVR_SET(PT_ALPHA_REF, val);
 }
 
 void glLineWidth(GLfloat width) {
@@ -579,6 +609,7 @@ void APIENTRY glGetFloatv(GLenum pname, GLfloat* params) {
     switch(pname) {
         case GL_PROJECTION_MATRIX:
             memcpy(params, _glGetProjectionMatrix(), sizeof(float) * 16);
+        break;
         case GL_MODELVIEW_MATRIX:
             memcpy(params, _glGetModelViewMatrix(), sizeof(float) * 16);
         break;
@@ -625,7 +656,7 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint *params) {
             }
         } break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM,  __func__);
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
         _glKosPrintError();
         break;
     }
@@ -643,7 +674,7 @@ const GLbyte *glGetString(GLenum name) {
             return "GLdc 1.x";
 
         case GL_EXTENSIONS:
-            return "GL_ARB_framebuffer_object, GL_ARB_multitexture, GL_ARB_texture_rg, GL_EXT_paletted_texture, GL_EXT_shared_texture_palette";
+            return "GL_ARB_framebuffer_object, GL_ARB_multitexture, GL_ARB_texture_rg, GL_EXT_paletted_texture, GL_EXT_shared_texture_palette, GL_KOS_multiple_shared_palette";
     }
 
     return "GL_KOS_ERROR: ENUM Unsupported\n";

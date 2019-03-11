@@ -16,7 +16,6 @@
 #define NORMAL_ENABLED_FLAG     (1 << 4)
 
 #define MAX_TEXTURE_SIZE 1024
-#define MAX_POLYGON_SIZE 18
 
 #define CLIP_VERTEX_INT_PADDING 6
 
@@ -46,8 +45,10 @@ typedef struct {
     /* Palette data is always stored in RAM as RGBA8888 and packed as ARGB8888
      * when uploaded to the PVR */
     GLubyte*    data;
-    GLushort     width;
+    GLushort    width;  /* The user specified width */
+    GLushort     size;   /* The size of the bank (16 or 256) */
     GLenum      format;
+    GLshort      bank;
 } TexturePalette;
 
 typedef struct {
@@ -69,6 +70,9 @@ typedef struct {
     GLboolean isPaletted;
 
     TexturePalette* palette;
+
+    /* When using the shared palette, this is the bank (0-3) */
+    GLushort shared_bank;
 } TextureObject;
 
 typedef struct {
@@ -142,11 +146,14 @@ TextureObject* _glGetTexture1();
 TextureObject* _glGetBoundTexture();
 GLubyte _glGetActiveTexture();
 GLuint _glGetActiveClientTexture();
+TexturePalette* _glGetSharedPalette(GLshort bank);
 
 GLboolean _glIsSharedTexturePaletteEnabled();
-void _glApplyColorTable();
+void _glApplyColorTable(TexturePalette *palette);
 
 GLboolean _glIsBlendingEnabled();
+GLboolean _glIsAlphaTestEnabled();
+
 GLboolean _glIsMipmapComplete(const TextureObject* obj);
 GLubyte* _glGetMipmapLocation(TextureObject* obj, GLuint level);
 GLuint _glGetMipmapLevelCount(TextureObject* obj);

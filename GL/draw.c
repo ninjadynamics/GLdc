@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <assert.h>
 
 #include "../include/gl.h"
 #include "../include/glext.h"
@@ -449,8 +450,8 @@ static inline PolyBuildFunc _calcBuildFunc(const GLenum type) {
     case GL_QUADS:
         return &_buildQuad;
     break;
-    case GL_POLYGON:
     case GL_TRIANGLE_FAN:
+    case GL_POLYGON:
         return &_buildTriangleFan;
     break;
     default:
@@ -459,7 +460,7 @@ static inline PolyBuildFunc _calcBuildFunc(const GLenum type) {
 
     return &_buildStrip;
 }
-#include <assert.h>
+
 static inline void nullFloatParseFunc(GLfloat* out, const GLubyte* in) {}
 
 static inline void genElementsCommon(
@@ -480,8 +481,13 @@ static inline void genElementsCommon(
     const FloatParseFunc normalFunc = (doLighting) ? _calcNormalParseFunc() : &nullFloatParseFunc;
 
     const IndexParseFunc indexFunc = _calcParseIndexFunc(type);
+
     assert(vertexFunc);
     assert(diffuseFunc);
+    assert(uvFunc);
+    assert(stFunc);
+    assert(normalFunc);
+    assert(indexFunc);
 
     GLsizei i = 0;
     const GLubyte* idx = iptr;
@@ -548,7 +554,6 @@ static inline void genElementsQuads(
 }
 
 static inline void genElementsTriangleFan(
-   
     ClipVertex* output,
     GLsizei count,
     const GLubyte* iptr, GLuint istride, GLenum type,
@@ -572,7 +577,7 @@ static inline void genElementsTriangleFan(
     GLsizei i = 3;
     ClipVertex* first = &output[0];
 
-    for(; i < count - 1; ++i) {    
+    for(; i < count - 1; ++i) {
         ClipVertex* next = &output[i + 1];
         ClipVertex* previous = &output[i - 1];
         ClipVertex* vertex = &output[i];
@@ -624,6 +629,12 @@ static inline void genArraysCommon(
     const FloatParseFunc uvFunc = _calcUVParseFunc();
     const FloatParseFunc stFunc = _calcSTParseFunc();
     const FloatParseFunc normalFunc = _calcNormalParseFunc();
+
+    assert(vertexFunc);
+    assert(diffuseFunc);
+    assert(uvFunc);
+    assert(stFunc);
+    assert(normalFunc);
 
     GLsizei i = count;
 
@@ -745,6 +756,7 @@ static void genArraysTriangleStrip(
     output[count - 1].flags = PVR_CMD_VERTEX_EOL;
 }
 
+#define MAX_POLYGON_SIZE 32
 static ClipVertex buffer[MAX_POLYGON_SIZE];
 
 static void genArraysTriangleFan(
@@ -757,18 +769,15 @@ static void genArraysTriangleFan(
     const GLubyte* nptr, GLuint nstride,
     GLboolean doTexture, GLboolean doMultitexture, GLboolean doLighting) {
 
+    assert(count < MAX_POLYGON_SIZE);
+    
     genArraysCommon(
         output, count,
         vptr, vstride, cptr, cstride, uvptr, uvstride, stptr, ststride, nptr, nstride,
         doTexture, doMultitexture, doLighting
     );
 
-    #if TRACE_ENABLED
-    printf("%s(%s[%d]): count: %d\n",__func__, __FILE__,__LINE__, count);
-    #endif
-    assert(count <= MAX_POLYGON_SIZE);
-    
-    if(count <=3){
+    if(count <= 3){
         swapVertex(&output[1], &output[2]);
         output[2].flags = PVR_CMD_VERTEX_EOL;
         return;
@@ -777,28 +786,15 @@ static void genArraysTriangleFan(
     memcpy(buffer, output, sizeof(ClipVertex) * count);
 
     // First 3 vertices are in the right place, just end early
-    //swapVertex(&output[1], &output[2]);
     output[2].flags = PVR_CMD_VERTEX_EOL;
 
     GLsizei i = 3, target = 3;
     ClipVertex* first = &output[0];
-    #if TRACE_ENABLED
-    printf("%s(%s[%d]): Triangle!\n",__func__, __FILE__,__LINE__);
-    #endif
 
     for(; i < count; ++i) {
         output[target++] = *first;
         output[target++] = buffer[i - 1];
         output[target] = buffer[i];
-        #if TRACE_ENABLED
-            printf("%s(%s[%d]): Triangle!\n",__func__, __FILE__,__LINE__);
-            printf("%s(%s[%d]):\tvert(%f,%f,%f)\n",__func__, __FILE__,__LINE__,
-                (*first).xyz[0],(*first).xyz[1],(*first).xyz[2]);
-            printf("%s(%s[%d]):\tvert(%f,%f,%f)\n",__func__, __FILE__,__LINE__,
-                (buffer[i - 1]).xyz[0],(buffer[i - 1]).xyz[1],(buffer[i - 1]).xyz[2]);
-            printf("%s(%s[%d]):\tvert(%f,%f,%f)\n",__func__, __FILE__,__LINE__,
-                (buffer[i]).xyz[0],(buffer[i]).xyz[1],(buffer[i]).xyz[2]);
-        #endif
         output[target++].flags = PVR_CMD_VERTEX_EOL;
     }
 }
@@ -1085,7 +1081,6 @@ static void push(PVRHeader* header, ClipVertex* output, const GLsizei count, Pol
 #define DEBUG_CLIPPING 0
 
 static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum type, const GLvoid* indices) {
-    TRACE();
     /* Do nothing if vertices aren't enabled */
     if(!(ENABLED_VERTEX_ATTRIBUTES & VERTEX_ENABLED_FLAG)) {
         return;
@@ -1317,11 +1312,10 @@ GLuint _glGetActiveClientTexture() {
 }
 
 void APIENTRY glClientActiveTextureARB(GLenum texture) {
-    //@TODO: Uncomment
-    //TRACE();
+    TRACE();
 
     if(texture < GL_TEXTURE0_ARB || texture > GL_TEXTURE0_ARB + MAX_TEXTURE_UNITS) {
-        _glKosThrowError(GL_INVALID_ENUM,  __func__);
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 
     if(_glKosHasError()) {

@@ -41,7 +41,7 @@ static void pvr_list_submit(void *src, int n) {
 static void _glInitPVR() {
     pvr_init_params_t params = {
         /* Enable opaque and translucent polygons with size 32 and 32 */
-        { PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32 },
+        {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32},
         PVR_VERTEX_BUF_SIZE, /* Vertex buffer size */
         0, /* No DMA */
         0, /* No FSAA */
@@ -55,6 +55,8 @@ static void _glInitPVR() {
 PolyList* _glActivePolyList() {
     if(_glIsBlendingEnabled()) {
         return &TR_LIST;
+    } else if(_glIsAlphaTestEnabled()) {
+        return &PT_LIST;
     } else {
         return &OP_LIST;
     }
@@ -63,6 +65,15 @@ PolyList* _glActivePolyList() {
 PolyList *_glTransparentPolyList() {
     return &TR_LIST;
 }
+
+void APIENTRY glFlush() {
+
+}
+
+void APIENTRY glFinish() {
+
+}
+
 
 void APIENTRY glKosInit() {
     TRACE();
@@ -94,13 +105,9 @@ void APIENTRY glKosSwapBuffers() {
 
     TRACE();
 
-    PROFILER_PUSH(__func__);
-    
-    //printf("Flush:\n\tOP:%d\n\tPT:%d\n\tTR:%d\n",OP_LIST.vector.size,PT_LIST.vector.size,TR_LIST.vector.size);
-    //printf("Flush: glTexImage mem free:%d\n",pvr_mem_available());
+    profiler_push(__func__);
 
     pvr_wait_ready();
-
 
     pvr_scene_begin();
         QACR0 = QACRTA;
@@ -123,12 +130,11 @@ void APIENTRY glKosSwapBuffers() {
     aligned_vector_clear(&PT_LIST.vector);
     aligned_vector_clear(&TR_LIST.vector);
 
-    #ifdef PROFILER_COMPILE
-    PROFILER_CHECKPOINT("scene");
-    PROFILER_POP();
+    profiler_checkpoint("scene");
+    profiler_pop();
+
     if(frame_count++ > 100) {
         profiler_print_stats();
         frame_count = 0;
     }
-    #endif
 }
