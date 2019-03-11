@@ -112,10 +112,10 @@ __BEGIN_DECLS
 
 /* Texture Environment */
 #define GL_TEXTURE_ENV_MODE 0x2200
-#define GL_REPLACE          0x0
-#define GL_MODULATE         0x1
-#define GL_DECAL            0x2
-#define GL_MODULATEALPHA    0x3
+#define GL_REPLACE          0x1E01
+#define GL_MODULATE         0x2100
+#define GL_DECAL            0x2101
+
 
 /* TextureMagFilter */
 #define GL_NEAREST                      0x2600
@@ -493,7 +493,7 @@ GLAPI void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor);
 /* Texturing */
 GLAPI void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param);
 GLAPI void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param);
-GLAPI void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param);
+GLAPI void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLint param);
 
 GLAPI GLboolean APIENTRY glIsTexture(GLuint texture);
 GLAPI void APIENTRY glGenTextures(GLsizei n, GLuint *textures);

@@ -6,6 +6,8 @@
 #include "profiler.h"
 #include "../containers/aligned_vector.h"
 
+#ifdef PROFILER_COMPILE
+
 #define MAX_PATH 256
 
 typedef struct {
@@ -126,7 +128,7 @@ void profiler_pop() {
 
     aligned_vector_resize(&root->stack, root->stack.size - 1);
 }
-
+#include <inttypes.h>
 void profiler_print_stats() {
     if(!PROFILER_ENABLED) return;
 
@@ -138,6 +140,8 @@ void profiler_print_stats() {
         float ms = ((float) result->total_time_us) / 1000.0f;
         float avg = ms / (float) result->total_calls;
 
-        fprintf(stderr, "%-60s%-20f%-20f%u\n", result->name, avg, ms, result->total_calls);
+        fprintf(stderr, "%-60s%-20f%-20f%" PRIu64 "\n", result->name, (double)avg, (double)ms, result->total_calls);
     }
 }
+
+#endif
