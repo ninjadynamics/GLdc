@@ -31,6 +31,7 @@ static GLboolean SUBBANKS_USED[4][16]; // 4 counts of the used 16 colour banks w
 static TexturePalette* _initTexturePalette() {
     TexturePalette* palette = (TexturePalette*) malloc(sizeof(TexturePalette));
     assert(palette);
+	memset(palette, 0x0, sizeof(TexturePalette));
 
     palette->data = NULL;
     palette->format = 0;
@@ -366,7 +367,7 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     }
 }
 
-void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param) {
+void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLint param) {
     glTexEnvi(target, pname, param);
 }
 
@@ -929,7 +930,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         assert(bytes);
 
         if(needsTwiddling) {
-            assert(type == GL_UNSIGNED_BYTE);  // Anything else needs this loop adjusting
+            /*assert(type == GL_UNSIGNED_BYTE);  // Anything else needs this loop adjusting
             GLuint x, y;
             for(y = 0; y < height; ++y) {
                 for(x = 0; x < width; ++x) {
@@ -939,7 +940,33 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                     targetData[dest] = ((GLubyte*) data)[src];
                 }
             }
+			*/
+			/* Don't convert color indexes */
+            /* Linear/iterative twiddling algorithm from Marcus' tatest */
+            #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
+                                ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
+            #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
 
+            #define MIN(a, b) ( (a)<(b)? (a):(b) )
+    
+            uint32 x, y, min, mask;
+
+            min = MIN(w, h);
+            mask = min - 1;
+            
+            uint8 * pixels;
+            uint16 * vtex;
+            pixels = (uint8 *) data;
+            vtex = (uint16*)targetData;
+
+            for(y = 0; y < h; y += 2) {
+                for(x = 0; x < w; x++) {
+                    vtex[TWIDOUT((y & mask) / 2, x & mask) +
+                            (x / min + y / min)*min * min / 2] =
+                                pixels[y * w + x] | (pixels[(y + 1) * w + x] << 8);
+                }
+            }
+            data = NULL;
         } else {
             /* No conversion? Just copy the data, and the pvr_format is correct */
             sq_cpy(targetData, data, bytes);

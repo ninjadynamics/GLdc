@@ -757,6 +757,7 @@ static void genArraysTriangleStrip(
 }
 
 #define MAX_POLYGON_SIZE 32
+static ClipVertex buffer[MAX_POLYGON_SIZE];
 
 static void genArraysTriangleFan(
     ClipVertex* output,
@@ -769,8 +770,7 @@ static void genArraysTriangleFan(
     GLboolean doTexture, GLboolean doMultitexture, GLboolean doLighting) {
 
     assert(count < MAX_POLYGON_SIZE);
-    static ClipVertex buffer[MAX_POLYGON_SIZE];
-
+    
     genArraysCommon(
         output, count,
         vptr, vstride, cptr, cstride, uvptr, uvstride, stptr, ststride, nptr, nstride,
@@ -793,8 +793,8 @@ static void genArraysTriangleFan(
 
     for(; i < count; ++i) {
         output[target++] = *first;
-        output[target++] = buffer[i];
-        output[target] = buffer[i - 1];
+        output[target++] = buffer[i - 1];
+        output[target] = buffer[i];
         output[target++].flags = PVR_CMD_VERTEX_EOL;
     }
 }
@@ -1280,7 +1280,7 @@ void APIENTRY glEnableClientState(GLenum cap) {
             (ENABLED_VERTEX_ATTRIBUTES |= UV_ENABLED_FLAG);
     break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glEnableClientState");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 }
 
@@ -1303,7 +1303,7 @@ void APIENTRY glDisableClientState(GLenum cap) {
             (ENABLED_VERTEX_ATTRIBUTES &= ~UV_ENABLED_FLAG);
     break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glDisableClientState");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 }
 
@@ -1315,7 +1315,7 @@ void APIENTRY glClientActiveTextureARB(GLenum texture) {
     TRACE();
 
     if(texture < GL_TEXTURE0_ARB || texture > GL_TEXTURE0_ARB + MAX_TEXTURE_UNITS) {
-        _glKosThrowError(GL_INVALID_ENUM, "glClientActiveTextureARB");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 
     if(_glKosHasError()) {

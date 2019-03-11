@@ -134,7 +134,7 @@ static void _updatePVRBlend(pvr_poly_cxt_t* context) {
 GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func) {
     GLubyte found = 0;
     while(*values != 0) {
-        if(*values == param) {
+        if(*values == (GLenum)param) {
             found++;
             break;
         }
@@ -225,7 +225,7 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         if(tx1->isPaletted) {
             if(_glIsSharedTexturePaletteEnabled()) {
                 TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
-                context->txr.format |= PVR_TXRFMT_8BPP_PAL((palette) ? 0 : palette->bank);
+               context->txr.format |= PVR_TXRFMT_8BPP_PAL((palette) ? 0 : palette->bank);
             } else {
                 context->txr.format |= PVR_TXRFMT_8BPP_PAL((tx1->palette) ? tx1->palette->bank : 0);
             }
@@ -614,7 +614,7 @@ void APIENTRY glGetFloatv(GLenum pname, GLfloat* params) {
             memcpy(params, _glGetModelViewMatrix(), sizeof(float) * 16);
         break;
         default:
-            _glKosThrowError(GL_INVALID_ENUM, "glGetIntegerv");
+            _glKosThrowError(GL_INVALID_ENUM, __func__);
             _glKosPrintError();
             break;
     }
@@ -656,7 +656,7 @@ void APIENTRY glGetIntegerv(GLenum pname, GLint *params) {
             }
         } break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, "glGetIntegerv");
+        _glKosThrowError(GL_INVALID_ENUM, __func__);
         _glKosPrintError();
         break;
     }
