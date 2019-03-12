@@ -1239,6 +1239,8 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
     glBlendFunc(blendSrc, blendDst);
     (blendEnabled) ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
     (depthEnabled) ? glEnable(GL_DEPTH_TEST) : glDisable(GL_DEPTH_TEST);
+
+    PROFILER_POP();
 }
 
 void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {

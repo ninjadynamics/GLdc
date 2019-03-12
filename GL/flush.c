@@ -121,7 +121,7 @@ void APIENTRY glKosInit() {
 
 void APIENTRY glKosSwapBuffers() {
     static int frame_count = 0;
-
+    
     TRACE();
 
     PROFILER_PUSH(__func__);
@@ -152,7 +152,7 @@ void APIENTRY glKosSwapBuffers() {
     PROFILER_CHECKPOINT("scene");
     PROFILER_POP();
 
-    if(frame_count++ > 100) {
+    if(++frame_count > 49) {
         profiler_print_stats();
         frame_count = 0;
     }

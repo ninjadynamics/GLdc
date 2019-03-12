@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define PROFILER_COMPILE 1
-#ifdef PROFILER_COMPILE
+#if PROFILER_COMPILE
 #define PROFILER_PUSH(S) profiler_push(S)
 #define PROFILER_CHECKPOINT(P) profiler_checkpoint(P)
 #define PROFILER_POP() profiler_pop()
