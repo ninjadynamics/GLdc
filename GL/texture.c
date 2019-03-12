@@ -384,10 +384,6 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLenum param) {
     }
 }
 
-void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLenum param) {
-    glTexEnvi(target, pname, param);
-}
-
 void APIENTRY glCompressedTexImage2DARB(GLenum target,
                                      GLint level,
                                      GLenum internalFormat,
