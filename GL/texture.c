@@ -346,7 +346,7 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     }
 }
 
-void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
+void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLenum param) {
     TRACE();
 
     GLenum target_values [] = {GL_TEXTURE_ENV, 0};
@@ -384,7 +384,7 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     }
 }
 
-void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLint param) {
+void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLenum param) {
     glTexEnvi(target, pname, param);
 }
 
