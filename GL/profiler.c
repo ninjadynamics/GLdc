@@ -1,9 +1,11 @@
+
 #include <kos.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
 #include "profiler.h"
+#ifdef PROFILER_COMPILE
 #include "../containers/aligned_vector.h"
 
 #define MAX_PATH 256
@@ -24,7 +26,7 @@ typedef struct {
 
 static RootProfiler* root = NULL;
 
-static char PROFILER_ENABLED = 0;
+static char PROFILER_ENABLED = PROFILER_COMPILE;
 
 void profiler_enable() {
     PROFILER_ENABLED = 1;
@@ -141,3 +143,4 @@ void profiler_print_stats() {
         fprintf(stderr, "%-60s%-20f%-20f%u\n", result->name, avg, ms, result->total_calls);
     }
 }
+#endif

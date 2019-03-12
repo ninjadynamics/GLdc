@@ -1100,7 +1100,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     glActiveTextureARB(activeTexture);
 
-    profiler_push(__func__);
+    PROFILER_PUSH(__func__);
 
 
     PolyList* activeList = _glActivePolyList();
@@ -1117,19 +1117,19 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
      * we use this startOffset to reset those pointers after clipping */
     uint32_t startOffset = start - (ClipVertex*) activeList->vector.data;
 
-    profiler_checkpoint("allocate");
+    PROFILER_CHECKPOINT("allocate");
 
     generate(start, mode, first, count, (GLubyte*) indices, type, doTexture, doMultitexture, doLighting);
 
-    profiler_checkpoint("generate");
+    PROFILER_CHECKPOINT("generate");
 
     light(start, spaceNeeded);
 
-    profiler_checkpoint("light");
+    PROFILER_CHECKPOINT("light");
 
     transform(start, spaceNeeded);
 
-    profiler_checkpoint("transform");
+    PROFILER_CHECKPOINT("transform");
 
     if(_glIsClippingEnabled()) {
 
@@ -1169,15 +1169,15 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     }
 
-    profiler_checkpoint("clip");
+    PROFILER_CHECKPOINT("clip");
 
     divide(start, spaceNeeded);
 
-    profiler_checkpoint("divide");
+    PROFILER_CHECKPOINT("divide");
 
     push(header, start, spaceNeeded, _glActivePolyList(), 0);
 
-    profiler_checkpoint("push");
+    PROFILER_CHECKPOINT("push");
     /*
        Now, if multitexturing is enabled, we want to send exactly the same vertices again, except:
        - We want to enable blending, and send them to the TR list
@@ -1188,7 +1188,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     if(!doMultitexture) {
         /* Multitexture actively disabled */
-        profiler_pop();
+        PROFILER_POP();
         return;
     }
 
@@ -1196,7 +1196,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLsizei count, GLenum typ
 
     if(!texture1 || ((ENABLED_VERTEX_ATTRIBUTES & ST_ENABLED_FLAG) != ST_ENABLED_FLAG)) {
         /* Multitexture implicitly disabled */
-        profiler_pop();
+        PROFILER_POP();
         return;
     }
 
