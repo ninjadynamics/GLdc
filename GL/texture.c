@@ -35,7 +35,9 @@ static GLenum INTERNAL_PALETTE_FORMAT = GL_RGBA4;
 static TexturePalette* _initTexturePalette() {
     TexturePalette* palette = (TexturePalette*) malloc(sizeof(TexturePalette));
     assert(palette);
-	memset(palette, 0x0, sizeof(TexturePalette));
+    
+	//memset(palette, 0x0, sizeof(TexturePalette));
+    sq_clr(palette, (sizeof(TexturePalette) & 0xfffffffc) + 4);
 
     palette->data = NULL;
     palette->format = 0;
@@ -223,6 +225,8 @@ GLubyte _glInitTextures() {
     SHARED_PALETTES[2] = _initTexturePalette();
     SHARED_PALETTES[3] = _initTexturePalette();
 
+    memset((void*)BANKS_USED,0x0,sizeof(BANKS_USED));
+
     return 1;
 }
 
@@ -346,7 +350,7 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     }
 }
 
-void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
+void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLenum param) {
     TRACE();
 
     GLenum target_values [] = {GL_TEXTURE_ENV, 0};
@@ -382,10 +386,6 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     default:
         break;
     }
-}
-
-void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLint param) {
-    glTexEnvi(target, pname, param);
 }
 
 void APIENTRY glCompressedTexImage2DARB(GLenum target,
@@ -776,11 +776,10 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
 }
 
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
-                     ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
-
+                    ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
 #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
-#define MIN(a, b) ( (a)<(b)? (a):(b) )
 
+#define MIN(a, b) ( (a)<(b)? (a):(b) )
 
 void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                            GLsizei width, GLsizei height, GLint border,
@@ -941,7 +940,6 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
         if(needsTwiddling) {
             assert(type == GL_UNSIGNED_BYTE);  // Anything else needs this loop adjusting
-            GLuint x, y, min, min2, mask;
 
             min = MIN(w, h);
             min2 = min * min;

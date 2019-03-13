@@ -118,9 +118,10 @@ void APIENTRY glKosInit() {
 }
 
 #define QACRTA ((((unsigned int)0x10000000)>>26)<<2)&0x1c
+static int frame_count = 0;
 
 void APIENTRY glKosSwapBuffers() {
-    static int frame_count = 0;
+    
     
     TRACE();
 
@@ -152,8 +153,26 @@ void APIENTRY glKosSwapBuffers() {
     PROFILER_CHECKPOINT("scene");
     PROFILER_POP();
 
+#if PROFILER_COMPILE
     if(++frame_count > 49) {
-        profiler_print_stats();
+        PROFILER_PRINT_STATS();
         frame_count = 0;
     }
+#endif
+}
+
+
+void APIENTRY glKosReserveOPList(unsigned int elements){
+    aligned_vector_reserve(&OP_LIST.vector, elements);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
+}
+
+void APIENTRY glKosReservePTList(unsigned int elements){
+    aligned_vector_reserve(&PT_LIST.vector, elements);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
+}
+
+void APIENTRY glKosReserveTRList(unsigned int elements){
+    aligned_vector_reserve(&TR_LIST.vector, elements);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
 }

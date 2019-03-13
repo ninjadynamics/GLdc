@@ -36,7 +36,8 @@ void aligned_vector_reserve(AlignedVector* vector, unsigned int element_count) {
     if(element_count <= vector->capacity) {
         return;
     }
-
+    element_count = ((element_count+_VECTOR_ALIGN_COUNT) & ~_VECTOR_ALIGN_COUNT);
+   
     unsigned int original_byte_size = vector->size * vector->element_size;
 
     /* We overallocate so that we don't make small allocations during push backs */
@@ -47,7 +48,14 @@ void aligned_vector_reserve(AlignedVector* vector, unsigned int element_count) {
     vector->data = (unsigned char*) memalign(0x20, new_byte_size);
 
     if(original_data) {
-        memcpy(vector->data, original_data, original_byte_size);
+        if( !(*vector->data % 32) && !(*original_data % 32)){
+            if (original_byte_size % 4)
+                original_byte_size = (original_byte_size & 0xfffffffc) + 4;
+            sq_cpy(vector->data, original_data, original_byte_size);
+        } else {
+            memcpy(vector->data, original_data, original_byte_size);
+        }
+	    
         free(original_data);
     }
 
@@ -64,6 +72,7 @@ void* aligned_vector_push_back(AlignedVector* vector, const void* objs, unsigned
 
     /* Copy the objects in */
     memcpy(dest, objs, vector->element_size * count);
+    //sq_cpy(dest, objs, ((vector->element_size * count) & 0xfffffffc) + 4);
 
     return dest;
 }
@@ -121,6 +130,8 @@ void aligned_vector_shrink_to_fit(AlignedVector* vector) {
 
         if(original_data) {
             memcpy(vector->data, original_data, new_byte_size);
+            //sq_cpy(vector->data, original_data, ((new_byte_size) & 0xfffffffc) + 4);
+            
             free(original_data);
         }
 

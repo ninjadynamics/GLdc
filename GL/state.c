@@ -131,7 +131,7 @@ static void _updatePVRBlend(pvr_poly_cxt_t* context) {
     }
 }
 
-GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func) {
+GLboolean _glCheckValidEnum(GLenum param, GLenum* values, const char* func) {
     GLubyte found = 0;
     while(*values != 0) {
         if(*values == (GLenum)param) {

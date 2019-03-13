@@ -783,7 +783,14 @@ static void genArraysTriangleFan(
         return;
     }
 
-    memcpy(buffer, output, sizeof(ClipVertex) * count);
+    if( !((uint32)&buffer % 32) && !((uint32)&output % 32)){
+        int temp = sizeof(ClipVertex) *count;
+        if (temp % 4)
+		    temp = (temp & 0xfffffffc) + 4;
+        sq_cpy(buffer, output, temp);
+    } else {
+        memcpy(buffer, output, sizeof(ClipVertex) * count);
+    }
 
     // First 3 vertices are in the right place, just end early
     output[2].flags = PVR_CMD_VERTEX_EOL;

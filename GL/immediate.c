@@ -259,3 +259,8 @@ void APIENTRY glRecti(GLint x1, GLint y1, GLint x2, GLint y2) {
 void APIENTRY glRectiv(const GLint *v1, const GLint *v2) {
     return glRectfv((const GLfloat *)v1, (const GLfloat *)v2);
 }
+
+
+AlignedVector* APIENTRY _glKosINTERNALGetVertices(){
+    return &VERTICES;
+}
