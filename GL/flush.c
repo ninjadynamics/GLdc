@@ -164,15 +164,15 @@ void APIENTRY glKosSwapBuffers() {
 
 void APIENTRY glKosReserveOPList(unsigned int elements){
     aligned_vector_reserve(&OP_LIST.vector, elements);
-    aligned_vector_reserve(_glKosINTERNALGetVertices(), elements/3);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
 }
 
 void APIENTRY glKosReservePTList(unsigned int elements){
     aligned_vector_reserve(&PT_LIST.vector, elements);
-    aligned_vector_reserve(_glKosINTERNALGetVertices(), elements/3);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
 }
 
 void APIENTRY glKosReserveTRList(unsigned int elements){
     aligned_vector_reserve(&TR_LIST.vector, elements);
-    aligned_vector_reserve(_glKosINTERNALGetVertices(), elements/3);
+    aligned_vector_reserve((AlignedVector*)_glKosINTERNALGetVertices(), elements/3);
 }
