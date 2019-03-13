@@ -131,7 +131,7 @@ typedef struct {
     GLint size;
 } AttribPointer;
 
-GLboolean _glCheckValidEnum(GLint param, GLenum* values, const char* func);
+GLboolean _glCheckValidEnum(GLenum param, GLenum* values, const char* func);
 
 GLuint _glGetEnabledAttributes();
 AttribPointer* _glGetVertexAttribPointer();

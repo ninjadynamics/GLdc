@@ -6,7 +6,7 @@
 
 #include "profiler.h"
 #include "private.h"
-#ifdef PROFILER_COMPILE
+#if PROFILER_COMPILE
 #include "../containers/aligned_vector.h"
 
 #define MAX_PATH 256

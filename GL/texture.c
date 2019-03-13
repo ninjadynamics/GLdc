@@ -35,7 +35,9 @@ static GLenum INTERNAL_PALETTE_FORMAT = GL_RGBA4;
 static TexturePalette* _initTexturePalette() {
     TexturePalette* palette = (TexturePalette*) malloc(sizeof(TexturePalette));
     assert(palette);
-	memset(palette, 0x0, sizeof(TexturePalette));
+    
+	//memset(palette, 0x0, sizeof(TexturePalette));
+    sq_clr(palette, (sizeof(TexturePalette) & 0xfffffffc) + 4);
 
     palette->data = NULL;
     palette->format = 0;

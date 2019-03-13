@@ -2,11 +2,12 @@
 
 #include <stdint.h>
 
-#define PROFILER_COMPILE 1
+#define PROFILER_COMPILE 0
 #if PROFILER_COMPILE
 #define PROFILER_PUSH(S) profiler_push(S)
 #define PROFILER_CHECKPOINT(P) profiler_checkpoint(P)
 #define PROFILER_POP() profiler_pop()
+#define PROFILER_PRINT_STATS() profiler_print_stats()
 void profiler_enable();
 void profiler_disable();
 
@@ -25,4 +26,5 @@ void profiler_print_stats();
 #define PROFILER_PUSH(S) 
 #define PROFILER_CHECKPOINT(P) 
 #define PROFILER_POP() 
+#define PROFILER_PRINT_STATS()
 #endif 
