@@ -31,9 +31,7 @@ void aligned_vector_reserve(AlignedVector* vector, unsigned int element_count) {
         return;
     }
     element_count = ((element_count+_VECTOR_ALIGN_COUNT) & ~_VECTOR_ALIGN_COUNT);
-    //printf("List growing from %d -> %d\n",vector->size,element_count);
-
-
+   
     unsigned int original_byte_size = vector->size * vector->element_size;
     unsigned int new_byte_size = element_count * vector->element_size;
     unsigned char* original_data = vector->data;

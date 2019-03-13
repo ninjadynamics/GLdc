@@ -775,6 +775,12 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
     return GL_TRUE;
 }
 
+#define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
+                    ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
+#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+
+#define MIN(a, b) ( (a)<(b)? (a):(b) )
+
 void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                            GLsizei width, GLsizei height, GLint border,
                            GLenum format, GLenum type, const GLvoid *data) {
@@ -933,40 +939,20 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         assert(bytes);
 
         if(needsTwiddling) {
-            /*assert(type == GL_UNSIGNED_BYTE);  // Anything else needs this loop adjusting
-            GLuint x, y;
-            for(y = 0; y < height; ++y) {
-                for(x = 0; x < width; ++x) {
-                    GLuint src = (y * width) + x;
-                    GLuint dest = morton_index(x, y);
+            assert(type == GL_UNSIGNED_BYTE);  // Anything else needs this loop adjusting
 
-                    targetData[dest] = ((GLubyte*) data)[src];
-                }
-            }
-			*/
-			/* Don't convert color indexes */
             /* Linear/iterative twiddling algorithm from Marcus' tatest */
-            #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
-                                ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
-            #define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
-
-            #define MIN(a, b) ( (a)<(b)? (a):(b) )
-    
             uint32 x, y, min, mask;
 
             min = MIN(w, h);
             mask = min - 1;
             
-            uint8 * pixels;
-            uint16 * vtex;
-            pixels = (uint8 *) data;
-            vtex = (uint16*)targetData;
+            uint16 * vtex (uint16*)targetData;
 
             for(y = 0; y < h; y += 2) {
                 for(x = 0; x < w; x++) {
-                    vtex[TWIDOUT((y & mask) / 2, x & mask) +
-                            (x / min + y / min)*min * min / 2] =
-                                pixels[y * w + x] | (pixels[(y + 1) * w + x] << 8);
+                    vtex[TWIDOUT((y & mask) / 2, x & mask) + (x / min + y / min)*min * min / 2] =
+                        data[y * w + x] | (data[(y + 1) * w + x] << 8);
                 }
             }
         } else {
