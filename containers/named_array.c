@@ -12,6 +12,17 @@
 
 #include "named_array.h"
 
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
+#define BYTE_TO_BINARY(byte)  \
+  (byte & 0x80 ? '1' : '0'), \
+  (byte & 0x40 ? '1' : '0'), \
+  (byte & 0x20 ? '1' : '0'), \
+  (byte & 0x10 ? '1' : '0'), \
+  (byte & 0x08 ? '1' : '0'), \
+  (byte & 0x04 ? '1' : '0'), \
+  (byte & 0x02 ? '1' : '0'), \
+  (byte & 0x01 ? '1' : '0') 
+
 void named_array_init(NamedArray* array, unsigned int element_size, unsigned int max_elements) {
     array->element_size = element_size;
     array->max_element_count = max_elements;
@@ -34,7 +45,7 @@ void named_array_init(NamedArray* array, unsigned int element_size, unsigned int
 char named_array_used(NamedArray* array, unsigned int id) {
     unsigned int i = id / 8;
     unsigned int j = id % 8;
-
+    
     unsigned char v = array->used_markers[i] & (unsigned char) (1 << j);
     return !!(v);
 }
@@ -63,8 +74,7 @@ void* named_array_reserve(NamedArray* array, unsigned int id) {
     if(!named_array_used(array, id)) {
         unsigned int j = (id % 8);
         unsigned int i = id / 8;
-
-        assert(!named_array_used(array, id));
+        
         array->used_markers[i] |= (unsigned char) 1 << j;
         assert(named_array_used(array, id));
 
