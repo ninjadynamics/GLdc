@@ -67,6 +67,8 @@ GLAPI void APIENTRY glKosInitConfig(GLdcConfig* config);
 GLAPI void APIENTRY glKosInitEx(GLdcConfig* config);
 GLAPI void APIENTRY glKosSwapBuffers();
 
+GLAPI void APIENTRY glKOS_INTERNAL_SetMipmapBias(GLubyte level);
+
 /*
  * CUSTOM EXTENSION multiple_shared_palette_KOS
  *

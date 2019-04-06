@@ -18,6 +18,61 @@ pvr_poly_cxt_t* _glGetPVRContext() {
     return &GL_CONTEXT;
 }
 
+static GLubyte mipmap_bias = 4;
+
+GLAPI void APIENTRY glKOS_INTERNAL_SetMipmapBias(GLubyte level) {
+    switch(level){
+        case 1:
+        mipmap_bias = PVR_MIPBIAS_0_25;
+        break;
+        case 2:
+        mipmap_bias = PVR_MIPBIAS_0_50;
+        break;
+        case 3:
+        mipmap_bias = PVR_MIPBIAS_0_75;
+        break;
+        case 4:
+        mipmap_bias = PVR_MIPBIAS_1_00;
+        break;
+        case 5:
+        mipmap_bias = PVR_MIPBIAS_1_25;
+        break;
+        case 6:
+        mipmap_bias = PVR_MIPBIAS_1_50;
+        break;
+        case 7:
+        mipmap_bias = PVR_MIPBIAS_1_75;
+        break;
+        case 8:
+        mipmap_bias = PVR_MIPBIAS_2_00;
+        break;
+        case 9:
+        mipmap_bias = PVR_MIPBIAS_2_25;
+        break;
+        case 10:
+        mipmap_bias = PVR_MIPBIAS_2_50;
+        break;
+        case 11:
+        mipmap_bias = PVR_MIPBIAS_2_75;
+        break;
+        case 12:
+        mipmap_bias = PVR_MIPBIAS_3_00;
+        break;
+        case 13:
+        mipmap_bias = PVR_MIPBIAS_3_25;
+        break;
+        case 14:
+        mipmap_bias = PVR_MIPBIAS_3_50;
+        break;
+        case 15:
+        mipmap_bias = PVR_MIPBIAS_3_75;
+        break;
+        default:
+        mipmap_bias = PVR_MIPBIAS_1_00;
+        break;
+    }
+}
+
 
 /* We can't just use the GL_CONTEXT for this state as the two
  * GL states are combined, so we store them separately and then
@@ -180,6 +235,10 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         break;
     }
 
+    if(tx1->height != tx1->width){
+        enableMipmaps = GL_FALSE;
+    }
+
     /* FIXME: If you disable mipmaps on a compressed mipmapped texture
      * you get corruption and I don't know why, so we force mipmapping for now */
     if(tx1->isCompressed && _glIsMipmapComplete(tx1)) {
@@ -216,16 +275,24 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         context->txr.enable = PVR_TEXTURE_ENABLE;
         context->txr.filter = filter;
         context->txr.mipmap = (enableMipmaps) ? PVR_MIPMAP_ENABLE : PVR_MIPMAP_DISABLE;
-        context->txr.mipmap_bias = PVR_MIPBIAS_NORMAL;
+        context->txr.mipmap_bias = mipmap_bias;
         context->txr.width = tx1->width;
         context->txr.height = tx1->height;
-        context->txr.base = tx1->data;
+        if(enableMipmaps){
+            context->txr.base = tx1->data;
+        } else {
+            context->txr.base = _glGetMipmapLocation((TextureObject*)tx1,0);
+        }
+        
         context->txr.format = tx1->color;
 
         if(tx1->isPaletted) {
             if(_glIsSharedTexturePaletteEnabled()) {
-                TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
-                context->txr.format |= PVR_TXRFMT_8BPP_PAL((palette) ? 0 : palette->bank);
+                //TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
+                context->txr.format |= PVR_TXRFMT_8BPP_PAL(tx1->shared_bank);
+                if(tx1->shared_bank != 0){
+                    //printf("%s chose bank %d!\n",__func__,tx1->shared_bank);
+                }
             } else {
                 context->txr.format |= PVR_TXRFMT_8BPP_PAL((tx1->palette) ? tx1->palette->bank : 0);
             }
