@@ -22,6 +22,7 @@
   (byte & 0x04 ? '1' : '0'), \
   (byte & 0x02 ? '1' : '0'), \
   (byte & 0x01 ? '1' : '0') 
+#define assert__(x) for ( ; !(x) ; assert(x) )
 
 void named_array_init(NamedArray* array, unsigned int element_size, unsigned int max_elements) {
     array->element_size = element_size;
@@ -38,8 +39,8 @@ void named_array_init(NamedArray* array, unsigned int element_size, unsigned int
     array->elements = (unsigned char*) malloc(element_size * max_elements);
     array->used_markers = (unsigned char*) malloc(array->marker_count);
 #endif
-    //memset(array->used_markers, 0, sizeof(unsigned char) * array->marker_count);
-    sq_clr(array->used_markers, ((sizeof(unsigned char) * array->marker_count) & 0xfffffffc) + 4);
+    memset(array->used_markers, 0, sizeof(unsigned char) * array->marker_count);
+    memset(array->elements, 0, element_size * max_elements);
 }
 
 char named_array_used(NamedArray* array, unsigned int id) {
@@ -76,6 +77,11 @@ void* named_array_reserve(NamedArray* array, unsigned int id) {
         unsigned int i = id / 8;
         
         array->used_markers[i] |= (unsigned char) 1 << j;
+        
+        assert__(named_array_used(array, id)) {
+            printf("%s: id %d is not used in [%d,%d] = "BYTE_TO_BINARY_PATTERN"\n",__func__,id,i,j, BYTE_TO_BINARY(array->used_markers[i])); 
+        }
+
         assert(named_array_used(array, id));
 
         unsigned char* ptr = &array->elements[id * array->element_size];

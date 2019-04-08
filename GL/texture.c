@@ -166,21 +166,75 @@ static GLint _determineStride(GLenum format, GLenum type) {
 
 GLubyte* _glGetMipmapLocation(TextureObject* obj, GLuint level) {
     GLuint offset = 0;
+    if(obj->width == obj->height){
 
-    GLuint i = 0;
-    GLuint width = obj->width;
-    GLuint height = obj->height;
+    if(obj->isPaletted){
+    GLuint size = obj->height;
 
-    for(; i < level; ++i) {
-        offset += (width * height * obj->dataStride);
+    switch(size >> level){
+        case 256:
+        offset = 0x05558;
+        break;
+        case 128:
+        offset = 0x01558;
+        break;
+        case 64:
+        offset = 0x00558;
+        break;
+        case 32:
+        offset = 0x00158;
+        break;
+        case 16:
+        offset = 0x00058;
+        break;
+        case 8:
+        offset = 0x00018;
+        break;
+        case 4:
+        offset = 0x00008;
+        break;
+        case 2:
+        offset = 0x00004;
+        break;
+        case 1:
+        case 0:
+        offset = 0x00000;
+        break;
+    }
+    } else {
+    GLuint size = obj->height;
 
-        if(width > 1) {
-            width /= 2;
-        }
-
-        if(height > 1) {
-            height /= 2;
-        }
+    switch(size >> level){
+        case 256:
+        offset = 0x0AAB0;
+        break;
+        case 128:
+        offset = 0x02AB0;
+        break;
+        case 64:
+        offset = 0x00AB0;
+        break;
+        case 32:
+        offset = 0x002B0;
+        break;
+        case 16:
+        offset = 0x000B0;
+        break;
+        case 8:
+        offset = 0x00030;
+        break;
+        case 4:
+        offset = 0x00010;
+        break;
+        case 2:
+        offset = 0x00008;
+        break;
+        case 1:
+        offset = 0x00006;
+        break;
+    }
+    
+    }
     }
 
     return ((GLubyte*) obj->data) + offset;
@@ -197,7 +251,7 @@ static GLuint _glGetMipmapDataSize(TextureObject* obj) {
     GLuint width = obj->width;
     GLuint height = obj->height;
 
-    for(; i < _glGetMipmapLevelCount(obj); ++i) {
+    for(; i < _glGetMipmapLevelCount(obj)+1; ++i) {
         size += (width * height * obj->dataStride);
 
         if(width > 1) {
@@ -490,6 +544,8 @@ void APIENTRY glCompressedTexImage2DARB(GLenum target,
 
 static GLint _cleanInternalFormat(GLint internalFormat) {
     switch (internalFormat) {
+    case GL_COLOR_INDEX4_EXT:
+        return GL_COLOR_INDEX4_EXT;
     case GL_COLOR_INDEX8_EXT:
         return GL_COLOR_INDEX8_EXT;
     case GL_ALPHA:
@@ -612,6 +668,8 @@ static GLuint _determinePVRFormat(GLint internalFormat, GLenum type) {
             return PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED | PVR_TXRFMT_VQ_ENABLE;
         case GL_COLOR_INDEX8_EXT:
             return PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_TWIDDLED;
+        case GL_COLOR_INDEX4_EXT:
+            return PVR_TXRFMT_PAL4BPP | PVR_TXRFMT_TWIDDLED;
         default:
             return 0;
     }
@@ -762,15 +820,15 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
     if(!obj->mipmap || !obj->mipmapCount) {
         return GL_FALSE;
     }
-
+    
     GLsizei i = 0;
-    for(; i < obj->mipmapCount; ++i) {
-        if((obj->mipmap & (1 << i)) == 0) {
-            return GL_FALSE;
+    for(; i < obj->mipmapCount-3; ++i) {
+        if((obj->mipmap & (1 << i)) == 1) {
+            return GL_TRUE;
         }
     }
 
-    return GL_TRUE;
+    return GL_FALSE;
 }
 
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
@@ -810,15 +868,18 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     }
 
     GLint w = width;
-    if(w < 8 || (w & -w) != w) {
+    GLint h = height;
+    if(level == 0){
+    if((w < 8 || (w & -w) != w)) {
         /* Width is not a power of two. Must be!*/
         _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
     }
 
-    GLint h = height;
-    if(h < 8 || (h & -h) != h) {
+    
+    if((h < 8 || (h & -h) != h)) {
         /* height is not a power of two. Must be!*/
         _glKosThrowError(GL_INVALID_VALUE, "glTexImage2D");
+    }
     }
 
     if(level < 0) {
@@ -835,11 +896,6 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
     GLboolean isPaletted = (internalFormat == GL_COLOR_INDEX8_EXT) ? GL_TRUE : GL_FALSE;
 
-    if(isPaletted && level > 0) {
-        /* Paletted textures can't have mipmaps */
-        _glKosThrowError(GL_INVALID_OPERATION, __func__);
-    }
-
     if(_glKosHasError()) {
         _glKosPrintError();
         return;
@@ -852,7 +908,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
     assert(active);
 
-    if(active->data) {
+    if(active->data && (level == 0) ) {
         /* pre-existing texture - check if changed */
         if(active->width != width ||
            active->height != height ||
@@ -946,10 +1002,17 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             min = MIN(w, h);
             mask = min - 1;
 
+            if(height == 1 || width == 1){
+                targetData[0] = ((GLubyte*)data)[0];
+                targetData[1] = ((GLubyte*)data)[0];
+                targetData[2] = ((GLubyte*)data)[0];
+                targetData[3] = ((GLubyte*)data)[0];
+            } else {
             for(y = 0; y < h; y += 2) {
                 for(x = 0; x < w; x++) {
                     vtex[TWIDOUT((y & mask) / 2, x & mask) + (x / min + y / min)*min * min / 2] = pixels[y * w + x] | (pixels[(y + 1) * w + x] << 8);
                 }
+            }
             }
         } else {
             /* No conversion? Just copy the data, and the pvr_format is correct */
