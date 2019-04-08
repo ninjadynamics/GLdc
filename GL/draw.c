@@ -1031,7 +1031,8 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     }
 
     /* No vertices? Do nothing */
-    if(!count) {
+    //changed check
+    if(count < 3) {
         return;
     }
 
@@ -1085,9 +1086,15 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     target->output = _glActivePolyList();
     target->count = (mode == GL_TRIANGLE_FAN) ? ((count - 2) * 3) : count;
+    if(target->count < 3 || count < 3){
+        printf("%s: %d = %u verts\n",__func__,count,target->count);
+    }
     target->header_offset = target->output->vector.size;
     target->start_offset = target->header_offset + 1;
 
+    if(target-count == 0){
+        return;
+    }
     assert(target->count);
 
     /* Make sure we have enough room for all the "extra" data */
@@ -1207,8 +1214,8 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     glDepthFunc(GL_EQUAL);
     glEnable(GL_BLEND);
-
-    /* This is modulation, we need to switch depending on the texture env mode! */
+    
+        /* This is modulation, we need to switch depending on the texture env mode! */
     glBlendFunc(GL_DST_COLOR, GL_ZERO);
 
     /* Send the buffer again to the transparent list */
@@ -1229,6 +1236,9 @@ void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvo
     if(_glCheckImmediateModeInactive(__func__)) {
         return;
     }
+    if(count < 3){
+        return;
+    }
 
     submitVertices(mode, 0, count, type, indices);
 }
@@ -1237,6 +1247,9 @@ void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     TRACE();
 
     if(_glCheckImmediateModeInactive(__func__)) {
+        return;
+    }
+    if(count < 3){
         return;
     }
 
