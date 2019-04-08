@@ -225,7 +225,7 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         if(tx1->isPaletted) {
             if(_glIsSharedTexturePaletteEnabled()) {
                 TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
-               context->txr.format |= PVR_TXRFMT_8BPP_PAL((palette) ? 0 : palette->bank);
+                context->txr.format |= PVR_TXRFMT_8BPP_PAL(palette->bank);
             } else {
                 context->txr.format |= PVR_TXRFMT_8BPP_PAL((tx1->palette) ? tx1->palette->bank : 0);
             }
@@ -576,7 +576,7 @@ static GLenum COMPRESSED_FORMATS [] = {
 static GLint NUM_COMPRESSED_FORMATS = sizeof(COMPRESSED_FORMATS) / sizeof(GLenum);
 
 void APIENTRY glGetBooleanv(GLenum pname, GLboolean* params) {
-    GLuint enabledAttrs = _glGetEnabledAttributes();
+    GLuint enabledAttrs = *_glGetEnabledAttributes();
     GLuint activeClientTexture = _glGetActiveClientTexture();
 
     switch(pname) {
@@ -671,7 +671,7 @@ const GLubyte *glGetString(GLenum name) {
             return (const GLubyte*) "PowerVR2 CLX2 100mHz";
 
         case GL_VERSION:
-            return (const GLubyte*) "1.2 (partial) - GLdc 1.0";
+            return (const GLubyte*) "1.2 (partial) - GLdc 1.1";
 
         case GL_EXTENSIONS:
             return (const GLubyte*) "GL_ARB_framebuffer_object, GL_ARB_multitexture, GL_ARB_texture_rg, GL_EXT_paletted_texture, GL_EXT_shared_texture_palette, GL_KOS_multiple_shared_palette";
