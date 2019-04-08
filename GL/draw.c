@@ -1065,7 +1065,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     glActiveTextureARB(activeTexture);
 
-    PROFILER_PUSH(__func__);
+    profiler_push(__func__);
 
     /* Polygons are treated as triangle fans, the only time this would be a
      * problem is if we supported glPolygonMode(..., GL_LINE) but we don't.
@@ -1103,19 +1103,19 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     /* Make room for the vertices and header */
     aligned_vector_extend(&target->output->vector, target->count + 1);
 
-    PROFILER_CHECKPOINT("allocate");
+    profiler_checkpoint("allocate");
 
     generate(target, mode, first, count, (GLubyte*) indices, type, doTexture, doMultitexture, doLighting);
 
-    PROFILER_CHECKPOINT("generate");
+    profiler_checkpoint("generate");
 
     light(target);
 
-    PROFILER_CHECKPOINT("light");
+    profiler_checkpoint("light");
 
     transform(target);
 
-    PROFILER_CHECKPOINT("transform");
+    profiler_checkpoint("transform");
 
     if(_glIsClippingEnabled()) {
 #if DEBUG_CLIPPING
@@ -1150,15 +1150,15 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     }
 
-    PROFILER_CHECKPOINT("clip");
+    profiler_checkpoint("clip");
 
     divide(target);
 
-    PROFILER_CHECKPOINT("divide");
+    profiler_checkpoint("divide");
 
     push(_glSubmissionTargetHeader(target), _glSubmissionTargetStart(target), target->count, target->output, 0);
 
-    PROFILER_CHECKPOINT("push");
+    profiler_checkpoint("push");
     /*
        Now, if multitexturing is enabled, we want to send exactly the same vertices again, except:
        - We want to enable blending, and send them to the TR list
@@ -1169,7 +1169,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     if(!doMultitexture) {
         /* Multitexture actively disabled */
-        PROFILER_POP();
+        profiler_pop();
         return;
     }
 
@@ -1298,7 +1298,7 @@ void APIENTRY glDisableClientState(GLenum cap) {
             (ENABLED_VERTEX_ATTRIBUTES &= ~UV_ENABLED_FLAG);
     break;
     default:
-        _glKosThrowError(GL_INVALID_ENUM, __func__);
+       _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
 }
 

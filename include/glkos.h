@@ -96,9 +96,5 @@ GLAPI void APIENTRY glKOS_INTERNAL_SetMipmapBias(GLubyte level);
 /* Pass to glTexParameteri to set the shared bank */
 #define GL_SHARED_TEXTURE_BANK_KOS                  0xEF00
 
-GLAPI void APIENTRY glKosReserveOPList(unsigned int elements);
-GLAPI void APIENTRY glKosReservePTList(unsigned int elements);
-GLAPI void APIENTRY glKosReserveTRList(unsigned int elements);
-
 __END_DECLS
 

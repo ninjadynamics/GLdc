@@ -1,15 +1,10 @@
-
 #include <kos.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
 #include "profiler.h"
-#include "private.h"
-#if PROFILER_COMPILE
 #include "../containers/aligned_vector.h"
-
-#ifdef PROFILER_COMPILE
 
 #define MAX_PATH 256
 
@@ -29,7 +24,7 @@ typedef struct {
 
 static RootProfiler* root = NULL;
 
-static char PROFILER_ENABLED = PROFILER_COMPILE;
+static char PROFILER_ENABLED = 0;
 
 void profiler_enable() {
     PROFILER_ENABLED = 1;
@@ -131,24 +126,18 @@ void profiler_pop() {
 
     aligned_vector_resize(&root->stack, root->stack.size - 1);
 }
-#include <inttypes.h>
+
 void profiler_print_stats() {
     if(!PROFILER_ENABLED) return;
 
-    fprintf(stderr, "%-40s%-20s%-20s%-20s%-20s\n", "Path", "Time(ms)", "Average", "Total", "Calls");
-    float total_ms = 0;
-    float fps = 0;
+    fprintf(stderr, "%-60s%-20s%-20s%-20s\n", "Path", "Average", "Total", "Calls");
+
     uint16_t i = 0;
     for(; i < root->results.size; ++i) {
         ProfilerResult* result = aligned_vector_at(&root->results, i);
         float ms = ((float) result->total_time_us) / 1000.0f;
         float avg = ms / (float) result->total_calls;
-        total_ms += ms;
 
         fprintf(stderr, "%-60s%-20f%-20f%" PRIu64 "\n", result->name, (double)avg, (double)ms, result->total_calls);
     }
-    total_ms/=((ProfilerResult*)aligned_vector_at(&root->results, i-1))->total_calls;
-    fps = 1000/total_ms;
-    fprintf(stderr, "%-10s%-10f%-10s%-10f\n", "Time(ms)", total_ms, "FPS", fps);
 }
-#endif

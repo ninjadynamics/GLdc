@@ -46,7 +46,7 @@ void named_array_init(NamedArray* array, unsigned int element_size, unsigned int
 char named_array_used(NamedArray* array, unsigned int id) {
     unsigned int i = id / 8;
     unsigned int j = id % 8;
-    
+
     unsigned char v = array->used_markers[i] & (unsigned char) (1 << j);
     return !!(v);
 }
@@ -60,9 +60,7 @@ void* named_array_alloc(NamedArray* array, unsigned int* new_id) {
                 array->used_markers[i] |= (unsigned char) 1 << j;
                 *new_id = id;
                 unsigned char* ptr = &array->elements[id * array->element_size];
-                
-                //memset(ptr, 0, array->element_size);
-                sq_clr(ptr, (array->element_size & 0xfffffffc) + 4);
+                memset(ptr, 0, array->element_size);
                 return ptr;
             }
         }
@@ -75,7 +73,8 @@ void* named_array_reserve(NamedArray* array, unsigned int id) {
     if(!named_array_used(array, id)) {
         unsigned int j = (id % 8);
         unsigned int i = id / 8;
-        
+
+        assert(!named_array_used(array, id));
         array->used_markers[i] |= (unsigned char) 1 << j;
         
         assert__(named_array_used(array, id)) {
@@ -85,8 +84,7 @@ void* named_array_reserve(NamedArray* array, unsigned int id) {
         assert(named_array_used(array, id));
 
         unsigned char* ptr = &array->elements[id * array->element_size];
-        //memset(ptr, 0, array->element_size);
-        sq_clr(ptr, (array->element_size & 0xfffffffc) + 4);
+        memset(ptr, 0, array->element_size);
         return ptr;
     }
 

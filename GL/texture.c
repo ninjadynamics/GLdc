@@ -36,9 +36,6 @@ static GLenum INTERNAL_PALETTE_FORMAT = GL_RGBA4;
 static TexturePalette* _initTexturePalette() {
     TexturePalette* palette = (TexturePalette*) malloc(sizeof(TexturePalette));
     assert(palette);
-    
-	//memset(palette, 0x0, sizeof(TexturePalette));
-    sq_clr(palette, (sizeof(TexturePalette) & 0xfffffffc) + 4);
 
     memset(palette, 0x0, sizeof(TexturePalette));
     palette->bank = -1;
@@ -402,7 +399,7 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     }
 }
 
-void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLenum param) {
+void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     TRACE();
 
     GLint target_values [] = {GL_TEXTURE_ENV, 0};
@@ -832,10 +829,11 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
 }
 
 #define TWIDTAB(x) ( (x&1)|((x&2)<<1)|((x&4)<<2)|((x&8)<<3)|((x&16)<<4)| \
-                    ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
-#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
+                     ((x&32)<<5)|((x&64)<<6)|((x&128)<<7)|((x&256)<<8)|((x&512)<<9) )
 
+#define TWIDOUT(x, y) ( TWIDTAB((y)) | (TWIDTAB((x)) << 1) )
 #define MIN(a, b) ( (a)<(b)? (a):(b) )
+
 
 void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                            GLsizei width, GLsizei height, GLint border,
