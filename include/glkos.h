@@ -97,4 +97,6 @@ GLAPI void APIENTRY glKOS_INTERNAL_SetMipmapBias(GLubyte level);
 #define GL_SHARED_TEXTURE_BANK_KOS                  0xEF00
 
 __END_DECLS
-
+extern GLboolean TEXTURES_ENABLED[];
+extern GLubyte ACTIVE_TEXTURE;
+#define _GetBooleanTextureEnabled(TEXTURE_INDEX) ( TEXTURE_INDEX == GL_TEXTURE0 ? TEXTURES_ENABLED[0] : TEXTURES_ENABLED[1] )

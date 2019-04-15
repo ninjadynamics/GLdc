@@ -7,6 +7,7 @@
 
 #include "../include/gl.h"
 #include "../include/glext.h"
+#include "../include/glkos.h"
 #include "private.h"
 #include "profiler.h"
 
@@ -1055,11 +1056,13 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     GLint activeTexture;
     glGetIntegerv(GL_ACTIVE_TEXTURE_ARB, &activeTexture);
 
-    glActiveTextureARB(GL_TEXTURE0);
-    glGetBooleanv(GL_TEXTURE_2D, &doTexture);
+    doTexture =_GetBooleanTextureEnabled(GL_TEXTURE0);
+    //glActiveTextureARB(GL_TEXTURE0);
+    //glGetBooleanv(GL_TEXTURE_2D, &doTexture);
 
-    glActiveTextureARB(GL_TEXTURE1);
-    glGetBooleanv(GL_TEXTURE_2D, &doMultitexture);
+    doMultitexture = _GetBooleanTextureEnabled(GL_TEXTURE1);
+    //glActiveTextureARB(GL_TEXTURE1);
+    //glGetBooleanv(GL_TEXTURE_2D, &doMultitexture);
 
     doLighting = _glIsLightingEnabled();
 
@@ -1108,7 +1111,7 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     generate(target, mode, first, count, (GLubyte*) indices, type, doTexture, doMultitexture, doLighting);
 
     profiler_checkpoint("generate");
-
+    
     light(target);
 
     profiler_checkpoint("light");
