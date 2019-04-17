@@ -47,27 +47,33 @@ typedef struct {
 } TexturePalette;
 
 typedef struct {
-    GLushort width;
-    GLushort height;
-    GLuint   color; /* This is the PVR texture format */
-    GLubyte  env;
-    GLushort  mipmap;  /* Bitmask of supplied mipmap levels */
-    GLubyte mipmapCount; /* The number of mipmap levels */
-    GLubyte  uv_clamp;
+    //0
     GLuint   index;
-    GLvoid *data;
-    GLuint dataStride;
-
+    GLuint   color; /* This is the PVR texture format */
+    //8
     GLenum minFilter;
     GLenum magFilter;
-
-    GLboolean isCompressed;
-    GLboolean isPaletted;
-
+    //16
+    GLvoid *data;
     TexturePalette* palette;
-
+    //24
+    GLushort width;
+    GLushort height;
+    //28
+    GLushort  mipmap;  /* Bitmask of supplied mipmap levels */
     /* When using the shared palette, this is the bank (0-3) */
     GLushort shared_bank;
+    //32
+    GLuint dataStride;
+    //36
+    GLubyte mipmap_bias;
+    GLubyte  env;
+    GLubyte mipmapCount; /* The number of mipmap levels */
+    GLubyte  uv_clamp;
+    //40
+    GLboolean isCompressed;
+    GLboolean isPaletted;
+    //44    
 } TextureObject;
 
 typedef struct {
