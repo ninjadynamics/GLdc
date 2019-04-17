@@ -18,62 +18,6 @@ pvr_poly_cxt_t* _glGetPVRContext() {
     return &GL_CONTEXT;
 }
 
-static GLubyte mipmap_bias = 4;
-
-GLAPI void APIENTRY glKOS_INTERNAL_SetMipmapBias(GLubyte level) {
-    switch(level){
-        case 1:
-        mipmap_bias = PVR_MIPBIAS_0_25;
-        break;
-        case 2:
-        mipmap_bias = PVR_MIPBIAS_0_50;
-        break;
-        case 3:
-        mipmap_bias = PVR_MIPBIAS_0_75;
-        break;
-        case 4:
-        mipmap_bias = PVR_MIPBIAS_1_00;
-        break;
-        case 5:
-        mipmap_bias = PVR_MIPBIAS_1_25;
-        break;
-        case 6:
-        mipmap_bias = PVR_MIPBIAS_1_50;
-        break;
-        case 7:
-        mipmap_bias = PVR_MIPBIAS_1_75;
-        break;
-        case 8:
-        mipmap_bias = PVR_MIPBIAS_2_00;
-        break;
-        case 9:
-        mipmap_bias = PVR_MIPBIAS_2_25;
-        break;
-        case 10:
-        mipmap_bias = PVR_MIPBIAS_2_50;
-        break;
-        case 11:
-        mipmap_bias = PVR_MIPBIAS_2_75;
-        break;
-        case 12:
-        mipmap_bias = PVR_MIPBIAS_3_00;
-        break;
-        case 13:
-        mipmap_bias = PVR_MIPBIAS_3_25;
-        break;
-        case 14:
-        mipmap_bias = PVR_MIPBIAS_3_50;
-        break;
-        case 15:
-        mipmap_bias = PVR_MIPBIAS_3_75;
-        break;
-        default:
-        mipmap_bias = PVR_MIPBIAS_1_00;
-        break;
-    }
-}
-
-
 /* We can't just use the GL_CONTEXT for this state as the two
  * GL states are combined, so we store them separately and then
  * calculate the appropriate PVR state from them. */
@@ -205,7 +149,7 @@ GLboolean _glCheckValidEnum(GLint param, GLint* values, const char* func) {
     return GL_FALSE;
 }
 
-static GLboolean TEXTURES_ENABLED [] = {GL_FALSE, GL_FALSE};
+GLboolean TEXTURES_ENABLED [] = {GL_FALSE, GL_FALSE};
 
 void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     const TextureObject *tx1 = (textureUnit == 0) ? _glGetTexture0() : _glGetTexture1();
@@ -275,7 +219,7 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
         context->txr.enable = PVR_TEXTURE_ENABLE;
         context->txr.filter = filter;
         context->txr.mipmap = (enableMipmaps) ? PVR_MIPMAP_ENABLE : PVR_MIPMAP_DISABLE;
-        context->txr.mipmap_bias = mipmap_bias;
+        context->txr.mipmap_bias = tx1->mipmap_bias;
         context->txr.width = tx1->width;
         context->txr.height = tx1->height;
         if(enableMipmaps){
