@@ -402,18 +402,13 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
 void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     TRACE();
 
-    GLint target_values [] = {GL_TEXTURE_ENV, 0};
-    GLint pname_values [] = {GL_TEXTURE_ENV_MODE, 0};
-    GLint param_values [] = {GL_MODULATE, GL_DECAL, GL_REPLACE, 0};
-
     GLubyte failures = 0;
 
+    GLint target_values [] = {GL_TEXTURE_ENV, GL_TEXTURE_FILTER_CONTROL_EXT, 0};
     failures += _glCheckValidEnum(target, target_values, __func__);
-    failures += _glCheckValidEnum(pname, pname_values, __func__);
-    failures += _glCheckValidEnum(param, param_values, __func__);
 
     TextureObject* active = TEXTURE_UNITS[ACTIVE_TEXTURE];
-
+    
     if(!active) {
         return;
     }
@@ -421,20 +416,49 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     if(failures) {
         return;
     }
+    switch(target){
+        case GL_TEXTURE_ENV:
+            {
+            GLint pname_values [] = {GL_TEXTURE_ENV_MODE, 0};
+            GLint param_values [] = {GL_MODULATE, GL_DECAL, GL_REPLACE, 0};
+            failures += _glCheckValidEnum(pname, pname_values, __func__);
+            failures += _glCheckValidEnum(param, param_values, __func__);
+            
+            if(failures) {
+                return;
+            }
 
-    switch(param) {
-    case GL_MODULATE:
-        active->env = PVR_TXRENV_MODULATEALPHA;
-    break;
-    case GL_DECAL:
-        active->env = PVR_TXRENV_DECAL;
-    break;
-    case GL_REPLACE:
-        active->env = PVR_TXRENV_REPLACE;
-    break;
-    default:
-        break;
+            switch(param) {
+                case GL_MODULATE:
+                    active->env = PVR_TXRENV_MODULATEALPHA;
+                break;
+                case GL_DECAL:
+                    active->env = PVR_TXRENV_DECAL;
+                break;
+                case GL_REPLACE:
+                    active->env = PVR_TXRENV_REPLACE;
+                break;
+                default:
+                    break;
+            }
+            }
+            break;
+
+        case GL_TEXTURE_FILTER_CONTROL_EXT:
+            {
+            GLint pname_values [] = {GL_TEXTURE_LOD_BIAS_EXT, 0};
+            failures += _glCheckValidEnum(pname, pname_values, __func__);
+            failures += (param > GL_MAX_TEXTURE_LOD_BIAS_DEFAULT || param < -GL_MAX_TEXTURE_LOD_BIAS_DEFAULT); 
+            if(failures) {
+                return;
+            }
+            active->mipmap_bias = (GL_MAX_TEXTURE_LOD_BIAS_DEFAULT+1)+param; // bring to 1-15 inclusive
+            }
+            break;
+        default:
+           break;
     }
+  
 }
 
 void APIENTRY glCompressedTexImage2DARB(GLenum target,
@@ -916,6 +940,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             active->data = NULL;
             active->mipmap = 0;
             active->mipmapCount = 0;
+            active->mipmap_bias = GL_KOS_INTERNAL_DEFAULT_MIPMAP_LOD_BIAS; // in the scale of -8 - 8 moved to 1-15, -4 = 4 
             active->dataStride = 0;
         }
     }
