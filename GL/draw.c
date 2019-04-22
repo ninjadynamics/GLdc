@@ -349,7 +349,7 @@ static void _fillWithNegZVE(GLuint count, GLfloat* output) {
     }
 }
 
-static void _fillWhiteARGB(GLuint count, GLubyte* output) {
+static inline void _fillWhiteARGB(GLuint count, GLubyte* output) {
     ITERATE(count) {
         output[R8IDX] = 255;
         output[G8IDX] = 255;
@@ -696,11 +696,6 @@ static inline void _readNormalData(const GLuint first, const GLuint count, Verte
 }
 
 static inline void _readDiffuseData(const GLuint first, const GLuint count, Vertex* output) {
-    if((ENABLED_VERTEX_ATTRIBUTES & DIFFUSE_ENABLED_FLAG) != DIFFUSE_ENABLED_FLAG) {
-        /* Just fill the whole thing white if the attribute is disabled */
-        _fillWhiteARGB(count, output[0].bgra);
-        return;
-    }
 
     const GLubyte cstride = (DIFFUSE_POINTER.stride) ? DIFFUSE_POINTER.stride : DIFFUSE_POINTER.size * byte_size(DIFFUSE_POINTER.type);
     const void* cptr = ((GLubyte*) DIFFUSE_POINTER.ptr + (first * cstride));
@@ -765,7 +760,12 @@ static void generate(SubmissionTarget* target, const GLenum mode, const GLsizei 
         _readPositionData(first, count, start);
         profiler_checkpoint("positions");
 
-        _readDiffuseData(first, count, start);
+        if((ENABLED_VERTEX_ATTRIBUTES & DIFFUSE_ENABLED_FLAG) != DIFFUSE_ENABLED_FLAG) {
+        /* Just fill the whole thing white if the attribute is disabled */
+        _fillWhiteARGB(count, start[0].bgra);
+        } else {
+             _readDiffuseData(first, count, start);
+        }
         profiler_checkpoint("diffuse");
 
         if(doTexture) _readUVData(first, count, start);
@@ -925,9 +925,6 @@ static void mat_transform_normal3(const float* xyz, const float* xyzOut, const u
 }
 
 static void light(SubmissionTarget* target) {
-    if(!_glIsLightingEnabled()) {
-        return;
-    }
 
     typedef struct {
         float xyz[3];
@@ -1112,7 +1109,10 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
 
     profiler_checkpoint("generate");
     
-    light(target);
+    extern GLboolean LIGHTING_ENABLED;
+    if(LIGHTING_ENABLED){
+        light(target);
+    }
 
     profiler_checkpoint("light");
 

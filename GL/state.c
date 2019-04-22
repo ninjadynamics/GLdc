@@ -251,7 +251,7 @@ void _glUpdatePVRTextureContext(pvr_poly_cxt_t* context, GLshort textureUnit) {
     }
 }
 
-static GLboolean LIGHTING_ENABLED = GL_FALSE;
+/*static */GLboolean LIGHTING_ENABLED = GL_FALSE;
 static GLboolean LIGHT_ENABLED[MAX_LIGHTS];
 
 GLboolean _glIsLightingEnabled() {
