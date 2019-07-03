@@ -13,7 +13,7 @@ OBJS += containers/stack.o containers/named_array.o containers/aligned_vector.o 
 
 SUBDIRS =
 
-KOS_CFLAGS += -ffast-math -Os -Iinclude -funsafe-math-optimizations -fno-expensive-optimizations
+KOS_CFLAGS += -ffast-math -O3 -funroll-loops -Iinclude -funsafe-math-optimizations -fno-expensive-optimizations
 GCC_FLAGS = -mlra
 
 link:

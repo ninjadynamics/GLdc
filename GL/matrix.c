@@ -50,8 +50,8 @@ void _glInitMatrices() {
     stack_push(&MATRIX_STACKS[1], IDENTITY);
     stack_push(&MATRIX_STACKS[2], IDENTITY);
 
-    memcpy(NORMAL_MATRIX, IDENTITY, sizeof(matrix_t));
-    memcpy(SCREENVIEW_MATRIX, IDENTITY, sizeof(matrix_t));
+    memcpy4(NORMAL_MATRIX, IDENTITY, sizeof(matrix_t));
+    memcpy4(SCREENVIEW_MATRIX, IDENTITY, sizeof(matrix_t));
 
     glDepthRange(0.0f, 1.0f);
     glViewport(0, 0, vid_mode->width, vid_mode->height);
@@ -95,7 +95,7 @@ static void transpose(GLfloat* m) {
 }
 
 static void recalculateNormalMatrix() {
-    memcpy(NORMAL_MATRIX, stack_top(MATRIX_STACKS + (GL_MODELVIEW & 0xF)), sizeof(matrix_t));
+    memcpy4(NORMAL_MATRIX, stack_top(MATRIX_STACKS + (GL_MODELVIEW & 0xF)), sizeof(matrix_t));
     inverse((GLfloat*) NORMAL_MATRIX);
     transpose((GLfloat*) NORMAL_MATRIX);
 }
@@ -225,7 +225,7 @@ void glMultMatrixf(const GLfloat *m) {
         { 0.0f, 0.0f, 0.0f, 1.0f }
     };
 
-    memcpy(TEMP, m, sizeof(matrix_t));
+    memcpy4(TEMP, m, sizeof(matrix_t));
 
     mat_load(stack_top(MATRIX_STACKS + MATRIX_IDX));
     mat_apply(&TEMP);
