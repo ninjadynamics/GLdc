@@ -628,10 +628,10 @@ static inline void _readUVData(const GLuint first, const GLuint count, Vertex* o
 }
 
 static inline void _readSTData(const GLuint first, const GLuint count, VertexExtra* extra) {
-    if((ENABLED_VERTEX_ATTRIBUTES & ST_ENABLED_FLAG) != ST_ENABLED_FLAG) {
+    /*if((ENABLED_VERTEX_ATTRIBUTES & ST_ENABLED_FLAG) != ST_ENABLED_FLAG) {
         _fillZero2fVE(count, extra->st);
         return;
-    }
+    }*/
 
     const GLubyte ststride = (ST_POINTER.stride) ? ST_POINTER.stride : ST_POINTER.size * byte_size(ST_POINTER.type);
     const void* stptr = ((GLubyte*) ST_POINTER.ptr + (first * ststride));
@@ -1057,9 +1057,9 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     //glActiveTextureARB(GL_TEXTURE0);
     //glGetBooleanv(GL_TEXTURE_2D, &doTexture);
 
-    doMultitexture = _GetBooleanTextureEnabled(GL_TEXTURE1);
-    //glActiveTextureARB(GL_TEXTURE1);
-    //glGetBooleanv(GL_TEXTURE_2D, &doMultitexture);
+    //doMultitexture = _GetBooleanTextureEnabled(GL_TEXTURE1);
+    glActiveTextureARB(GL_TEXTURE1);
+    glGetBooleanv(GL_TEXTURE_2D, &doMultitexture);
 
     doLighting = _glIsLightingEnabled();
 
@@ -1177,7 +1177,6 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     }
 
     TextureObject* texture1 = _glGetTexture1();
-
     /* Multitexture implicitly disabled */
     if(!texture1 || ((ENABLED_VERTEX_ATTRIBUTES & ST_ENABLED_FLAG) != ST_ENABLED_FLAG)) {
         /* Multitexture actively disabled */
@@ -1215,12 +1214,12 @@ static void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type
     GLboolean blendEnabled = glIsEnabled(GL_BLEND);
     GLboolean depthEnabled = glIsEnabled(GL_DEPTH_TEST);
 
-    glDepthFunc(GL_EQUAL);
-    glEnable(GL_BLEND);
+    //glDepthFunc(GL_EQUAL);
+    //glEnable(GL_BLEND);
     
-        /* This is modulation, we need to switch depending on the texture env mode! */
-    glBlendFunc(GL_DST_COLOR, GL_ZERO);
-
+    /* This is modulation, we need to switch depending on the texture env mode! */
+    //glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    
     /* Send the buffer again to the transparent list */
     push(mtHeader, mtStart, target->count, _glTransparentPolyList(), 1);
 
