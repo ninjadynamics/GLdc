@@ -178,8 +178,9 @@ gen_sample(zclip_trianglestrip samples/zclip_trianglestrip/main.c)
 gen_sample(scissor samples/scissor/main.c)
 gen_sample(polymark samples/polymark/main.c)
 gen_sample(cubes samples/cubes/main.cpp)
-
 gen_sample(zclip_test tests/zclip/main.cpp)
+
+gen_sample(dreamroq samples/dreamroq/main.c samples/dreamroq/dreamroqlib.c samples/dreamroq/libdcmc/snd_stream.c samples/dreamroq/libdcmc/snddrv.c samples/dreamroq/libdcmc/timer.c)
 
 if(PLATFORM_DREAMCAST)
     gen_sample(trimark samples/trimark/main.c)
