@@ -35,8 +35,11 @@
 /* This seems to be a good number for file seeking on compressed audio */
 #define SEEK_LEN 16384*48
 
+extern struct snddrv snddrv;
+extern struct snddrv_song_info snd_sinfo;
+
 /* SNDDRV (C) AICA Audio Driver */
-typedef struct _snd_drv {
+struct snddrv {
        int rate;
        int channels;
        int pcm_bytes;
@@ -46,15 +49,13 @@ typedef struct _snd_drv {
        volatile int buf_status;
        unsigned int pcm_buffer[65536+16384];
        unsigned int *pcm_ptr;
-} snd_drv;
-
-extern snd_drv snddrv;
+};
 
 #define SNDDRV_FREE_STRUCT() { \
         snddrv.rate = snddrv.channels = snddrv.drv_status = \
         snddrv.dec_status = snddrv.buf_status = 0; }
         
-typedef struct snddrv_song_info {
+struct snddrv_song_info {
      char *artist[128];
      char * title[128];
      char * track[128];
@@ -65,7 +66,7 @@ typedef struct snddrv_song_info {
      volatile float spos;
      int fsize;
      float slen;  
-} snd_sinfo;
+};
 
 #define SNDDRV_FREE_SINFO() { \
         sq_clr( snd_sinfo.artist, 128 ); \
