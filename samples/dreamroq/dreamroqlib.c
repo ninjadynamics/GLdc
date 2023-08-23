@@ -53,7 +53,7 @@ typedef struct
     int mb_count;
 
     int current_frame;
-    unsigned short *frame[2];
+    unsigned short *frame[2] __attribute__(( aligned(32)));
     int stride;
     int texture_height;
 

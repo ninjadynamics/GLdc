@@ -52,6 +52,8 @@
 #include <dc/sound/sound.h>
 #include <stdio.h>
 
+#include "profiler.h"
+
 #ifdef __DREAMCAST__
 extern uint8 romdisk[];
 KOS_INIT_ROMDISK(romdisk);
@@ -305,7 +307,8 @@ static int  renderGLdc_cb(unsigned short *buf, int width, int height, int stride
     /* send the video frame as a texture over to video RAM */
     //pvr_txr_load(buf, textures[current_frame], stride * texture_height * 2);
     glBindTexture(GL_TEXTURE_2D, frameTexture[current_frame]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 512, 512, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, buf);
+    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 512, 512, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, buf);
+    glKosCopyTexture(buf, 512 * 512 * 2);
               
 
     // Calculate the elapsed time since the last frame
@@ -420,6 +423,9 @@ int main()
 {
     int status = 0;
 
+    profiler_init("/pc/out.gmon");
+    profiler_start();
+
     glKosInit();
 
     printf("dreamroq_play(C) Multimedia Mike Melanson & Josh PH3NOM Pearson 2011\n");
@@ -480,6 +486,9 @@ int main()
         pvr_mem_free(textures[1]);
         printf("Freed PVR memory\n");
     }
+
+    profiler_stop();
+    profiler_clean_up();
 
     printf("Exiting main()\n");
     return 0;
