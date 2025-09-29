@@ -113,6 +113,8 @@ GLAPI void APIENTRY glKosShutdown();
  * by default textures use shared palette 0.
 */
 
+GLAPI void APIENTRY glKosCopyTexture(void *src, GLuint bytes);
+
 
 #define GL_SHARED_TEXTURE_PALETTE_0_KOS             0xEEFC
 #define GL_SHARED_TEXTURE_PALETTE_1_KOS             0xEEFD

@@ -215,6 +215,8 @@ gen_sample(zclip_test tests/zclip/main.cpp)
 gen_sample(primitive_modes samples/primitive_modes/main.c)
 gen_sample(tnl_effects samples/tnl_effects/main.c)
 
+gen_sample(dreamroq samples/dreamroq/main.c samples/dreamroq/dreamroqlib.c samples/dreamroq/libdcmc/snd_stream.c samples/dreamroq/libdcmc/snddrv.c samples/dreamroq/libdcmc/timer.c samples/dreamroq/profiler.c)
+
 if(PLATFORM_DREAMCAST)
     gen_sample(trimark samples/trimark/main.c)
     gen_sample(quadmark samples/quadmark/main.c samples/profiler.c)

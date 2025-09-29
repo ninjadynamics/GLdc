@@ -2370,3 +2370,18 @@ GLAPI void APIENTRY glGetTexImage(GLenum tex, GLint lod, GLenum format, GLenum t
     _GL_UNUSED(type);
     _GL_UNUSED(img);
 }
+
+GLAPI void glKosCopyTexture(void* data, GLuint bytes) {
+    TextureObject* active = TEXTURE_UNITS[ACTIVE_TEXTURE];
+    FASTCPY(active->data, data, bytes);
+    
+    /*
+    //Set PVR DMA register
+    *((volatile int *)0xA05F6888) = 1;
+   
+   //Convert read/write area pointer to DMA write only area pointer
+   void *dmaareaptr = ((uintptr_t)active->data & 0xffffff) | 0x11000000;
+   
+   sq_cpy(dmaareaptr, data, bytes);
+   */
+}
