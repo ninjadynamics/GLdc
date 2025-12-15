@@ -6,6 +6,7 @@
 #include <dc/vec3f.h>
 #include <dc/fmath.h>
 #include <dc/matrix3d.h>
+#include <sh4zam/shz_sh4zam.h>
 
 #include "../types.h"
 #include "../private.h"
@@ -22,116 +23,50 @@
 #define GL_FORCE_INLINE static GL_INLINE_DEBUG
 #endif
 
+#define MATH_fsrra          shz_inv_sqrtf
+#define MATH_Fast_Invert    shz_invf
+#define MATH_fsrra_Invert   shz_invf_fsrra
+#define PREFETCH            SHZ_PREFETCH
+#define memcpy_fast         shz_memcpy
+#define FASTCPY             shz_memcpy
+#define MEMCPY4             shz_memcpy4
+#define MEMSET4             memset
 
-// ---- sh4_math.h - SH7091 Math Module ----
-//
-// This file is part of the DreamHAL project, a hardware abstraction library
-// primarily intended for use on the SH7091 found in hardware such as the SEGA
-// Dreamcast game console.
-//
-// This math module is hereby released into the public domain in the hope that it
-// may prove useful. Now go hit 60 fps! :)
-//
-// --Moopthehedgehog
+#define VEC3_NORMALIZE(x_, y_, z_) do { \
+    shz_vec3_t out = shz_vec3_normalize(shz_vec3_init(x_, y_, z_)); \
+    x_ = out.x; \
+    y_ = out.y; \ 
+    z_ = out.z; \
+} while(0)
 
-// 1/sqrt(x)
-GL_FORCE_INLINE float MATH_fsrra(float x)
-{
-  asm volatile ("fsrra %[one_div_sqrt]\n"
-  : [one_div_sqrt] "+f" (x) // outputs, "+" means r/w
-  : // no inputs
-  : // no clobbers
-  );
-
-  return x;
-}
-
-// 1/x = 1 / sqrt(x^2)
-GL_FORCE_INLINE float MATH_Fast_Invert(float x)
-{
-  int neg = x < 0.0f;
-
-  x = MATH_fsrra(x * x);
-
-  if (neg) x = -x;
-  return x;
-}
-// end of ---- sh4_math.h ----
-
-#define PREFETCH(addr) __builtin_prefetch((addr))
-
-GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
-  if(!len) {
-    return dest;
-  }
-
-  const uint8_t *s = (uint8_t *)src;
-  uint8_t *d = (uint8_t *)dest;
-
-  uint32_t diff = (uint32_t)d - (uint32_t)(s + 1); // extra offset because input gets incremented before output is calculated
-  // Underflow would be like adding a negative offset
-
-  // Can use 'd' as a scratch reg now
-  asm volatile (
-    "clrs\n" // Align for parallelism (CO) - SH4a use "stc SR, Rn" instead with a dummy Rn
-  ".align 2\n"
-  "0:\n\t"
-    "dt %[size]\n\t" // (--len) ? 0 -> T : 1 -> T (EX 1)
-    "mov.b @%[in]+, %[scratch]\n\t" // scratch = *(s++) (LS 1/2)
-    "bf.s 0b\n\t" // while(s != nexts) aka while(!T) (BR 1/2)
-    " mov.b %[scratch], @(%[offset], %[in])\n" // *(datatype_of_s*) ((char*)s + diff) = scratch, where src + diff = dest (LS 1)
-    : [in] "+&r" ((uint32_t)s), [scratch] "=&r" ((uint32_t)d), [size] "+&r" (len) // outputs
-    : [offset] "z" (diff) // inputs
-    : "t", "memory" // clobbers
-  );
-
-  return dest;
-}
-
-/* We use sq_cpy if the src and size is properly aligned. We control that the
- * destination is properly aligned so we assert that. */
-#define FASTCPY(dst, src, bytes) \
-    do { \
-        if(bytes % 32 == 0 && ((uintptr_t) src % 4) == 0) { \
-            gl_assert(((uintptr_t) dst) % 32 == 0); \
-            sq_cpy(dst, src, bytes); \
-        } else { \
-            memcpy_fast(dst, src, bytes); \
-        } \
-    } while(0)
-
-
-#define MEMCPY4(dst, src, bytes) memcpy_fast(dst, src, bytes)
-
-#define MEMSET4(dst, v, size) memset((dst), (v), (size))
-
-#define VEC3_NORMALIZE(x, y, z) vec3f_normalize((x), (y), (z))
-#define VEC3_LENGTH(x, y, z, l) vec3f_length((x), (y), (z), (l))
-#define VEC3_DOT(x1, y1, z1, x2, y2, z2, d) vec3f_dot((x1), (y1), (z1), (x2), (y2), (z2), (d))
+#define VEC3_LENGTH(x, y, z, l) ((l) = shz_vec3_magnitude(shz_vec3_init(x, y, z)))
+#define VEC3_DOT(x1, y1, z1, x2, y2, z2, d) ((d) = shz_dot6f(x1, y1, z1, x2, y2, z2))
 
 GL_FORCE_INLINE void UploadMatrix4x4(const Matrix4x4* mat) {
-    mat_load((matrix_t*) mat);
+    shz_xmtrx_load_4x4((const shz_mat4x4_t *)mat);
 }
 
 GL_FORCE_INLINE void DownloadMatrix4x4(Matrix4x4* mat) {
-    mat_store((matrix_t*) mat);
+    shz_xmtrx_store_4x4((shz_mat4x4_t *)mat);
 }
 
 GL_FORCE_INLINE void MultiplyMatrix4x4(const Matrix4x4* mat) {
-    mat_apply((matrix_t*) mat);
+    shz_xmtrx_apply_4x4((const shz_mat4x4_t *)mat);
 }
 
 GL_FORCE_INLINE void TransformVec3(float* x) {
-    mat_trans_single4(x[0], x[1], x[2], x[3]);
+    shz_xmtrx_transform_vec3(shz_vec3_deref(x));
 }
 
 /* Transform a 3-element vector using the stored matrix (w == 1) */
 GL_FORCE_INLINE void TransformVec3NoMod(const float* xIn, float* xOut) {
-    mat_trans_single3_nodiv_nomod(xIn[0], xIn[1], xIn[2], xOut[0], xOut[1], xOut[2]);
+    shz_vec3_deref(xOut) = shz_xmtrx_transform_vec4(shz_vec3_vec4(shz_vec3_deref(xIn), 1.0f)).xyz;
+    //mat_trans_single3_nodiv_nomod(xIn[0], xIn[1], xIn[2], xOut[0], xOut[1], xOut[2]);
 }
 
 /* Transform a 3-element normal using the stored matrix (w == 0)*/
 GL_FORCE_INLINE void TransformNormalNoMod(const float* in, float* out) {
+    shz_vec3_deref(out) = shz_xmtrx_transform_vec3(shz_vec3_deref(in));
     mat_trans_normal3_nomod(in[0], in[1], in[2], out[0], out[1], out[2]);
 }
 
@@ -141,6 +76,11 @@ inline void TransformVec4(float* x) {
 }
 
 GL_FORCE_INLINE void TransformVertex(float x, float y, float z, float w, float* oxyz, float* ow) {
+#if 1
+    shz_vec4_t out = shz_xmtrx_transform_vec4(shz_vec4_init(x, y, z, w));
+    shz_vec3_deref(oxyz) = out.xyz;
+    *ow = out.w;
+#else
     register float __x __asm__("fr4") = x;
     register float __y __asm__("fr5") = y;
     register float __z __asm__("fr6") = z;
@@ -156,6 +96,7 @@ GL_FORCE_INLINE void TransformVertex(float x, float y, float z, float w, float* 
     oxyz[1] = __y;
     oxyz[2] = __z;
     *ow = __w;
+#endif
 }
 
 void InitGPU(_Bool autosort, _Bool fsaa);

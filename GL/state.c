@@ -666,10 +666,10 @@ GLAPI void APIENTRY glClear(GLuint mode) {
 }
 
 GLAPI void APIENTRY glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
-    if(r > 1) r = 1;
-    if(g > 1) g = 1;
-    if(b > 1) b = 1;
-    if(a > 1) a = 1;
+    if(r > 1.0f) r = 1.0f;
+    if(g > 1.0f) g = 1.0f;
+    if(b > 1.0f) b = 1.0f;
+    if(a > 1.0f) a = 1.0f;
 
     /* FIXME: The background-poly doesn't take an alpha value */
     _GL_UNUSED(a);
@@ -976,16 +976,16 @@ void APIENTRY glGetBooleanv(GLenum pname, GLboolean* params) {
 void APIENTRY glGetFloatv(GLenum pname, GLfloat* params) {
     switch(pname) {
         case GL_PROJECTION_MATRIX:
-            MEMCPY4(params, _glGetProjectionMatrix(), sizeof(float) * 16);
+            shz_memcpy4_16(params, _glGetProjectionMatrix());
         break;
         case GL_MODELVIEW_MATRIX:
-            MEMCPY4(params, _glGetModelViewMatrix(), sizeof(float) * 16);
+            shz_memcpy4_16(params, _glGetModelViewMatrix());
         break;
         case GL_TEXTURE_MATRIX:
-            MEMCPY4(params, _glGetTextureMatrix(), sizeof(float) * 16);
+            shz_memcpy4_16(params, _glGetTextureMatrix());
         break;
         case GL_COLOR_MATRIX:
-            MEMCPY4(params, _glGetColorMatrix(), sizeof(float) * 16);
+            shz_memcpy4_16(params, _glGetColorMatrix());
         break;
 
         case GL_POLYGON_OFFSET_FACTOR:

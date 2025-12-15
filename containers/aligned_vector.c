@@ -71,7 +71,7 @@ void aligned_vector_shrink_to_fit(AlignedVector* vector) {
         vector->data = (unsigned char*) memalign(0x20, new_byte_size);
 
         if(original_data) {
-            FASTCPY(vector->data, original_data, new_byte_size);
+            AV_MEMCPY4(vector->data, original_data, new_byte_size);
             free(original_data);
         }
         hdr->capacity = hdr->size;

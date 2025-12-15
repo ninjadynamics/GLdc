@@ -58,7 +58,7 @@ void ShutdownGPU() {
 }
 
 GL_FORCE_INLINE float _glFastInvert(float x) {
-    return (1.0f / __builtin_sqrtf(x * x));
+    return shz_invf_fsrra(x);
 }
 
 GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
@@ -87,6 +87,10 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
 
 static uintptr_t sq_dest_addr = 0;
 
+static inline void _glPushHeaderOrVertexSingle(Vertex* v) {
+    shz_sq_memcpy32_1((void *)sq_dest_addr, v);
+}
+
 static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
     TRACE();
 
@@ -94,13 +98,13 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
     fprintf(stderr, "{%f, %f, %f, %f}, // %x (%x)\n", v->xyz[0], v->xyz[1], v->xyz[2], v->w, v->flags, v);
 #endif
 
-    sq_fast_cpy((void *)sq_dest_addr, v, count);
+    shz_sq_memcpy32((void *)sq_dest_addr, v, count * 32);
 }
 
 static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, Vertex* vout) {
     const float d0 = v1->w + v1->xyz[2];
     const float d1 = v2->w + v2->xyz[2];
-    const float t = (fabsf(d0) * (1.0f / sqrtf((d1 - d0) * (d1 - d0))));
+    const float t = (fabsf(d0) * shz_invf_fsrra(d1 - d0));
     const float invt = 1.0f - t;
 
     vout->xyz[0] = invt * v1->xyz[0] + t * v2->xyz[0];
@@ -146,12 +150,6 @@ void SceneListSubmit(Vertex* vertices, int n) {
         return;
     }
 
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-
-    //Set PVR DMA registers
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
-
 #if CLIP_DEBUG
     fprintf(stderr, "----\n");
 
@@ -176,15 +174,14 @@ void SceneListSubmit(Vertex* vertices, int n) {
     do { queued_vertex = &qv; *queued_vertex = *(v); } while(0)
 
 #define SUBMIT_QUEUED_VERTEX(sflags) \
-    do { if(queued_vertex) { queued_vertex->flags = (sflags); _glPushHeaderOrVertex(queued_vertex, 1); queued_vertex = NULL; } } while(0)
+    do { if(queued_vertex) { queued_vertex->flags = (sflags); _glPushHeaderOrVertexSingle(queued_vertex); queued_vertex = NULL; } } while(0)
 
     int visible_mask = 0;
-    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
 
     Vertex* v0 = vertices;
     for(int i = 0; i < n - 1; ++i, ++v0) {
         if(is_header(v0)) {
-            _glPushHeaderOrVertex(v0, 1);
+            _glPushHeaderOrVertexSingle(v0);
             visible_mask = 0;
             continue;
         }
@@ -260,7 +257,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                _glPushHeaderOrVertexSingle(v0);
 
                 _glPerspectiveDivideVertex(a, 2);
                 _glPushHeaderOrVertex(a, 2);
@@ -268,7 +265,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(b);
             break;
             case SECOND_VISIBLE:
-                memcpy_vertex(c, v1);
+                shz_memswap32_1(c, v1);
 
                 _glClipEdge(v0, v1, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -277,14 +274,14 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 b->flags = v2->flags;
 
                 _glPerspectiveDivideVertex(a, 3);
-                _glPushHeaderOrVertex(a, 1);
+                _glPushHeaderOrVertexSingle(a);
 
-                _glPushHeaderOrVertex(c, 1);
+                _glPushHeaderOrVertexSingle(c);
 
                 QUEUE_VERTEX(b);
             break;
             case THIRD_VISIBLE:
-                memcpy_vertex(c, v2);
+                shz_memswap32_1(c, v2);
 
                 _glClipEdge(v1, v2, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -298,28 +295,28 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(c);
             break;
             case FIRST_AND_SECOND_VISIBLE:
-                memcpy_vertex(c, v1);
+                shz_memswap32_1(c, v1);
 
                 _glClipEdge(v2, v0, b);
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                _glPushHeaderOrVertexSingle(v0);
 
                 _glClipEdge(v1, v2, a);
                 a->flags = v2->flags;
 
                 _glPerspectiveDivideVertex(a, 3);
 
-                _glPushHeaderOrVertex(c, 1);
+                _glPushHeaderOrVertexSingle(c);
 
                 _glPushHeaderOrVertex(b, 2);
 
                 QUEUE_VERTEX(a);
             break;
             case SECOND_AND_THIRD_VISIBLE:
-                memcpy_vertex(c, v1);
-                memcpy_vertex(d, v2);
+                shz_memswap32_1(c, v1);
+                shz_memswap32_1(d, v2);
 
                 _glClipEdge(v0, v1, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -328,16 +325,16 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(a, 4);
-                _glPushHeaderOrVertex(a, 1);
+                _glPushHeaderOrVertexSingle(a);
 
-                _glPushHeaderOrVertex(c, 1);
+                _glPushHeaderOrVertexSingle(c);
 
                 _glPushHeaderOrVertex(b, 2);
 
                 QUEUE_VERTEX(d);
             break;
             case FIRST_AND_THIRD_VISIBLE:
-                memcpy_vertex(c, v2);
+                shz_memswap32_1(c, v2);
                 c->flags = GPU_CMD_VERTEX;
 
                 _glClipEdge(v0, v1, a);
@@ -347,14 +344,14 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                _glPushHeaderOrVertexSingle(v0);
 
                 _glPerspectiveDivideVertex(a, 3);
-                _glPushHeaderOrVertex(a, 1);
+                _glPushHeaderOrVertexSingle(a);
 
-                _glPushHeaderOrVertex(c, 1);
+                _glPushHeaderOrVertexSingle(c);
 
-                _glPushHeaderOrVertex(b, 1);
+                _glPushHeaderOrVertexSingle(b);
                 
                 QUEUE_VERTEX(c);
             break;
@@ -365,11 +362,15 @@ void SceneListSubmit(Vertex* vertices, int n) {
 
     SUBMIT_QUEUED_VERTEX(GPU_CMD_VERTEX_EOL);
 
-    sq_wait();
 }
 
 void SceneBegin() {
-    pvr_wait_ready();
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+
+    //Set PVR DMA registers
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
     pvr_scene_begin();
 }
 

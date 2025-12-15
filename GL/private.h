@@ -225,43 +225,16 @@ GL_FORCE_INLINE float clamp(float d, float min, float max) {
 
 GL_FORCE_INLINE void memcpy_vertex(Vertex *dest, const Vertex *src) {
 #ifdef _arch_dreamcast
-    _Complex float double_scratch;
-
-    asm volatile (
-        "fschg\n\t"
-        "clrs\n\t"
-        ".align 2\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in], %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fschg\n"
-        : [in] "+&r" ((uint32_t) src), [scratch] "=&d" (double_scratch), [out] "+&r" ((uint32_t) dest)
-        :
-        : "t", "memory" // clobbers
-    );
+    shz_memcpy32_1(dest, src);
 #else
     *dest = *src;
 #endif
 }
 
-#define swapVertex(a, b)   \
-do {                 \
-    Vertex __attribute__((aligned(32))) c;   \
-    memcpy_vertex(&c, a); \
-    memcpy_vertex(a, b); \
-    memcpy_vertex(b, &c); \
-} while(0)
+#define swapVertex(a, b) shz_memswap32_1(a, b);
 
 #ifdef _arch_dreamcast
-#define fast_rsqrt(x) frsqrt(x)
+#define fast_rsqrt(x) shz_inv_sqrtf(x)
 #else
 #define fast_rsqrt(x) (1.0f / __builtin_sqrtf(x))
 #endif
