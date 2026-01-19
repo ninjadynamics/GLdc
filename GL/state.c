@@ -163,6 +163,20 @@ GLboolean _glIsScissorTestEnabled() {
     return GPUState.scissor_test_enabled;
 }
 
+
+GLboolean _glIsPolygonOffsetEnabled() {
+    return GPUState.polygon_offset_enabled;
+}
+
+GLfloat _glGetPolygonOffsetFactor() {
+    return GPUState.offset_factor;
+}
+
+GLfloat _glGetPolygonOffsetUnits() {
+    return GPUState.offset_units;
+}
+
+
 void _glRecalcEnabledLights() {
     GPUState.enabled_light_count = 0;
     for(GLubyte i = 0; i < MAX_GLDC_LIGHTS; ++i) {
