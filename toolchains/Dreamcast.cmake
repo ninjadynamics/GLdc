@@ -14,12 +14,12 @@ set(CMAKE_C_COMPILER $ENV{KOS_CC_BASE}/bin/sh-elf-gcc)
 set(CMAKE_CXX_COMPILER $ENV{KOS_CC_BASE}/bin/sh-elf-g++)
 ENDIF()
 
-add_compile_options(-ml -m4-single-only -ffunction-sections -fdata-sections)
+add_compile_options(-ml -ffunction-sections -fdata-sections)
 
 IF($ENV{KOS_SUBARCH} MATCHES naomi)
-set(CMAKE_EXE_LINKER_FLAGS " -ml -m4-single-only -Wl,-Ttext=0x8c020000 -Wl,--gc-sections -T$ENV{KOS_BASE}/utils/ldscripts/shlelf-naomi.xc -nodefaultlibs" CACHE INTERNAL "" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS " -ml -Wl,-Ttext=0x8c020000 -Wl,--gc-sections -T$ENV{KOS_BASE}/utils/ldscripts/shlelf-naomi.xc -nodefaultlibs" CACHE INTERNAL "" FORCE)
 ELSE()
-set(CMAKE_EXE_LINKER_FLAGS " -ml -m4-single-only -Wl,-Ttext=0x8c010000 -Wl,--gc-sections -T$ENV{KOS_BASE}/utils/ldscripts/shlelf.xc -nodefaultlibs" CACHE INTERNAL "" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS " -ml -Wl,-Ttext=0x8c010000 -Wl,--gc-sections -T$ENV{KOS_BASE}/utils/ldscripts/shlelf.xc -nodefaultlibs" CACHE INTERNAL "" FORCE)
 ENDIF()
 
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
