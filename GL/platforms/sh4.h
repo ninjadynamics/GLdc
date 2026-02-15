@@ -35,7 +35,7 @@
 #define VEC3_NORMALIZE(x_, y_, z_) do { \
     shz_vec3_t out = shz_vec3_normalize(shz_vec3_init(x_, y_, z_)); \
     x_ = out.x; \
-    y_ = out.y; \ 
+    y_ = out.y; \
     z_ = out.z; \
 } while(0)
 
@@ -55,7 +55,7 @@ GL_FORCE_INLINE void MultiplyMatrix4x4(const Matrix4x4* mat) {
 }
 
 GL_FORCE_INLINE void TransformVec3(float* x) {
-    shz_xmtrx_transform_vec3(shz_vec3_deref(x));
+    shz_vec4_deref(x) = shz_xmtrx_transform_vec4(shz_vec4_deref(x));
 }
 
 /* Transform a 3-element vector using the stored matrix (w == 1) */
@@ -67,7 +67,7 @@ GL_FORCE_INLINE void TransformVec3NoMod(const float* xIn, float* xOut) {
 /* Transform a 3-element normal using the stored matrix (w == 0)*/
 GL_FORCE_INLINE void TransformNormalNoMod(const float* in, float* out) {
     shz_vec3_deref(out) = shz_xmtrx_transform_vec3(shz_vec3_deref(in));
-    mat_trans_normal3_nomod(in[0], in[1], in[2], out[0], out[1], out[2]);
+    //mat_trans_normal3_nomod(in[0], in[1], in[2], out[0], out[1], out[2]);
 }
 
 /* Transform a 4-element vector in-place by the stored matrix */

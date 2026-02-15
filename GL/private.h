@@ -231,10 +231,20 @@ GL_FORCE_INLINE void memcpy_vertex(Vertex *dest, const Vertex *src) {
 #endif
 }
 
+#ifndef _arch_dreamcast
+#define swapVertex(a, b)   \
+do {                 \
+    Vertex __attribute__((aligned(32))) c;   \
+    memcpy_vertex(&c, a); \
+    memcpy_vertex(a, b); \
+    memcpy_vertex(b, &c); \
+} while(0)
+#else
 #define swapVertex(a, b) shz_memswap32_1(a, b);
+#endif
 
 #ifdef _arch_dreamcast
-#define fast_rsqrt(x) shz_inv_sqrtf(x)
+#define fast_rsqrt(x) shz_inv_sqrtf_fsrra(x)
 #else
 #define fast_rsqrt(x) (1.0f / __builtin_sqrtf(x))
 #endif

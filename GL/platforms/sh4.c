@@ -88,8 +88,9 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
 static uintptr_t sq_dest_addr = 0;
 
 static inline void _glPushHeaderOrVertexSingle(Vertex* v) {
-    shz_sq_memcpy32_1((void *)sq_dest_addr, v);
+    shz_sq_memcpy32_1_xmtrx((void *)sq_dest_addr, v);
 }
+
 
 static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
     TRACE();
@@ -98,7 +99,8 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
     fprintf(stderr, "{%f, %f, %f, %f}, // %x (%x)\n", v->xyz[0], v->xyz[1], v->xyz[2], v->w, v->flags, v);
 #endif
 
-    shz_sq_memcpy32((void *)sq_dest_addr, v, count * 32);
+    //if(!count) return; may not be safe to use with zero yet
+    shz_sq_memcpy32_xmtrx((void *)sq_dest_addr, v, count * 32);
 }
 
 static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, Vertex* vout) {
@@ -265,7 +267,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(b);
             break;
             case SECOND_VISIBLE:
-                shz_memswap32_1(c, v1);
+                memcpy_vertex(c, v1);
 
                 _glClipEdge(v0, v1, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -281,7 +283,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(b);
             break;
             case THIRD_VISIBLE:
-                shz_memswap32_1(c, v2);
+                memcpy_vertex(c, v2);
 
                 _glClipEdge(v1, v2, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -295,7 +297,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(c);
             break;
             case FIRST_AND_SECOND_VISIBLE:
-                shz_memswap32_1(c, v1);
+                memcpy_vertex(c, v1);
 
                 _glClipEdge(v2, v0, b);
                 b->flags = GPU_CMD_VERTEX;
@@ -315,8 +317,8 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(a);
             break;
             case SECOND_AND_THIRD_VISIBLE:
-                shz_memswap32_1(c, v1);
-                shz_memswap32_1(d, v2);
+                memcpy_vertex(c, v1);
+                memcpy_vertex(d, v2);
 
                 _glClipEdge(v0, v1, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -334,7 +336,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 QUEUE_VERTEX(d);
             break;
             case FIRST_AND_THIRD_VISIBLE:
-                shz_memswap32_1(c, v2);
+                memcpy_vertex(c, v2);
                 c->flags = GPU_CMD_VERTEX;
 
                 _glClipEdge(v0, v1, a);
@@ -371,6 +373,7 @@ void SceneBegin() {
     *PVR_LMMODE0 = 0;
     *PVR_LMMODE1 = 0;
     sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+
     pvr_scene_begin();
 }
 
