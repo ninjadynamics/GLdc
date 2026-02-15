@@ -1,7 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if defined(__APPLE__) || defined(__WIN32__)
+#if defined(__APPLE__) || defined(__WIN32__) || defined(__XBOX__)
 /* Linux + Kos define this, OSX does not, so just use malloc there */
 static inline void* memalign(size_t alignment, size_t size) {
     return malloc(size);
