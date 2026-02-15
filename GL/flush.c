@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nWelcome to GLdc! Git revision: %s\n\n", GLDC_VERSION);
+    printf("\nWelcome to GLdc! Git revision: %s [SH4ZAM]\n\n", GLDC_VERSION);
 
     InitGPU(config->autosort_enabled, config->fsaa_enabled);
 

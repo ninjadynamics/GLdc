@@ -28,7 +28,17 @@
 #define MATH_fsrra_Invert   shz_invf_fsrra
 #define PREFETCH            SHZ_PREFETCH
 #define memcpy_fast         shz_memcpy
-#define FASTCPY             shz_memcpy
+/* We use sq_cpy if the src and size is properly aligned. We control that the
+ * destination is properly aligned so we assert that. */
+#define FASTCPY(dst, src, bytes) \
+    do { \
+        if(bytes % 32 == 0 && ((uintptr_t) src % 4) == 0) { \
+            gl_assert(((uintptr_t) dst) % 32 == 0); \
+            sq_cpy(dst, src, bytes); \
+        } else { \
+            memcpy_fast(dst, src, bytes); \
+        } \
+    } while(0)
 #define MEMCPY4             shz_memcpy4
 #define MEMCPY4_16(...)     shz_memcpy4_16(__VA_ARGS__)
 #define MEMSET4             memset
@@ -56,7 +66,9 @@ GL_FORCE_INLINE void MultiplyMatrix4x4(const Matrix4x4* mat) {
 }
 
 GL_FORCE_INLINE void TransformVec3(float* x) {
-    shz_vec4_deref(x) = shz_xmtrx_transform_vec4(shz_vec4_deref(x));
+    shz_vec4_t out = shz_xmtrx_transform_vec4(shz_vec4_deref(x));
+    x[3] = shz_invf_fsrra(out.w);
+    shz_vec3_deref(x) = shz_vec3_scale(out.xyz, x[3]);
 }
 
 /* Transform a 3-element vector using the stored matrix (w == 1) */

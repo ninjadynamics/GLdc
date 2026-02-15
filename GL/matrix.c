@@ -116,9 +116,15 @@ static void transpose(GLfloat* m) {
 /* When projection matrix changes, need to pre-multiply with viewport transform matrix */
 static void UpdateProjectionMatrix() {
     PROJECTION_DIRTY = false;
+#ifdef _arch_dreamcast
+    shz_mat4x4_mult((shz_mat4x4_t*)&PROJECTION_MATRIX,
+                    (const shz_mat4x4_t*)&VIEWPORT_MATRIX,
+                    (const shz_mat4x4_t*)stack_top(MATRIX_STACKS + (GL_PROJECTION & 0xF)));
+#else
     UploadMatrix4x4(&VIEWPORT_MATRIX);
     MultiplyMatrix4x4(stack_top(MATRIX_STACKS + (GL_PROJECTION & 0xF)));
     DownloadMatrix4x4(&PROJECTION_MATRIX);
+#endif
 }
 
 /* When modelview matrix changes, need to re-compute normal matrix */
@@ -173,14 +179,23 @@ void APIENTRY glLoadIdentity() {
 
 void GL_FORCE_INLINE _glMultMatrix(const Matrix4x4* mat) {
     void* top = stack_top(MATRIX_CUR);
-
+#ifdef _arch_dreamcast
+    shz_mat4x4_mult((shz_mat4x4_t*)top, (const shz_mat4x4_t*)top, (const shz_mat4x4_t*)mat);
+#else
     UploadMatrix4x4(top);
     MultiplyMatrix4x4(mat);
     DownloadMatrix4x4(top);
+#endif
     OnMatrixChanged();
 }
 
 void APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z) {
+#ifdef _arch_dreamcast
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    shz_xmtrx_translate(x, y, z);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    OnMatrixChanged();    
+#else
     const Matrix4x4 trn __attribute__((aligned(32))) = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -188,10 +203,17 @@ void APIENTRY glTranslatef(GLfloat x, GLfloat y, GLfloat z) {
         x, y, z, 1.0f
     };
     _glMultMatrix(&trn);
+#endif
 }
 
 
 void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z) {
+#ifdef _arch_dreamcast
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    shz_xmtrx_scale(x, y, z);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    OnMatrixChanged();
+#else
     const Matrix4x4 scale __attribute__((aligned(32))) = {
         x, 0.0f, 0.0f, 0.0f,
         0.0f, y, 0.0f, 0.0f,
@@ -199,9 +221,17 @@ void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z) {
         0.0f, 0.0f, 0.0f, 1.0f
     };
     _glMultMatrix(&scale);
+#endif
 }
 
 void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat  y, GLfloat z) {
+#ifdef _arch_dreamcast
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    shz_xmtrx_rotate(SHZ_DEG_TO_RAD(angle), x, y, z);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    OnMatrixChanged();
+#else
+
     Matrix4x4 rotate __attribute__((aligned(32))) = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -241,14 +271,19 @@ void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat  y, GLfloat z) {
     rotate[M10] = (z * z) * invc + c;
 
     _glMultMatrix(&rotate);
+#endif
 }
 
 /* Load an arbitrary matrix */
 void APIENTRY glLoadMatrixf(const GLfloat *m) {
+#ifdef _arch_dreamcast
+    shz_mat4x4_copy_unaligned((shz_mat4x4_t*)stack_top(MATRIX_CUR), m);
+#else
     static Matrix4x4 __attribute__((aligned(32))) TEMP;
 
     memcpy(TEMP, m, sizeof(float) * 16);
     stack_replace(MATRIX_CUR, TEMP);
+#endif
     OnMatrixChanged();
 }
 
@@ -304,14 +339,24 @@ void APIENTRY glFrustum(GLdouble left, GLdouble right,
 
 /* Multiply the current matrix by an arbitrary matrix */
 void glMultMatrixf(const GLfloat *m) {
+#ifdef _arch_dreamcast
+    shz_mat4x4_mult_unaligned((shz_mat4x4_t*)stack_top(MATRIX_CUR),
+                              (const shz_mat4x4_t*)stack_top(MATRIX_CUR), m);
+    OnMatrixChanged();
+#else
     Matrix4x4 tmp __attribute__((aligned(32)));
     MEMCPY4(tmp, m, sizeof(Matrix4x4));
 
     _glMultMatrix(&tmp);
+#endif
 }
 
 /* Load an arbitrary transposed matrix */
 void glLoadTransposeMatrixf(const GLfloat *m) {
+#ifdef _arch_dreamcast
+    shz_xmtrx_load_transpose_unaligned_4x4(m);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*)stack_top(MATRIX_CUR));
+#else
     /* We store matrices transpose anyway, so m will be
      * transpose compared to all other matrices */
 
@@ -338,11 +383,18 @@ void glLoadTransposeMatrixf(const GLfloat *m) {
     TEMP[M15] = m[15];
 
     stack_replace(MATRIX_CUR, TEMP);
+#endif
     OnMatrixChanged();
 }
 
 /* Multiply the current matrix by an arbitrary transposed matrix */
 void glMultTransposeMatrixf(const GLfloat *m) {
+#ifdef _arch_dreamcast
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    shz_xmtrx_apply_transpose_unaligned_4x4(m);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*)stack_top(MATRIX_CUR));
+    OnMatrixChanged();
+#else
     static Matrix4x4 tmp __attribute__((aligned(32)));
 
     tmp[M0] = m[0];
@@ -366,6 +418,7 @@ void glMultTransposeMatrixf(const GLfloat *m) {
     tmp[M15] = m[15];
 
     _glMultMatrix(&tmp);
+#endif
 }
 
 /* Set the GL viewport */

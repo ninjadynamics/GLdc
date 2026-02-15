@@ -256,7 +256,7 @@ enum GPUCommand {
     GPU_CMD_SPRITE = 0xA0000000
 };
 
-typedef float Matrix4x4[16];
+typedef float __attribute__((aligned(32))) Matrix4x4[16];
 
 void SceneBegin();
 

@@ -127,7 +127,7 @@ if(NOT PLATFORM_DREAMCAST)
         LINK_OPTIONS "-m32"
     )
 else()
-    link_libraries(sh4zam)
+    target_link_libraries(GL PUBLIC sh4zam)
 endif()
 
 link_libraries(m)
