@@ -108,10 +108,16 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
     const float d1 = v2->w + v2->xyz[2];
     const float t = (fabsf(d0) * shz_invf_fsrra(d1 - d0));
     const float invt = 1.0f - t;
-
+#if 1
+    shz_vec3_deref(vout->xyz) = shz_vec2_dot3(shz_vec2_init(invt, t),
+                                              shz_vec2_init(v1->xyz[0], v2->xyz[0]),
+                                              shz_vec2_init(v1->xyz[1], v2->xyz[1]),
+                                              shz_vec2_init(v1->xyz[2], v2->xyz[2]));
+#else
     vout->xyz[0] = invt * v1->xyz[0] + t * v2->xyz[0];
     vout->xyz[1] = invt * v1->xyz[1] + t * v2->xyz[1];
     vout->xyz[2] = invt * v1->xyz[2] + t * v2->xyz[2];
+#endif    
     vout->xyz[2] = (vout->xyz[2] < FLT_EPSILON) ? FLT_EPSILON : vout->xyz[2];
 
     vout->uv[0] = invt * v1->uv[0] + t * v2->uv[0];

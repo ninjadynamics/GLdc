@@ -15,7 +15,7 @@
 #define FASTCPY(dst, src, bytes) memcpy(dst, src, bytes)
 #define MEMCPY(dst, src, bytes) memcpy(dst, src, bytes)
 #define MEMCPY4(dst, src, bytes) memcpy(dst, src, bytes)
-
+#define MEMCPY4_16(dst, src) MEMCPY4(dst, src, 4 * 16)
 #define MEMSET4(dst, v, size) memset((dst), (v), (size))
 
 #define VEC3_NORMALIZE(x, y, z) \

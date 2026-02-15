@@ -30,6 +30,7 @@
 #define memcpy_fast         shz_memcpy
 #define FASTCPY             shz_memcpy
 #define MEMCPY4             shz_memcpy4
+#define MEMCPY4_16(...)     shz_memcpy4_16(__VA_ARGS__)
 #define MEMSET4             memset
 
 #define VEC3_NORMALIZE(x_, y_, z_) do { \

@@ -976,16 +976,16 @@ void APIENTRY glGetBooleanv(GLenum pname, GLboolean* params) {
 void APIENTRY glGetFloatv(GLenum pname, GLfloat* params) {
     switch(pname) {
         case GL_PROJECTION_MATRIX:
-            shz_memcpy4_16(params, _glGetProjectionMatrix());
+            MEMCPY4_16(params, _glGetProjectionMatrix());
         break;
         case GL_MODELVIEW_MATRIX:
-            shz_memcpy4_16(params, _glGetModelViewMatrix());
+            MEMCPY4_16(params, _glGetModelViewMatrix());
         break;
         case GL_TEXTURE_MATRIX:
-            shz_memcpy4_16(params, _glGetTextureMatrix());
+            MEMCPY4_16(params, _glGetTextureMatrix());
         break;
         case GL_COLOR_MATRIX:
-            shz_memcpy4_16(params, _glGetColorMatrix());
+            MEMCPY4_16(params, _glGetColorMatrix());
         break;
 
         case GL_POLYGON_OFFSET_FACTOR:
