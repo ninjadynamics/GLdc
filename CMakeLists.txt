@@ -25,7 +25,7 @@ message("\nCompiling using backend: ${BACKEND}\n")
 string(TOUPPER ${BACKEND} BACKEND_UPPER)
 add_definitions(-DBACKEND_${BACKEND_UPPER})
 
-set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 14)
 
 include_directories(include)
