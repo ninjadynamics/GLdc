@@ -28,6 +28,7 @@ static struct {
     GLboolean scissor_test_enabled;
     GLboolean fog_enabled;
     GLboolean depth_mask_enabled;
+    GLboolean secondary_color_enabled;
 
     struct {
         GLint x;
@@ -250,12 +251,12 @@ GLenum _glGetGpuBlendDstFactor() {
         return GPU_BLEND_SRCALPHA;
     case GL_SRC_COLOR:
         // actually 'src' color in PVR2 when used as dst blend factor
-        return GPU_BLEND_DESTCOLOR; 
+        return GPU_BLEND_DESTCOLOR;
     case GL_DST_ALPHA:
         return GPU_BLEND_DESTALPHA;
     case GL_ONE_MINUS_SRC_COLOR:
         // actually 'src' color in PVR2 when used as dst blend factor
-        return GPU_BLEND_INVDESTCOLOR; 
+        return GPU_BLEND_INVDESTCOLOR;
     case GL_ONE_MINUS_SRC_ALPHA:
         return GPU_BLEND_INVSRCALPHA;
     case GL_ONE_MINUS_DST_ALPHA:
@@ -440,6 +441,12 @@ void _glInitContext() {
 
 GLAPI void APIENTRY glEnable(GLenum cap) {
     switch(cap) {
+        case GL_COLOR_SUM:
+            if(GPUState.secondary_color_enabled != GL_TRUE) {
+                GPUState.secondary_color_enabled = GL_TRUE;
+                GPUState.is_dirty = GL_TRUE;
+            }
+        break;
         case GL_TEXTURE_2D:
             if(TEXTURES_ENABLED[_glGetActiveTexture()] != GL_TRUE) {
                 TEXTURES_ENABLED[_glGetActiveTexture()] = GL_TRUE;
@@ -551,6 +558,12 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
 
 GLAPI void APIENTRY glDisable(GLenum cap) {
     switch(cap) {
+        case GL_COLOR_SUM:
+            if(GPUState.secondary_color_enabled != GL_FALSE) {
+                GPUState.secondary_color_enabled = GL_FALSE;
+                GPUState.is_dirty = GL_TRUE;
+            }
+        break;
         case GL_TEXTURE_2D:
             if(TEXTURES_ENABLED[_glGetActiveTexture()] != GL_FALSE) {
                 TEXTURES_ENABLED[_glGetActiveTexture()] = GL_FALSE;
@@ -956,7 +969,7 @@ void APIENTRY glGetBooleanv(GLenum pname, GLboolean* params) {
         *params = (enabledAttrs & VERTEX_ENABLED_FLAG) == VERTEX_ENABLED_FLAG;
     break;
     case GL_COLOR_ARRAY:
-        *params = (enabledAttrs & DIFFUSE_ENABLED_FLAG) == DIFFUSE_ENABLED_FLAG;
+        *params = (enabledAttrs & COLOR_ENABLED_FLAG) == COLOR_ENABLED_FLAG;
     break;
     case GL_NORMAL_ARRAY:
         *params = (enabledAttrs & NORMAL_ENABLED_FLAG) == NORMAL_ENABLED_FLAG;

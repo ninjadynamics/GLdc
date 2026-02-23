@@ -43,8 +43,9 @@ extern void* memcpy4 (void *dest, const void *src, size_t count);
 #define VERTEX_ENABLED_FLAG     (1 << 0)
 #define UV_ENABLED_FLAG         (1 << 1)
 #define ST_ENABLED_FLAG         (1 << 2)
-#define DIFFUSE_ENABLED_FLAG    (1 << 3)
+#define COLOR_ENABLED_FLAG    (1 << 3)
 #define NORMAL_ENABLED_FLAG     (1 << 4)
+#define S_COLOR_ENABLED_FLAG    (1 << 5)
 
 #define MAX_TEXTURE_SIZE 1024
 
@@ -282,9 +283,6 @@ typedef struct __attribute__((aligned(32))) {
     uint32_t header_offset; // The offset of the header in the output list
     uint32_t start_offset; // The offset into the output list
     uint32_t count; // The number of vertices in this output
-
-    /* Pointer to count * VertexExtra; */
-    AlignedVector* extras;
 } SubmissionTarget;
 
 Vertex* _glSubmissionTargetStart(SubmissionTarget* target);
@@ -299,10 +297,10 @@ typedef enum {
 } ClipResult;
 
 
-#define A8IDX 3
-#define R8IDX 2
-#define G8IDX 1
-#define B8IDX 0
+#define A8IDX 0
+#define R8IDX 1
+#define G8IDX 2
+#define B8IDX 3
 
 struct SubmissionTarget;
 
@@ -354,9 +352,10 @@ typedef void (*ReadAttributeFunc)(const GLubyte*, GLubyte*);
 typedef struct {
     AttribPointer vertex; // 16
     AttribPointer colour; // 32
-    AttribPointer uv; // 48
-    AttribPointer st; // 64
-    AttribPointer normal; // 80
+    AttribPointer s_color; // 48
+    AttribPointer uv; // 64
+    AttribPointer st; // 80
+    AttribPointer normal; // 96
 
     GLuint enabled; // list of currently enabled/used attributes
     GLuint dirty;   // list of attributes that need state recalculating
@@ -364,6 +363,7 @@ typedef struct {
 
     ReadAttributeFunc vertex_func;
     ReadAttributeFunc colour_func;
+    ReadAttributeFunc s_color_func;
     ReadAttributeFunc uv_func;
     ReadAttributeFunc st_func;
     ReadAttributeFunc normal_func;
@@ -448,7 +448,7 @@ GL_FORCE_INLINE GLboolean _glCheckImmediateModeInactive(const char* func) {
     return GL_FALSE;
 }
 
-extern void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t count);
+extern void _glPerformLighting(Vertex* vertices, const uint32_t count);
 
 unsigned char _glIsClippingEnabled();
 void _glEnableClipping(unsigned char v);
@@ -493,6 +493,12 @@ void _glTnlApplyEffects(SubmissionTarget* target);
 void _glTnlUpdateLighting(void);
 void _glTnlUpdateTextureMatrix(void);
 void _glTnlUpdateColorMatrix(void);
+
+uint32_t _glPackNormal(const GLfloat* nxyz);
+void _glUnpackNormal(uint32_t packed, float* nxyz);
+
+half_float_t _glPackHalfFloat(float f);
+float _glUnpackHalfFloat(half_float_t h);
 
 /* This is from KOS pvr_buffers.c */
 #define PVR_MIN_Z 0.0001f

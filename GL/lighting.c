@@ -355,52 +355,33 @@ void APIENTRY glColorMaterial(GLenum face, GLenum mode) {
     _glSetColorMaterialMode(mode);
 }
 
-GL_FORCE_INLINE void bgra_to_float(const uint8_t* input, GLfloat* output) {
-    static const float scale = 1.0f / 255.0f;
-
-    output[0] = ((float) input[R8IDX]) * scale;
-    output[1] = ((float) input[G8IDX]) * scale;
-    output[2] = ((float) input[B8IDX]) * scale;
-    output[3] = ((float) input[A8IDX]) * scale;
-}
-
-void _glUpdateColourMaterialA(const GLubyte* argb) {
+void _glUpdateColourMaterialA(const float* colour) {
     Material* material = _glActiveMaterial();
-
-    float colour[4];
-    bgra_to_float(argb, colour);
     vec4cpy(material->ambient, colour);
     GLenum mask = _glColorMaterialMode();
     _glPrecalcLightingValues(mask);
 }
 
-void _glUpdateColourMaterialD(const GLubyte* argb) {
+void _glUpdateColourMaterialD(const float* colour) {
     Material* material = _glActiveMaterial();
 
-    float colour[4];
-    bgra_to_float(argb, colour);
     vec4cpy(material->diffuse, colour);
 
     GLenum mask = _glColorMaterialMode();
     _glPrecalcLightingValues(mask);
 }
 
-void _glUpdateColourMaterialE(const GLubyte* argb) {
+void _glUpdateColourMaterialE(const float* colour) {
     Material* material = _glActiveMaterial();
-
-    float colour[4];
-    bgra_to_float(argb, colour);
     vec4cpy(material->emissive, colour);
 
     GLenum mask = _glColorMaterialMode();
     _glPrecalcLightingValues(mask);
 }
 
-void _glUpdateColourMaterialAD(const GLubyte* argb) {
+void _glUpdateColourMaterialAD(const float* colour) {
     Material* material = _glActiveMaterial();
 
-    float colour[4];
-    bgra_to_float(argb, colour);
     vec4cpy(material->ambient, colour);
     vec4cpy(material->diffuse, colour);
 
@@ -499,17 +480,16 @@ GL_FORCE_INLINE void _glLightVertexPoint(
 #undef _PROCESS_COMPONENT
 }
 
-void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t count) {
+void _glPerformLighting(Vertex* vertices, const uint32_t count) {
     GLubyte i;
     GLuint j;
 
     Material* material = _glActiveMaterial();
 
     Vertex* vertex = vertices;
-    VertexExtra* data = extra;
 
     /* Calculate the colour material function once */
-    void (*updateColourMaterial)(const GLubyte*) = NULL;
+    void (*updateColourMaterial)(const GLfloat*) = NULL;
 
     if(_glIsColorMaterialEnabled()) {
         GLenum mode = _glColorMaterialMode();
@@ -533,10 +513,10 @@ void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t cou
         return;
     }
 
-    for(j = 0; j < count; ++j, ++vertex, ++data) {
+    for(j = 0; j < count; ++j, ++vertex) {
         /* Calculate the ambient lighting and set up colour material */
         if(updateColourMaterial) {
-            updateColourMaterial(vertex->bgra);
+            updateColourMaterial(vertex->argb);
         }
 
         /* Copy the base colour across */
@@ -549,9 +529,12 @@ void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t cou
         float Vz = -vertex->xyz[2];
         VEC3_NORMALIZE(Vx, Vy, Vz);
 
-        const float Nx = data->nxyz[0];
-        const float Ny = data->nxyz[1];
-        const float Nz = data->nxyz[2];
+        float nxyz[3];
+        _glUnpackNormal(vertex->nxyz, nxyz);
+
+        const float Nx = nxyz[0];
+        const float Ny = nxyz[1];
+        const float Nz = nxyz[2];
 
         for(i = 0; i < MAX_GLDC_LIGHTS; ++i) {
             LightSource* light = _glLightAt(i);
@@ -631,10 +614,10 @@ void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t cou
             }
         }
 
-        vertex->bgra[R8IDX] = clamp(finalColour[0] * 255.0f, 0, 255);
-        vertex->bgra[G8IDX] = clamp(finalColour[1] * 255.0f, 0, 255);
-        vertex->bgra[B8IDX] = clamp(finalColour[2] * 255.0f, 0, 255);
-        vertex->bgra[A8IDX] = clamp(finalColour[3] * 255.0f, 0, 255);
+        vertex->argb[R8IDX] = finalColour[0];
+        vertex->argb[G8IDX] = finalColour[1];
+        vertex->argb[B8IDX] = finalColour[2];
+        vertex->argb[A8IDX] = finalColour[3];
     }
 }
 

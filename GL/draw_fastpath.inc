@@ -20,7 +20,6 @@ MAKE_FUNC(POLYMODE)
     GLuint stride;
     const GLubyte* ptr;
     Vertex* it;
-    VertexExtra* ve;
 
 
     for(min = 0; min < count; min += BATCH_SIZE) {
@@ -48,22 +47,25 @@ MAKE_FUNC(POLYMODE)
         }
 
         stride = ATTRIB_LIST.colour.stride;
-        ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
+        ptr = (ATTRIB_LIST.enabled & COLOR_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
         it = (Vertex*) start;
 
         if(ptr) {
             PREFETCH(ptr);
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
                 PREFETCH(ptr + stride);
-                it->bgra[0] = ptr[0];
-                it->bgra[1] = ptr[1];
-                it->bgra[2] = ptr[2];
-                it->bgra[3] = ptr[3];
+                it->argb[0] = ptr[0];
+                it->argb[1] = ptr[1];
+                it->argb[2] = ptr[2];
+                it->argb[3] = ptr[3];
                 ptr += stride;
             }
         } else {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                *((uint32_t*) it->bgra) = ~0;
+                it->argb[0] = 0.0f;
+                it->argb[1] = 0.0f;
+                it->argb[2] = 0.0f;
+                it->argb[3] = 0.0f;
             }
         }
 
@@ -79,47 +81,42 @@ MAKE_FUNC(POLYMODE)
             ptr += stride;
         }
 
-        start = aligned_vector_at(target->extras, min);
-
         stride = ATTRIB_LIST.st.stride;
         ptr = (ATTRIB_LIST.enabled & ST_ENABLED_FLAG) ? ATTRIB_LIST.st.ptr + (offset * stride) : NULL;
-        ve = (VertexExtra*) start;
+        it = (Vertex*) start;
 
         if(ptr) {
             PREFETCH(ptr);
 
-            for(int_fast32_t i = 0; i < loop; ++i, ++ve) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
                 PREFETCH(ptr + stride);
-                ve->st[0] = ((float*) ptr)[0];
-                ve->st[1] = ((float*) ptr)[1];
+                it->st[0] = pack_half_float(((float*) ptr)[0]);
+                it->st[1] = pack_half_float(((float*) ptr)[1]);
                 ptr += stride;
             }
         } else {
-            for(int_fast32_t i = 0; i < loop; ++i, ++ve) {
-                ve->st[0] = 0;
-                ve->st[1] = 0;
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->st[0] = pack_half_float(0.0f);
+                it->st[1] = pack_half_float(0.0f);
             }
         }
 
         stride = ATTRIB_LIST.normal.stride;
         ptr = (ATTRIB_LIST.enabled & NORMAL_ENABLED_FLAG) ? ATTRIB_LIST.normal.ptr + (offset * stride) : NULL;
-        ve = (VertexExtra*) start;
+        it = (Vertex*) start;
 
         if(ptr) {
             PREFETCH(ptr);
 
-            for(int_fast32_t i = 0; i < loop; ++i, ++ve) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
                 PREFETCH(ptr + stride);
-                ve->nxyz[0] = ((float*) ptr)[0];
-                ve->nxyz[1] = ((float*) ptr)[1];
-                ve->nxyz[2] = ((float*) ptr)[2];
+                it->nxyz = _glPackNormal((float*) ptr);
                 ptr += stride;
             }
         } else {
-            for(int_fast32_t i = 0; i < loop; ++i, ++ve) {
-                ve->nxyz[0] = 0;
-                ve->nxyz[1] = 0;
-                ve->nxyz[2] = 0;
+            float nxyz[3] = {0.0f, 0.0f, 1.0f};
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->nxyz = _glPackNormal(nxyz);
             }
         }
     }

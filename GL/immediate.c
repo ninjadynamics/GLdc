@@ -16,7 +16,7 @@ GLboolean IMMEDIATE_MODE_ACTIVE = GL_FALSE;
 static GLenum ACTIVE_POLYGON_MODE = GL_TRIANGLES;
 
 static GLfloat __attribute__((aligned(32))) NORMAL[3] = {0.0f, 0.0f, 1.0f};
-static GLubyte __attribute__((aligned(32))) COLOR[4] = {255, 255, 255, 255}; /* ARGB order for speed */
+static GLfloat __attribute__((aligned(32))) COLOR[4] = {1.0f, 1.0f, 1.0f, 1.0f}; /* ARGB order for speed */
 static GLfloat __attribute__((aligned(32))) UV_COORD[2] = {0.0f, 0.0f};
 static GLfloat __attribute__((aligned(32))) ST_COORD[2] = {0.0f, 0.0f};
 
@@ -65,11 +65,11 @@ void _glInitImmediateMode(GLuint initial_size) {
     IM_ATTRIBS.st.size = 2;
 
     IM_ATTRIBS.colour.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 7);
-    IM_ATTRIBS.colour.size = GL_BGRA;  /* Flipped color order */
-    IM_ATTRIBS.colour.type = GL_UNSIGNED_BYTE;
+    IM_ATTRIBS.colour.size = 4;
+    IM_ATTRIBS.colour.type = GL_FLOAT;
     IM_ATTRIBS.colour.stride = sizeof(IMVertex);
 
-    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 7) + sizeof(uint32_t);
+    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 11);
     IM_ATTRIBS.normal.stride = sizeof(IMVertex);
     IM_ATTRIBS.normal.type = GL_FLOAT;
     IM_ATTRIBS.normal.size = 3;
@@ -86,16 +86,7 @@ void APIENTRY glBegin(GLenum mode) {
 }
 
 void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
-
-    COLOR[A8IDX] = (GLubyte)(a * 255.0f);
-    COLOR[R8IDX] = (GLubyte)(r * 255.0f);
-    COLOR[G8IDX] = (GLubyte)(g * 255.0f);
-    COLOR[B8IDX] = (GLubyte)(b * 255.0f);
-}
-
-void APIENTRY glColor4ub(GLubyte r, GLubyte  g, GLubyte b, GLubyte a) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
     COLOR[A8IDX] = a;
     COLOR[R8IDX] = r;
@@ -103,58 +94,74 @@ void APIENTRY glColor4ub(GLubyte r, GLubyte  g, GLubyte b, GLubyte a) {
     COLOR[B8IDX] = b;
 }
 
-void APIENTRY glColor4ubv(const GLubyte *v) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+void APIENTRY glColor4ub(GLubyte r, GLubyte  g, GLubyte b, GLubyte a) {
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[A8IDX] = v[3];
-    COLOR[R8IDX] = v[0];
-    COLOR[G8IDX] = v[1];
-    COLOR[B8IDX] = v[2];
+    const float m = 1.0f / 255.0f;
+    COLOR[A8IDX] = ((float)a) * m;
+    COLOR[R8IDX] = ((float)r) * m;
+    COLOR[G8IDX] = ((float)g) * m;
+    COLOR[B8IDX] = ((float)b) * m;
+}
+
+void APIENTRY glColor4ubv(const GLubyte *v) {
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
+
+    const float m = 1.0f / 255.0f;
+
+    COLOR[A8IDX] = ((float) v[3]) * m;
+    COLOR[R8IDX] = ((float) v[0]) * m;
+    COLOR[G8IDX] = ((float) v[1]) * m;
+    COLOR[B8IDX] = ((float) v[2]) * m;
 }
 
 void APIENTRY glColor4fv(const GLfloat* v) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[B8IDX] = (GLubyte)(v[2] * 255);
-    COLOR[G8IDX] = (GLubyte)(v[1] * 255);
-    COLOR[R8IDX] = (GLubyte)(v[0] * 255);
-    COLOR[A8IDX] = (GLubyte)(v[3] * 255);
+    COLOR[B8IDX] = v[2];
+    COLOR[G8IDX] = v[1];
+    COLOR[R8IDX] = v[0];
+    COLOR[A8IDX] = v[3];
 }
 
 void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[B8IDX] = (GLubyte)(b * 255.0f);
-    COLOR[G8IDX] = (GLubyte)(g * 255.0f);
-    COLOR[R8IDX] = (GLubyte)(r * 255.0f);
-    COLOR[A8IDX] = 255;
+    COLOR[B8IDX] = b;
+    COLOR[G8IDX] = g;
+    COLOR[R8IDX] = r;
+    COLOR[A8IDX] = 1.0f;
 }
 
 void APIENTRY glColor3ub(GLubyte red, GLubyte green, GLubyte blue) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[A8IDX] = 255;
-    COLOR[R8IDX] = red;
-    COLOR[G8IDX] = green;
-    COLOR[B8IDX] = blue;
+    const float m = 1.0f / 255.0f;
+
+    COLOR[A8IDX] = 1.0f;
+    COLOR[R8IDX] = ((float) red) * m;
+    COLOR[G8IDX] = ((float) green) * m;
+    COLOR[B8IDX] = ((float) blue) * m;
 }
 
 void APIENTRY glColor3ubv(const GLubyte *v) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[A8IDX] = 255;
-    COLOR[R8IDX] = v[0];
-    COLOR[G8IDX] = v[1];
-    COLOR[B8IDX] = v[2];
+    const float m = 1.0f / 255.0f;
+
+    COLOR[A8IDX] = 1.0f;
+    COLOR[R8IDX] = ((float) v[0]) * m;
+    COLOR[G8IDX] = ((float) v[1]) * m;
+    COLOR[B8IDX] = ((float) v[2]) * m;
 }
 
 void APIENTRY glColor3fv(const GLfloat* v) {
-    IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
+    IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[A8IDX] = 255;
-    COLOR[R8IDX] = (GLubyte)(v[0] * 255);
-    COLOR[G8IDX] = (GLubyte)(v[1] * 255);
-    COLOR[B8IDX] = (GLubyte)(v[2] * 255);
+    COLOR[A8IDX] = 1.0f;
+    COLOR[R8IDX] = v[0];
+    COLOR[G8IDX] = v[1];
+    COLOR[B8IDX] = v[2];
 }
 
 typedef union punned {
@@ -259,12 +266,12 @@ void APIENTRY glEnd() {
     IM_ATTRIBS.uv.ptr     = IM_ATTRIBS.vertex.ptr + 12;
     IM_ATTRIBS.st.ptr     = IM_ATTRIBS.uv.ptr + 8;
     IM_ATTRIBS.colour.ptr = IM_ATTRIBS.st.ptr + 8;
-    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.colour.ptr + 4;
+    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.colour.ptr + 16;
 
     /* Redirect attrib state */
     AttribPointerList stashed_state = ATTRIB_LIST;
     ATTRIB_LIST = IM_ATTRIBS;
-    
+
     glDrawArrays(ACTIVE_POLYGON_MODE, 0, aligned_vector_header(&VERTICES)->size);
 
     ATTRIB_LIST = stashed_state;
