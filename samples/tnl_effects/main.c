@@ -54,7 +54,7 @@ static int sample_should_exit() {
 int main(int argc, char *argv[]) {
     sample_init();
 	glClearColor(0.2f, 0.2f, 0.2f, 1);
-	glViewport(0, 0, 640, 480);    
+	glViewport(0, 0, 640, 480);
     glEnable(GL_TEXTURE_2D);
 
     GLint tex;
