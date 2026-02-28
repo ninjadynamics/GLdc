@@ -36,11 +36,11 @@ typedef struct __attribute__((aligned(32))) {
     GLfloat v;
     GLfloat s;
     GLfloat t;
-    GLubyte bgra[4];
+    GLfloat argb[4];
     GLfloat nx;
     GLfloat ny;
     GLfloat nz;
-    GLuint padding[5];
+    GLuint padding[2];
 } IMVertex;
 
 
@@ -54,22 +54,22 @@ void _glInitImmediateMode(GLuint initial_size) {
     IM_ATTRIBS.vertex.type = GL_FLOAT;
     IM_ATTRIBS.vertex.stride = sizeof(IMVertex);
 
-    IM_ATTRIBS.uv.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 3);
+    IM_ATTRIBS.uv.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, u);
     IM_ATTRIBS.uv.stride = sizeof(IMVertex);
     IM_ATTRIBS.uv.type = GL_FLOAT;
     IM_ATTRIBS.uv.size = 2;
 
-    IM_ATTRIBS.st.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 5);
+    IM_ATTRIBS.st.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, s);
     IM_ATTRIBS.st.stride = sizeof(IMVertex);
     IM_ATTRIBS.st.type = GL_FLOAT;
     IM_ATTRIBS.st.size = 2;
 
-    IM_ATTRIBS.colour.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 7);
+    IM_ATTRIBS.colour.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, argb);
     IM_ATTRIBS.colour.size = 4;
     IM_ATTRIBS.colour.type = GL_FLOAT;
     IM_ATTRIBS.colour.stride = sizeof(IMVertex);
 
-    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.vertex.ptr + (sizeof(GLfloat) * 11);
+    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, nx);
     IM_ATTRIBS.normal.stride = sizeof(IMVertex);
     IM_ATTRIBS.normal.type = GL_FLOAT;
     IM_ATTRIBS.normal.size = 3;
@@ -109,18 +109,18 @@ void APIENTRY glColor4ubv(const GLubyte *v) {
 
     const float m = 1.0f / 255.0f;
 
-    COLOR[A8IDX] = ((float) v[3]) * m;
     COLOR[R8IDX] = ((float) v[0]) * m;
     COLOR[G8IDX] = ((float) v[1]) * m;
     COLOR[B8IDX] = ((float) v[2]) * m;
+    COLOR[A8IDX] = ((float) v[3]) * m;
 }
 
 void APIENTRY glColor4fv(const GLfloat* v) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
-    COLOR[B8IDX] = v[2];
-    COLOR[G8IDX] = v[1];
     COLOR[R8IDX] = v[0];
+    COLOR[G8IDX] = v[1];
+    COLOR[B8IDX] = v[2];
     COLOR[A8IDX] = v[3];
 }
 
@@ -185,7 +185,10 @@ void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z) {
     *(dest.flt++) = UV_COORD[1];
     *(dest.flt++) = ST_COORD[0];
     *(dest.flt++) = ST_COORD[1];
-    *(dest.u32++) = *((uint32_t*)(void*) COLOR);
+    *(dest.flt++) = COLOR[0];
+    *(dest.flt++) = COLOR[1];
+    *(dest.flt++) = COLOR[2];
+    *(dest.flt++) = COLOR[3];
     *(dest.flt++) = NORMAL[0];
     *(dest.flt++) = NORMAL[1];
     *(dest.flt++) = NORMAL[2];
@@ -263,10 +266,10 @@ void APIENTRY glEnd() {
 
     /* Resizing could've invalidated the pointers */
     IM_ATTRIBS.vertex.ptr = VERTICES.data;
-    IM_ATTRIBS.uv.ptr     = IM_ATTRIBS.vertex.ptr + 12;
-    IM_ATTRIBS.st.ptr     = IM_ATTRIBS.uv.ptr + 8;
-    IM_ATTRIBS.colour.ptr = IM_ATTRIBS.st.ptr + 8;
-    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.colour.ptr + 16;
+    IM_ATTRIBS.uv.ptr     = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, u);
+    IM_ATTRIBS.st.ptr     = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, s);
+    IM_ATTRIBS.colour.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, argb);
+    IM_ATTRIBS.normal.ptr = IM_ATTRIBS.vertex.ptr + offsetof(IMVertex, nx);
 
     /* Redirect attrib state */
     AttribPointerList stashed_state = ATTRIB_LIST;

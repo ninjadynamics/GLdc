@@ -245,6 +245,7 @@ typedef struct {
     uint32_t d2;
     uint32_t d3;
     uint32_t d4;
+    uint8_t padding[32];
 } PolyHeader;
 
 enum GPUCommand {

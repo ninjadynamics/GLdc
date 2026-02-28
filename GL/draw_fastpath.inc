@@ -54,18 +54,19 @@ MAKE_FUNC(POLYMODE)
             PREFETCH(ptr);
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
                 PREFETCH(ptr + stride);
-                it->argb[0] = ptr[0];
-                it->argb[1] = ptr[1];
-                it->argb[2] = ptr[2];
-                it->argb[3] = ptr[3];
+                it->argb[0] = ((float*) ptr)[0];
+                it->argb[1] = ((float*) ptr)[1];
+                it->argb[2] = ((float*) ptr)[2];
+                it->argb[3] = ((float*) ptr)[3];
+
                 ptr += stride;
             }
         } else {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->argb[0] = 0.0f;
-                it->argb[1] = 0.0f;
-                it->argb[2] = 0.0f;
-                it->argb[3] = 0.0f;
+                it->argb[0] = 1.0f;
+                it->argb[1] = 1.0f;
+                it->argb[2] = 1.0f;
+                it->argb[3] = 1.0f;
             }
         }
 
@@ -90,14 +91,14 @@ MAKE_FUNC(POLYMODE)
 
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
                 PREFETCH(ptr + stride);
-                it->st[0] = pack_half_float(((float*) ptr)[0]);
-                it->st[1] = pack_half_float(((float*) ptr)[1]);
+                it->st[0] = _glPackHalfFloat(((float*) ptr)[0]);
+                it->st[1] = _glPackHalfFloat(((float*) ptr)[1]);
                 ptr += stride;
             }
         } else {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->st[0] = pack_half_float(0.0f);
-                it->st[1] = pack_half_float(0.0f);
+                it->st[0] = _glPackHalfFloat(0.0f);
+                it->st[1] = _glPackHalfFloat(0.0f);
             }
         }
 

@@ -24,6 +24,6 @@ typedef struct {
     float w;
     uint32_t nxyz;
     float argb[4];
-    float offset_rgb[3];
     half_float_t st[2];
+    float offset_rgb[3];
 } __attribute__ ((aligned (32))) Vertex;

@@ -104,7 +104,6 @@ static inline void _glPushVertex(Vertex* v, size_t count)  {
 #if CLIP_DEBUG
     fprintf(stderr, "{%f, %f, %f, %f}, // %x (%x)\n", v->xyz[0], v->xyz[1], v->xyz[2], v->w, v->flags, v);
 #endif
-
     sq_fast_cpy((void *)sq_dest_addr, v, count * 2);
 }
 

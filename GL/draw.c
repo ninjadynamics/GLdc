@@ -314,8 +314,8 @@ static void _readSTData(const GLuint first, const GLuint count, Vertex* it) {
         func(stptr, (GLubyte*) temp);
         stptr += ststride;
 
-        it->st[0] = pack_half_float(temp[0]);
-        it->st[1] = pack_half_float(temp[1]);
+        it->st[0] = _glPackHalfFloat(temp[0]);
+        it->st[1] = _glPackHalfFloat(temp[1]);
 
         ++it;
     }
@@ -408,8 +408,8 @@ static void generateElements(
         diffuse_func(bgra, (GLubyte*) output->argb);
         st_func(st, (GLubyte*) temp);
 
-        output->st[0] = pack_half_float(temp[0]);
-        output->st[1] = pack_half_float(temp[1]);
+        output->st[0] = _glPackHalfFloat(temp[0]);
+        output->st[1] = _glPackHalfFloat(temp[1]);
 
         normal_func(nxyz, (GLubyte*) temp);
         output->nxyz = _glPackNormal(temp);
@@ -482,13 +482,16 @@ static void generateElementsFastPath(
             col = (GLubyte*) ATTRIB_LIST.colour.ptr + (idx * dstride);
             MEMCPY4(it->argb, col, sizeof(float) * 4);
         } else {
-            *((Float4*) it->argb) = F4ZERO;
+            it->argb[0] = 1.0f;
+            it->argb[1] = 1.0f;
+            it->argb[2] = 1.0f;
+            it->argb[3] = 1.0f;
         }
 
         if(st) {
             st = (GLubyte*) ATTRIB_LIST.st.ptr + (idx * ststride);
-            it->st[0] = pack_half_float(st[0]);
-            it->st[1] = pack_half_float(st[1]);
+            it->st[0] = _glPackHalfFloat(st[0]);
+            it->st[1] = _glPackHalfFloat(st[1]);
         } else {
             it->st[0] = 0.0f;
             it->st[1] = 0.0f;
@@ -743,7 +746,6 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
 #define DEBUG_CLIPPING 0
 
 
-static AlignedVector VERTEX_EXTRAS;
 static SubmissionTarget SUBMISSION_TARGET;
 
 

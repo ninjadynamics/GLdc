@@ -194,11 +194,6 @@ typedef struct {
     GLfloat specularMaterial[4];
 } LightSource;
 
-
-#define argbcpy(dst, src) \
-    *((GLuint*) dst) = *((const GLuint*) src) \
-
-
 typedef struct {
     float xy[2];
 } _glvec2;
@@ -225,32 +220,32 @@ GL_FORCE_INLINE float clamp(float d, float min, float max) {
 }
 
 GL_FORCE_INLINE void memcpy_vertex(Vertex *dest, const Vertex *src) {
-#ifdef _arch_dreamcast
-    _Complex float double_scratch;
+// #ifdef _arch_dreamcast
+//     _Complex float double_scratch;
 
-    asm volatile (
-        "fschg\n\t"
-        "clrs\n\t"
-        ".align 2\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in]+, %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fmov.d @%[in], %[scratch]\n\t"
-        "add #8, %[out]\n\t"
-        "fmov.d %[scratch], @%[out]\n\t"
-        "fschg\n"
-        : [in] "+&r" ((uint32_t) src), [scratch] "=&d" (double_scratch), [out] "+&r" ((uint32_t) dest)
-        :
-        : "t", "memory" // clobbers
-    );
-#else
+//     asm volatile (
+//         "fschg\n\t"
+//         "clrs\n\t"
+//         ".align 2\n\t"
+//         "fmov.d @%[in]+, %[scratch]\n\t"
+//         "fmov.d %[scratch], @%[out]\n\t"
+//         "fmov.d @%[in]+, %[scratch]\n\t"
+//         "add #8, %[out]\n\t"
+//         "fmov.d %[scratch], @%[out]\n\t"
+//         "fmov.d @%[in]+, %[scratch]\n\t"
+//         "add #8, %[out]\n\t"
+//         "fmov.d %[scratch], @%[out]\n\t"
+//         "fmov.d @%[in], %[scratch]\n\t"
+//         "add #8, %[out]\n\t"
+//         "fmov.d %[scratch], @%[out]\n\t"
+//         "fschg\n"
+//         : [in] "+&r" ((uint32_t) src), [scratch] "=&d" (double_scratch), [out] "+&r" ((uint32_t) dest)
+//         :
+//         : "t", "memory" // clobbers
+//     );
+// #else
     *dest = *src;
-#endif
+// #endif
 }
 
 #define swapVertex(a, b)   \

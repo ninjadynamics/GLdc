@@ -221,31 +221,31 @@ DEF_READ_COLOUR_3_ARGB_FP(3f, float)
 
 static void _readColour4dARGB(const GLubyte* __restrict__ in, GLubyte* __restrict__ out) {
     const double* input = (const double*) in;
-
+    float* o = (float*) out;
     // Convert to float first
     float r = (float)input[0];
     float g = (float)input[1];
     float b = (float)input[2];
     float a = (float)input[3];
 
-    out[R8IDX] = r;
-    out[G8IDX] = g;
-    out[B8IDX] = b;
-    out[A8IDX] = a;
+    o[R8IDX] = r;
+    o[G8IDX] = g;
+    o[B8IDX] = b;
+    o[A8IDX] = a;
 }
 
 static void _readColour3dARGB(const GLubyte* __restrict__ in, GLubyte* __restrict__ out) {
     const double* input = (const double*) in;
-
+    float* o = (float*) out;
     // Convert to float first
     float r = (float)input[0];
     float g = (float)input[1];
     float b = (float)input[2];
 
-    out[R8IDX] = r;
-    out[G8IDX] = g;
-    out[B8IDX] = b;
-    out[A8IDX] = 255;
+    o[R8IDX] = r;
+    o[G8IDX] = g;
+    o[B8IDX] = b;
+    o[A8IDX] = 1.0f;
 }
 
 
@@ -261,14 +261,15 @@ static void _readColour4ubRevARGB(const GLubyte* __restrict__ input, GLubyte* __
 static void _readColour4fRevARGB(const GLubyte* __restrict__ in, GLubyte* __restrict__ output) {
     const float* input = (const float*) in;
 
-    output[0] = input[0];
-    output[1] = input[1];
-    output[2] = input[2];
-    output[3] = input[3];
+    output[0] = input[3];
+    output[1] = input[2];
+    output[2] = input[1];
+    output[3] = input[0];
 }
 
 static void _readColour4dRevARGB(const GLubyte* __restrict__ in, GLubyte* __restrict__ output) {
     const double* input = (const double*) in;
+    float* o = (float*) output;
 
     // Convert to float first
     float r = (float)input[0];
@@ -276,32 +277,33 @@ static void _readColour4dRevARGB(const GLubyte* __restrict__ in, GLubyte* __rest
     float b = (float)input[2];
     float a = (float)input[3];
 
-    output[0] = r;
-    output[1] = g;
-    output[2] = b;
-    output[3] = a;
+    o[0] = r;
+    o[1] = g;
+    o[2] = b;
+    o[3] = a;
 }
 
 #define DEF_READ_COLOUR_N_ARGB_INT(prefix, intype, max, alpha, i0, i1, i2, i3) \
     static void _readColour##prefix##ARGB(const GLubyte* __restrict in, GLubyte* __restrict out) { \
         const intype* input = (const intype*) in; \
-        out[i0] = (GLubyte) clamp((float)input[0] / (float)max * 255.0f, 0, 255); \
-        out[i1] = (GLubyte) clamp((float)input[1] / (float)max * 255.0f, 0, 255); \
-        out[i2] = (GLubyte) clamp((float)input[2] / (float)max * 255.0f, 0, 255); \
-        out[i3] = alpha; \
+        float* output = ((float*)out); \
+        output[i0] = (float)input[0] / (float)max; \
+        output[i1] = (float)input[1] / (float)max; \
+        output[i2] = (float)input[2] / (float)max; \
+        output[i3] = alpha; \
     }
 
 #define DEF_READ_COLOUR_3_ARGB_INT(prefix, intype, max) \
-    DEF_READ_COLOUR_N_ARGB_INT(prefix, intype, max, 255, R8IDX, G8IDX, B8IDX, A8IDX)
+    DEF_READ_COLOUR_N_ARGB_INT(prefix, intype, max, 1.0f, R8IDX, G8IDX, B8IDX, A8IDX)
 
 #define DEF_READ_COLOUR_4_ARGB_INT(prefix, intype, max) \
     DEF_READ_COLOUR_N_ARGB_INT(prefix, intype, max,  \
-        ((GLubyte)clamp((float)input[3] / (float)max * 255.0f, 0, 255)), \
+        ((float)input[3] / (float)max), \
         R8IDX, G8IDX, B8IDX, A8IDX)
 
 #define DEF_READ_COLOUR_4_REV_ARGB_INT(prefix, intype, max) \
     DEF_READ_COLOUR_N_ARGB_INT(prefix##Rev, intype, max,  \
-        ((GLubyte)clamp((float)input[3] / (float)max * 255.0f, 0, 255)), \
+        ((float)input[3] / (float)max), \
         0, 1, 2, 3)
 
 DEF_READ_COLOUR_3_ARGB_INT(3us, GLushort, UINT16_MAX)
