@@ -14,6 +14,9 @@
 #define likely(x)      __builtin_expect(!!(x), 1)
 #define unlikely(x)    __builtin_expect(!!(x), 0)
 
+void* GPUMemoryAlloc(size_t size) {
+    return pvr_mem_malloc(size);
+}
 
 GL_FORCE_INLINE bool glIsVertex(const float flags) {
     return flags == GPU_CMD_VERTEX_EOL || flags == GPU_CMD_VERTEX;
