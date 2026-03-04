@@ -10,23 +10,14 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "state.h"
 #include "private.h"
 
 GLboolean IMMEDIATE_MODE_ACTIVE = GL_FALSE;
 static GLenum ACTIVE_POLYGON_MODE = GL_TRIANGLES;
 
-static GLfloat __attribute__((aligned(32))) NORMAL[3] = {0.0f, 0.0f, 1.0f};
-static GLfloat __attribute__((aligned(32))) COLOR[4] = {1.0f, 1.0f, 1.0f, 1.0f}; /* ARGB order for speed */
-static GLfloat __attribute__((aligned(32))) UV_COORD[2] = {0.0f, 0.0f};
-static GLfloat __attribute__((aligned(32))) ST_COORD[2] = {0.0f, 0.0f};
-
 static AlignedVector VERTICES;
 static AttribPointerList IM_ATTRIBS;
-
-/* We store the list of attributes that have been "enabled" by a call to
-  glColor, glNormal, glTexCoord etc. otherwise we already have defaults that
-  can be applied faster */
-static GLuint IM_ENABLED_VERTEX_ATTRIBUTES = 0;
 
 typedef struct __attribute__((aligned(32))) {
     GLfloat x;
@@ -88,6 +79,8 @@ void APIENTRY glBegin(GLenum mode) {
 void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
+    float* COLOR = _glCurrentColor();
+
     COLOR[A8IDX] = a;
     COLOR[R8IDX] = r;
     COLOR[G8IDX] = g;
@@ -98,6 +91,8 @@ void APIENTRY glColor4ub(GLubyte r, GLubyte  g, GLubyte b, GLubyte a) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
     const float m = 1.0f / 255.0f;
+
+    float* COLOR = _glCurrentColor();
     COLOR[A8IDX] = ((float)a) * m;
     COLOR[R8IDX] = ((float)r) * m;
     COLOR[G8IDX] = ((float)g) * m;
@@ -109,6 +104,8 @@ void APIENTRY glColor4ubv(const GLubyte *v) {
 
     const float m = 1.0f / 255.0f;
 
+    float* COLOR = _glCurrentColor();
+
     COLOR[R8IDX] = ((float) v[0]) * m;
     COLOR[G8IDX] = ((float) v[1]) * m;
     COLOR[B8IDX] = ((float) v[2]) * m;
@@ -118,6 +115,8 @@ void APIENTRY glColor4ubv(const GLubyte *v) {
 void APIENTRY glColor4fv(const GLfloat* v) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
 
+    float* COLOR = _glCurrentColor();
+
     COLOR[R8IDX] = v[0];
     COLOR[G8IDX] = v[1];
     COLOR[B8IDX] = v[2];
@@ -126,6 +125,8 @@ void APIENTRY glColor4fv(const GLfloat* v) {
 
 void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
+
+    float* COLOR = _glCurrentColor();
 
     COLOR[B8IDX] = b;
     COLOR[G8IDX] = g;
@@ -138,6 +139,8 @@ void APIENTRY glColor3ub(GLubyte red, GLubyte green, GLubyte blue) {
 
     const float m = 1.0f / 255.0f;
 
+    float* COLOR = _glCurrentColor();
+
     COLOR[A8IDX] = 1.0f;
     COLOR[R8IDX] = ((float) red) * m;
     COLOR[G8IDX] = ((float) green) * m;
@@ -149,6 +152,8 @@ void APIENTRY glColor3ubv(const GLubyte *v) {
 
     const float m = 1.0f / 255.0f;
 
+    float* COLOR = _glCurrentColor();
+
     COLOR[A8IDX] = 1.0f;
     COLOR[R8IDX] = ((float) v[0]) * m;
     COLOR[G8IDX] = ((float) v[1]) * m;
@@ -157,6 +162,8 @@ void APIENTRY glColor3ubv(const GLubyte *v) {
 
 void APIENTRY glColor3fv(const GLfloat* v) {
     IM_ATTRIBS.enabled |= COLOR_ENABLED_FLAG;
+
+    float* COLOR = _glCurrentColor();
 
     COLOR[A8IDX] = 1.0f;
     COLOR[R8IDX] = v[0];
@@ -176,6 +183,11 @@ void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z) {
     IM_ATTRIBS.enabled |= VERTEX_ENABLED_FLAG;
 
     IMVertex* vert = aligned_vector_extend(&VERTICES, 1);
+
+    float* COLOR = _glCurrentColor();
+    float* UV_COORD = _glCurrentTexCoord0();
+    float* ST_COORD = _glCurrentTexCoord1();
+    float* NORMAL = _glCurrentNormal();
 
     punned_t dest = { .flt = &vert->x };
     *(dest.flt++) = x;
@@ -216,6 +228,9 @@ void APIENTRY glVertex4fv(const GLfloat* v) {
 }
 
 void APIENTRY glMultiTexCoord2fARB(GLenum target, GLfloat s, GLfloat t) {
+    float* UV_COORD = _glCurrentTexCoord0();
+    float* ST_COORD = _glCurrentTexCoord1();
+
     if(target == GL_TEXTURE0) {
         IM_ATTRIBS.enabled |= UV_ENABLED_FLAG;
         UV_COORD[0] = s;
@@ -232,6 +247,8 @@ void APIENTRY glMultiTexCoord2fARB(GLenum target, GLfloat s, GLfloat t) {
 
 void APIENTRY glTexCoord1f(GLfloat u) {
     IM_ATTRIBS.enabled |= UV_ENABLED_FLAG;
+    float* UV_COORD = _glCurrentTexCoord0();
+
     UV_COORD[0] = u;
     UV_COORD[1] = 0.0f;
 }
@@ -242,6 +259,8 @@ void APIENTRY glTexCoord1fv(const GLfloat* v) {
 
 void APIENTRY glTexCoord2f(GLfloat u, GLfloat v) {
     IM_ATTRIBS.enabled |= UV_ENABLED_FLAG;
+    float* UV_COORD = _glCurrentTexCoord0();
+
     UV_COORD[0] = u;
     UV_COORD[1] = v;
 }
@@ -252,6 +271,8 @@ void APIENTRY glTexCoord2fv(const GLfloat* v) {
 
 void APIENTRY glNormal3f(GLfloat x, GLfloat y, GLfloat z) {
     IM_ATTRIBS.enabled |= NORMAL_ENABLED_FLAG;
+    float* NORMAL = _glCurrentNormal();
+
     NORMAL[0] = x;
     NORMAL[1] = y;
     NORMAL[2] = z;

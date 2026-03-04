@@ -40,9 +40,10 @@ MAKE_FUNC(POLYMODE)
                 ptr += stride;
             }
         } else {
+            float* uv = _glCurrentTexCoord0();
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->uv[0] = 0;
-                it->uv[1] = 0;
+                it->uv[0] = uv[0];
+                it->uv[1] = uv[1];
             }
         }
 
@@ -62,11 +63,12 @@ MAKE_FUNC(POLYMODE)
                 ptr += stride;
             }
         } else {
+            float* color = _glCurrentColor();
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->argb[0] = 1.0f;
-                it->argb[1] = 1.0f;
-                it->argb[2] = 1.0f;
-                it->argb[3] = 1.0f;
+                it->argb[0] = color[0];
+                it->argb[1] = color[1];
+                it->argb[2] = color[2];
+                it->argb[3] = color[3];
             }
         }
 
@@ -96,9 +98,11 @@ MAKE_FUNC(POLYMODE)
                 ptr += stride;
             }
         } else {
+            float* st = _glCurrentTexCoord0();
+
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->st[0] = _glPackHalfFloat(0.0f);
-                it->st[1] = _glPackHalfFloat(0.0f);
+                it->st[0] = _glPackHalfFloat(st[0]);
+                it->st[1] = _glPackHalfFloat(st[1]);
             }
         }
 
@@ -115,9 +119,9 @@ MAKE_FUNC(POLYMODE)
                 ptr += stride;
             }
         } else {
-            float nxyz[3] = {0.0f, 0.0f, 1.0f};
+            float* normal = _glCurrentNormal();
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->nxyz = _glPackNormal(nxyz);
+                it->nxyz = _glPackNormal(normal);
             }
         }
     }

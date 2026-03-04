@@ -55,6 +55,11 @@ static struct {
     Material material;
 
     GLenum shade_model;
+
+    GLfloat current_color[4];
+    GLfloat current_normal[3];
+    GLfloat current_tex_coord0[2];
+    GLfloat current_tex_coord1[2];
 } GPUState = {
     .is_dirty = GL_TRUE,
     .depth_func = GL_LESS,
@@ -84,8 +89,28 @@ static struct {
     .color_material_mode = GL_AMBIENT_AND_DIFFUSE,
     .color_material_mask = AMBIENT_MASK | DIFFUSE_MASK,
     .enabled_light_count = 0,
-    .shade_model = GL_SMOOTH
+    .shade_model = GL_SMOOTH,
+    .current_color = {1.0f, 1.0f, 1.0f, 1.0f},
+    .current_normal = {0.0f, 0.0f, 1.0f},
+    .current_tex_coord0 = {0.0f, 0.0f},
+    .current_tex_coord1 = {0.0f, 0.0f},
 };
+
+float* _glCurrentColor() {
+    return GPUState.current_color;
+}
+
+float* _glCurrentNormal() {
+    return GPUState.current_normal;
+}
+
+float* _glCurrentTexCoord0() {
+    return GPUState.current_tex_coord0;
+}
+
+float* _glCurrentTexCoord1() {
+    return GPUState.current_tex_coord1;
+}
 
 void _glGPUStateMarkClean() {
     GPUState.is_dirty = GL_FALSE;

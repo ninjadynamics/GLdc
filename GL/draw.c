@@ -5,6 +5,7 @@
 #include <math.h>
 #include <limits.h>
 
+#include "state.h"
 #include "private.h"
 #include "platform.h"
 
@@ -475,17 +476,20 @@ static void generateElementsFastPath(
             uv = (GLubyte*) ATTRIB_LIST.uv.ptr + (idx * uvstride);
             MEMCPY4(it->uv, uv, sizeof(float) * 2);
         } else {
-            *((Float2*) it->uv) = F2ZERO;
+            float* uv = _glCurrentTexCoord0();
+            it->uv[0] = uv[0];
+            it->uv[1] = uv[1];
         }
 
         if(col) {
             col = (GLubyte*) ATTRIB_LIST.colour.ptr + (idx * dstride);
             MEMCPY4(it->argb, col, sizeof(float) * 4);
         } else {
-            it->argb[0] = 1.0f;
-            it->argb[1] = 1.0f;
-            it->argb[2] = 1.0f;
-            it->argb[3] = 1.0f;
+            float* color = _glCurrentColor();
+            it->argb[0] = color[0];
+            it->argb[1] = color[1];
+            it->argb[2] = color[2];
+            it->argb[3] = color[3];
         }
 
         if(st) {
@@ -493,15 +497,16 @@ static void generateElementsFastPath(
             it->st[0] = _glPackHalfFloat(st[0]);
             it->st[1] = _glPackHalfFloat(st[1]);
         } else {
-            it->st[0] = 0.0f;
-            it->st[1] = 0.0f;
+            float* ST_COORD = _glCurrentTexCoord0();
+            it->st[0] = _glPackHalfFloat(ST_COORD[0]);
+            it->st[1] = _glPackHalfFloat(ST_COORD[1]);
         }
 
         if(n) {
             n = (GLubyte*) ATTRIB_LIST.normal.ptr + (idx * nstride);
             it->nxyz = _glPackNormal((float*) n);
         } else {
-            float nxyz[3] = {0.0f, 0.0f, 1.0f};
+            float* nxyz = _glCurrentNormal();
             it->nxyz = _glPackNormal(nxyz);
         }
 

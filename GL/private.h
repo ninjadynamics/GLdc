@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "state.h"
 #include "gl_assert.h"
 #include "platform.h"
 #include "types.h"
@@ -466,11 +467,6 @@ void _glRecalcEnabledLights();
 GLfloat* _glLightModelSceneAmbient();
 GLfloat* _glGetLightModelSceneAmbient();
 LightSource* _glLightAt(GLuint i);
-GLboolean _glNearZClippingEnabled();
-
-GLboolean _glGPUStateIsDirty();
-void _glGPUStateMarkClean();
-void _glGPUStateMarkDirty();
 
 #define MAX_GLDC_TEXTURE_UNITS 2
 #define MAX_GLDC_LIGHTS 8
