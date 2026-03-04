@@ -172,7 +172,7 @@ static GL_NO_INLINE void genTriangleFan(Vertex* output, GLuint count) {
 static GL_NO_INLINE void genPoints(Vertex* output, GLuint count) {
     Vertex* dst = output + POINTS_COUNT(count) - 1;
     Vertex* src = output + count - 1;
-    float half_size = HALF_POINT_SIZE;
+    float half_size = _glGetHalfPointSize();
 
     // Expands v to { v + (S/2,-S/2), v + (S/2,S/2), v + (-S/2,-S/2), (-S/2,S/2) }
     for (; count > 0; count--, src--) {
@@ -209,7 +209,7 @@ static Vertex* draw_line(Vertex* dst, Vertex* v1, Vertex* v2) {
     float dx = ov2.xyz[0] - ov1.xyz[0];
     float dy = ov2.xyz[1] - ov1.xyz[1];
 
-    float inverse_mag = fast_rsqrt((dx*dx) + (dy*dy)) * HALF_LINE_WIDTH;
+    float inverse_mag = fast_rsqrt((dx*dx) + (dy*dy)) * _glGetHalfLineWidth();
     float nx = -dy * inverse_mag;
     float ny =  dx * inverse_mag;
 

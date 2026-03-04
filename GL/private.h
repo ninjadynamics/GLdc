@@ -20,15 +20,6 @@
 #define MAX_GLDC_PALETTE_SLOTS 4
 #define MAX_GLDC_SHARED_PALETTES (MAX_GLDC_PALETTE_SLOTS*MAX_GLDC_4BPP_PALETTE_SLOTS)
 
-
-extern void* memcpy4 (void *dest, const void *src, size_t count);
-
-#define GL_NO_INSTRUMENT inline __attribute__((no_instrument_function))
-#define GL_INLINE_DEBUG GL_NO_INSTRUMENT __attribute__((always_inline))
-#define GL_FORCE_INLINE static GL_INLINE_DEBUG
-#define GL_NO_INLINE __attribute__((noinline))
-#define _GL_UNUSED(x) (void)(x)
-
 #define _PACK4(v) ((v * 0xF) / 0xFF)
 #define PACK_ARGB4444(a,r,g,b) (_PACK4(a) << 12) | (_PACK4(r) << 8) | (_PACK4(g) << 4) | (_PACK4(b))
 #define PACK_ARGB8888(a,r,g,b) ( ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF) )
@@ -37,6 +28,14 @@ extern void* memcpy4 (void *dest, const void *src, size_t count);
 
 #define PACK_RGB565(r,g,b) \
     ((((GLushort)r & 0xf8) << 8) | (((GLushort) g & 0xfc) << 3) | ((GLushort) b >> 3))
+
+extern void* memcpy4 (void *dest, const void *src, size_t count);
+
+#define GL_NO_INSTRUMENT inline __attribute__((no_instrument_function))
+#define GL_INLINE_DEBUG GL_NO_INSTRUMENT __attribute__((always_inline))
+#define GL_FORCE_INLINE static GL_INLINE_DEBUG
+#define GL_NO_INLINE __attribute__((noinline))
+#define _GL_UNUSED(x) (void)(x)
 
 #define TRACE_ENABLED 0
 #define TRACE() if(TRACE_ENABLED) {fprintf(stderr, "%s\n", __func__);} (void) 0
@@ -50,30 +49,6 @@ extern void* memcpy4 (void *dest, const void *src, size_t count);
 
 #define MAX_TEXTURE_SIZE 1024
 
-
-/* This gives us an easy way to switch
- * internal matrix order if necessary */
-
-#define TRANSPOSE 0
-
-#if TRANSPOSE
-#define M0 0
-#define M1 4
-#define M2 8
-#define M3 12
-#define M4 1
-#define M5 5
-#define M6 9
-#define M7 13
-#define M8 2
-#define M9 6
-#define M10 10
-#define M11 14
-#define M12 3
-#define M13 7
-#define M14 11
-#define M15 15
-#else
 #define M0 0
 #define M1 1
 #define M2 2
@@ -90,7 +65,6 @@ extern void* memcpy4 (void *dest, const void *src, size_t count);
 #define M13 13
 #define M14 14
 #define M15 15
-#endif
 
 
 typedef struct {
@@ -319,9 +293,6 @@ void _glMatrixLoadModelViewProjection();
 
 extern GLfloat DEPTH_RANGE_MULTIPLIER_L;
 extern GLfloat DEPTH_RANGE_MULTIPLIER_H;
-
-extern GLfloat HALF_LINE_WIDTH;
-extern GLfloat HALF_POINT_SIZE;
 
 Matrix4x4* _glGetProjectionMatrix();
 Matrix4x4* _glGetModelViewMatrix();

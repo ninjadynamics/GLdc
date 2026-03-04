@@ -11,3 +11,6 @@ float* _glCurrentColor();
 float* _glCurrentNormal();
 float* _glCurrentTexCoord0();
 float* _glCurrentTexCoord1();
+
+GLfloat _glGetHalfPointSize();
+GLfloat _glGetHalfLineWidth();
