@@ -177,18 +177,18 @@ void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z) {
 
     IMVertex* vert = aligned_vector_extend(&VERTICES, 1);
 
-    punned_t dest = { .flt = &vert->x };
-    *(dest.flt++) = x;
-    *(dest.flt++) = y;
-    *(dest.flt++) = z;
-    *(dest.flt++) = ATTRIB_VALS.UV_COORD[0];
-    *(dest.flt++) = ATTRIB_VALS.UV_COORD[1];
-    *(dest.flt++) = ATTRIB_VALS.ST_COORD[0];
-    *(dest.flt++) = ATTRIB_VALS.ST_COORD[1];
-    *(dest.u32++) = *((uint32_t*)(void*) ATTRIB_VALS.COLOR);
-    *(dest.flt++) = ATTRIB_VALS.NORMAL[0];
-    *(dest.flt++) = ATTRIB_VALS.NORMAL[1];
-    *(dest.flt++) = ATTRIB_VALS.NORMAL[2];
+    shz_alias_float_t* flt = &vert->x;
+    flt[ 0] = x;
+    flt[ 1] = y;
+    flt[ 2] = z;
+    flt[ 3] = ATTRIB_VALS.UV_COORD[0];
+    flt[ 4] = ATTRIB_VALS.UV_COORD[1];
+    flt[ 5] = ATTRIB_VALS.ST_COORD[0];
+    flt[ 6] = ATTRIB_VALS.ST_COORD[1];
+    flt[ 7] = *((shz_alias_float_t*)ATTRIB_VALS.COLOR);
+    flt[ 8] = ATTRIB_VALS.NORMAL[0];
+    flt[ 9] = ATTRIB_VALS.NORMAL[1];
+    flt[10] = ATTRIB_VALS.NORMAL[2];
 }
 
 void APIENTRY glVertex3fv(const GLfloat* v) {

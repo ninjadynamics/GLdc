@@ -123,8 +123,9 @@ void check_switch() {
     now = time(NULL);
 
     if(now >= (begin + 5)) {
-        begin = time(NULL);
+
         printf("  Average Frame Rate: ~%f fps (%d pps)\n", avgfps, (int)(polycnt * avgfps * 2));
+        begin = time(NULL);
         switch(phase) {
             case PHASE_HALVE:
 

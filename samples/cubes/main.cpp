@@ -15,7 +15,7 @@ float avgfps = -1;
 
 #define PI 3.14159265358979323846264338327950288f
 #define RAD_TO_DEG 57.295779513082320876798154814105f
-#define MAX_CUBES 350
+#define MAX_CUBES 750
 
 size_t numCubes = 0;
 
@@ -124,7 +124,7 @@ float lutScaleFactors[MAX_CUBES];
 void debugLog(const char* msg) 
 {
 #ifdef _arch_dreamcast
-	dbglog(DBG_KDEBUG, "%s\n", msg);
+	dbglog(DBG_WARNING, "%s\n", msg);
 #else
 	printf("%s\n", msg);
 #endif
@@ -148,7 +148,7 @@ void runningStats()
 void avgStats() 
 {
 #ifdef _arch_dreamcast
-	dbglog(DBG_DEBUG, "Average frame rate: ~%f fps\n", avgfps);
+	dbglog(DBG_WARNING, "Average frame rate: ~%f fps\n", avgfps);
 #endif
 }
 
@@ -159,7 +159,7 @@ void stats()
 	pvr_stats_t stats;
 
 	pvr_get_stats(&stats);
-	dbglog(DBG_DEBUG, "3D Stats: %d VBLs, current frame rate ~%f fps\n", stats.vbl_count, stats.frame_rate);
+	dbglog(DBG_WARNING, "3D Stats: %d VBLs, current frame rate ~%f fps\n", stats.vbl_count, stats.frame_rate);
 	avgStats();
 #endif
 }

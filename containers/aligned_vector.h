@@ -32,7 +32,7 @@ static inline void* memalign(size_t alignment, size_t size) {
 
 #ifdef _arch_dreamcast
 #include <sh4zam/shz_sh4zam.h>
-#define AV_MEMCPY4 shz_memcpy32
+#define AV_MEMCPY4 shz_memcpy
 #else
 #define AV_MEMCPY4 memcpy
 #endif
@@ -115,7 +115,7 @@ AV_FORCE_INLINE void* aligned_vector_resize(AlignedVector* vector, const uint32_
         hdr->size = element_count;
         av_assert(hdr->size < hdr->capacity);
         ret = aligned_vector_at(vector, previous_count);
-    } else if(hdr->size != element_count) {
+    } else {
         hdr->size = element_count;
         av_assert(hdr->size < hdr->capacity);
     }

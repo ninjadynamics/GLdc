@@ -98,8 +98,6 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
 #if CLIP_DEBUG
     fprintf(stderr, "{%f, %f, %f, %f}, // %x (%x)\n", v->xyz[0], v->xyz[1], v->xyz[2], v->w, v->flags, v);
 #endif
-
-    //if(!count) return; may not be safe to use with zero yet
     shz_sq_memcpy32_xmtrx((void *)sq_dest_addr, v, count * 32);
 }
 
@@ -108,7 +106,7 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
     const float d1 = v2->w + v2->xyz[2];
     const float t = (fabsf(d0) * shz_invf_fsrra(d1 - d0));
     const float invt = 1.0f - t;
-#if 0
+#if 1
     shz_vec3_deref(vout->xyz) = shz_vec2_dot3(shz_vec2_init(invt, t),
                                               shz_vec2_init(v1->xyz[0], v2->xyz[0]),
                                               shz_vec2_init(v1->xyz[1], v2->xyz[1]),

@@ -39,7 +39,7 @@
             memcpy_fast(dst, src, bytes); \
         } \
     } while(0)
-#define MEMCPY4             shz_memcpy4
+#define MEMCPY4             shz_memcpy
 #define MEMCPY4_16(...)     shz_memcpy4_16(__VA_ARGS__)
 #define MEMSET4             memset
 
@@ -73,7 +73,7 @@ GL_FORCE_INLINE void TransformVec3(float* x) {
 
 /* Transform a 3-element vector using the stored matrix (w == 1) */
 GL_FORCE_INLINE void TransformVec3NoMod(const float* xIn, float* xOut) {
-    shz_vec3_deref(xOut) = shz_xmtrx_transform_vec4(shz_vec3_vec4(shz_vec3_deref(xIn), 1.0f)).xyz;
+    shz_vec3_deref(xOut) = shz_xmtrx_transform_point3(shz_vec3_deref(xIn));
     //mat_trans_single3_nodiv_nomod(xIn[0], xIn[1], xIn[2], xOut[0], xOut[1], xOut[2]);
 }
 
