@@ -48,6 +48,7 @@ static struct {
     GLenum color_control;
     GLenum color_material_mode;
     GLenum color_material_mask;
+    GLubyte current_color[4];
 
     LightSource lights[MAX_GLDC_LIGHTS];
     GLuint enabled_light_count;
@@ -82,6 +83,7 @@ static struct {
     .color_control = GL_SINGLE_COLOR,
     .color_material_mode = GL_AMBIENT_AND_DIFFUSE,
     .color_material_mask = AMBIENT_MASK | DIFFUSE_MASK,
+    .current_color = {255, 255, 255, 255},
     .enabled_light_count = 0,
     .shade_model = GL_SMOOTH
 };
@@ -202,6 +204,10 @@ void _glSetColorMaterialMode(GLenum mode) {
 
 GLenum _glColorMaterialMode() {
     return GPUState.color_material_mode;
+}
+
+GLubyte* _glCurrentColor() {
+    return GPUState.current_color;
 }
 
 GLboolean _glIsSharedTexturePaletteEnabled() {

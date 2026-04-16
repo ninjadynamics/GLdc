@@ -62,8 +62,9 @@ MAKE_FUNC(POLYMODE)
                 ptr += stride;
             }
         } else {
+            const uint32_t current_color = *((const uint32_t*) _glCurrentColor());
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                *((uint32_t*) it->bgra) = ~0;
+                *((uint32_t*) it->bgra) = current_color;
             }
         }
 

@@ -16,7 +16,7 @@ GLboolean IMMEDIATE_MODE_ACTIVE = GL_FALSE;
 static GLenum ACTIVE_POLYGON_MODE = GL_TRIANGLES;
 
 static GLfloat __attribute__((aligned(32))) NORMAL[3] = {0.0f, 0.0f, 1.0f};
-static GLubyte __attribute__((aligned(32))) COLOR[4] = {255, 255, 255, 255}; /* ARGB order for speed */
+#define COLOR (_glCurrentColor())
 static GLfloat __attribute__((aligned(32))) UV_COORD[2] = {0.0f, 0.0f};
 static GLfloat __attribute__((aligned(32))) ST_COORD[2] = {0.0f, 0.0f};
 

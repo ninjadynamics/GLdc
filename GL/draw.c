@@ -465,7 +465,7 @@ static void generateElementsFastPath(
             col = (GLubyte*) ATTRIB_LIST.colour.ptr + (idx * dstride);
             MEMCPY4(it->bgra, col, sizeof(uint32_t));
         } else {
-            *((uint32_t*) it->bgra) = ~0;
+            MEMCPY4(it->bgra, _glCurrentColor(), sizeof(uint32_t));
         }
 
         if(st) {

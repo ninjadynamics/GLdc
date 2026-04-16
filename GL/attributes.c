@@ -167,9 +167,9 @@ static ReadAttributeFunc calcReadPositionFunc(void) {
     }
 }
 
-static void _fillWhiteARGB(const GLubyte* __restrict__ input, GLubyte* __restrict__ output) {
+static void _fillCurrentColorARGB(const GLubyte* __restrict__ input, GLubyte* __restrict__ output) {
     _GL_UNUSED(input);
-    *((uint32_t*) output) = ~0;
+    *((uint32_t*) output) = *((const uint32_t*) _glCurrentColor());
 }
 
 static void _readColour4ubARGB(const GLubyte* input, GLubyte* output) {
@@ -302,8 +302,8 @@ DEF_READ_COLOUR_4_REV_ARGB_INT(4ui, GLuint, UINT32_MAX)
 
 static ReadAttributeFunc calcReadDiffuseFunc(void) {
     if((ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) != DIFFUSE_ENABLED_FLAG) {
-        /* Just fill the whole thing white if the attribute is disabled */
-        return _fillWhiteARGB;
+        /* Use the shared current color when the client color array is disabled. */
+        return _fillCurrentColorARGB;
     }
 
     switch(ATTRIB_LIST.colour.type) {
