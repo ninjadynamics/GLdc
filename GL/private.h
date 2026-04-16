@@ -407,6 +407,7 @@ GLboolean _glIsFogEnabled();
 GLenum _glGetDepthFunc();
 GLenum _glGetCullFace();
 GLenum _glGetFrontFace();
+GLenum _glGetPolygonMode();
 GLenum _glGetGpuBlendSrcFactor();
 GLenum _glGetGpuBlendDstFactor();
 
