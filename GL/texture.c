@@ -62,7 +62,7 @@ static void calc_twiddle_factors(uint32_t w, uint32_t h, uint32_t* maskX, uint32
         } else if (w > 1) {
             // Add a linear X bit
             *maskX += 0x01 << shift;
-            shift  += 1;		
+            shift  += 1;
         } else if (h > 1) {
             // Add a linear Y bit
             *maskY += 0x01 << shift;
@@ -82,7 +82,7 @@ void build_twiddle_table(int32_t w, int32_t h) {
     calc_twiddle_factors(w, h, &maskX, &maskY);
 
     for (int32_t y = 0; y < h; y++) {
-        idxX = 0;		
+        idxX = 0;
         for (int32_t x = 0; x < w; x++) {
             TWIDDLE_TABLE.table[idx++] = idxX | idxY;
             idxX = (idxX - maskX) & maskX;
@@ -1590,8 +1590,8 @@ static bool _glTexSubImage2DValidate(GLenum target, GLint level, GLint xoffset, 
     }
 
     // Validate offsets and dimensions using the underlying texture size
-    if (xoffset < 0 || yoffset < 0 || 
-        (xoffset + width) > textureWidth || 
+    if (xoffset < 0 || yoffset < 0 ||
+        (xoffset + width) > textureWidth ||
         (yoffset + height) > textureHeight) {
         INFO_MSG("Subimage exceeds the dimensions of the texture.");
         _glKosThrowError(GL_INVALID_VALUE, __func__);
@@ -1672,7 +1672,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     GLuint srcBytes = (width * height * sourceStride);
     GLuint destBytes = (width * height * destStride);
 
-    TextureConversionFunc conversion;
+    TextureConversionFunc conversion = NULL;
     int needs_conversion = _determineConversion(cleanInternalFormat, format, type, &conversion);
 
     // Hack: If we're doing a 4bpp source (via glCompressedTexture...)
@@ -2183,7 +2183,7 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
     // Calculate destBytes using the texture's full dimensions
     GLuint destBytes = (textureWidth * textureHeight * destStride);
 
-    TextureConversionFunc conversion;
+    TextureConversionFunc conversion = NULL;
     int needs_conversion = _determineConversion(cleanInternalFormat, format, type, &conversion);
 
     // Adjust source bytes for 4bpp formats

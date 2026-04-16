@@ -45,7 +45,12 @@ void* aligned_vector_reserve(AlignedVector* vector, uint32_t element_count) {
     uint32_t new_byte_size = (element_count * hdr->element_size);
     uint8_t* original_data = vector->data;
 
-    vector->data = (uint8_t*) memalign(0x20, new_byte_size);
+    #ifdef __XBOX__
+            vector->data = (unsigned char*) aligned_alloc(0x20, new_byte_size);
+    #else
+            vector->data = (unsigned char*) memalign(0x20, new_byte_size);
+    #endif
+
     assert(vector->data);
 
     AV_MEMCPY4(vector->data, original_data, original_byte_size);
@@ -68,8 +73,11 @@ void aligned_vector_shrink_to_fit(AlignedVector* vector) {
     } else {
         uint32_t new_byte_size = (hdr->size * hdr->element_size);
         uint8_t* original_data = vector->data;
+#ifdef __XBOX__
+        vector->data = (unsigned char*) aligned_alloc(0x20, new_byte_size);
+#else
         vector->data = (unsigned char*) memalign(0x20, new_byte_size);
-
+#endif
         if(original_data) {
             FASTCPY(vector->data, original_data, new_byte_size);
             free(original_data);
