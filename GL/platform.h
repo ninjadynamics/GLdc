@@ -420,7 +420,7 @@ static inline void CompilePolyHeader(PolyHeader *dst, const PolyContext *src) {
     if(src->txr.enable == GPU_TEXTURE_DISABLE) {
         /* Texturing was disabled so we simulate it with a white texture */
         if(!DEFAULT_TEXTURE) {
-            DEFAULT_TEXTURE = GPUMemoryAlloc(8 * 8 * 2);
+            DEFAULT_TEXTURE = (uint8_t*) GPUMemoryAlloc(8 * 8 * 2);
             for(int i = 0; i < 8 * 8 * 2; ++i) {
                 DEFAULT_TEXTURE[i] = 0xff;
             }

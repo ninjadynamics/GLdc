@@ -272,7 +272,9 @@ typedef enum {
 #define G8IDX 2
 #define B8IDX 3
 
+#ifndef __cplusplus
 struct SubmissionTarget;
+#endif
 
 PolyList* _glOpaquePolyList();
 PolyList* _glPunchThruPolyList();
