@@ -1499,6 +1499,7 @@ static bool _glTexImage2DValidate(GLenum target, GLint level, GLint internalForm
         if((w < 8 || (w & -w) != w)) {
             /* Width is not a power of two. Must be!*/
             INFO_MSG("Unsupported width");
+            fprintf(stderr, "%d\n", w);
             _glKosThrowError(GL_INVALID_VALUE, __func__);
             return false;
         }

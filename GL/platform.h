@@ -260,11 +260,9 @@ enum GPUCommand {
 typedef float Matrix4x4[16];
 
 void SceneBegin();
-
 void SceneListBegin(GPUList list);
 void SceneListSubmit(Vertex* v2, int n);
 void SceneListFinish();
-
 void SceneFinish();
 
 #define GPU_TA_CMD_TYPE_SHIFT       24

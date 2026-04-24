@@ -2,9 +2,7 @@
 #include "../containers/aligned_vector.h"
 #include "private.h"
 
-PolyList OP_LIST;
-PolyList PT_LIST;
-PolyList TR_LIST;
+PolyList COMMAND_LIST;
 
 /**
  *  FAST_MODE will use invW for all Z coordinates sent to the
@@ -17,20 +15,13 @@ PolyList TR_LIST;
 
 GLboolean AUTOSORT_ENABLED = GL_FALSE;
 
-PolyList* _glOpaquePolyList() {
-    return &OP_LIST;
-}
-
-PolyList* _glPunchThruPolyList() {
-    return &PT_LIST;
-}
-
-PolyList *_glTransparentPolyList() {
-    return &TR_LIST;
+PolyList* _glCommandList() {
+    return &COMMAND_LIST;
 }
 
 void APIENTRY glFlush() {
-
+    SceneListSubmit((Vertex*) aligned_vector_front(&COMMAND_LIST.vector), aligned_vector_size(&COMMAND_LIST.vector));
+    aligned_vector_clear(&COMMAND_LIST.vector);
 }
 
 void APIENTRY glFinish() {
@@ -86,23 +77,14 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
         glEnable(GL_TEXTURE_TWIDDLE_KOS);
     }
 
-    OP_LIST.list_type = GPU_LIST_OP_POLY;
-    PT_LIST.list_type = GPU_LIST_PT_POLY;
-    TR_LIST.list_type = GPU_LIST_TR_POLY;
+    COMMAND_LIST.list_type = GPU_LIST_OP_POLY;
 
-    aligned_vector_init(&OP_LIST.vector, sizeof(Vertex));
-    aligned_vector_init(&PT_LIST.vector, sizeof(Vertex));
-    aligned_vector_init(&TR_LIST.vector, sizeof(Vertex));
-
-    aligned_vector_reserve(&OP_LIST.vector, config->initial_op_capacity);
-    aligned_vector_reserve(&PT_LIST.vector, config->initial_pt_capacity);
-    aligned_vector_reserve(&TR_LIST.vector, config->initial_tr_capacity);
+    aligned_vector_init(&COMMAND_LIST.vector, sizeof(Vertex));
+    aligned_vector_reserve(&COMMAND_LIST.vector, config->initial_op_capacity);
 }
 
 void APIENTRY glKosShutdown() {
-    aligned_vector_clear(&OP_LIST.vector);
-    aligned_vector_clear(&PT_LIST.vector);
-    aligned_vector_clear(&TR_LIST.vector);
+    aligned_vector_clear(&COMMAND_LIST.vector);
 
     ShutdownGPU();
     _initialized = false;
@@ -112,34 +94,21 @@ void APIENTRY glKosInit() {
     GLdcConfig config;
     glKosInitConfig(&config);
     glKosInitEx(&config);
+
+    SceneListBegin(COMMAND_LIST.list_type);
 }
 
 void APIENTRY glKosSwapBuffers() {
     TRACE();
 
-    SceneBegin();
-        if(aligned_vector_header(&OP_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_OP_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&OP_LIST.vector), aligned_vector_size(&OP_LIST.vector));
-            SceneListFinish();
-        }
+    if(aligned_vector_header(&COMMAND_LIST.vector)->size > 2) {
+        glFlush();
+    }
 
-        if(aligned_vector_header(&PT_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_PT_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&PT_LIST.vector), aligned_vector_size(&PT_LIST.vector));
-            SceneListFinish();
-        }
+    SceneListFinish();
+    SceneListBegin(COMMAND_LIST.list_type);
 
-        if(aligned_vector_header(&TR_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_TR_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&TR_LIST.vector), aligned_vector_size(&TR_LIST.vector));
-            SceneListFinish();
-        }
-    SceneFinish();
-
-    aligned_vector_clear(&OP_LIST.vector);
-    aligned_vector_clear(&PT_LIST.vector);
-    aligned_vector_clear(&TR_LIST.vector);
+    aligned_vector_clear(&COMMAND_LIST.vector);
 
     _glApplyScissor(true);
 }

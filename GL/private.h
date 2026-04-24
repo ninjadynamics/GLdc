@@ -77,7 +77,7 @@ typedef struct {
 } PVRTileClipCommand; /* Tile Clip command for the pvr */
 
 typedef struct {
-    unsigned int list_type;
+    GPUList list_type;
     AlignedVector vector;
 } PolyList;
 
@@ -377,17 +377,13 @@ GLenum _glGetFrontFace();
 GLenum _glGetGpuBlendSrcFactor();
 GLenum _glGetGpuBlendDstFactor();
 
-extern PolyList OP_LIST;
-extern PolyList PT_LIST;
-extern PolyList TR_LIST;
-
-GL_FORCE_INLINE PolyList* _glActivePolyList() {
+GL_FORCE_INLINE int _glActivePolyList() {
     if(_glIsBlendingEnabled()) {
-        return &TR_LIST;
+        return GPU_LIST_TR_POLY;
     } else if(_glIsAlphaTestEnabled()) {
-        return &PT_LIST;
+        return GPU_LIST_PT_POLY;
     } else {
-        return &OP_LIST;
+        return GPU_LIST_OP_POLY;
     }
 }
 

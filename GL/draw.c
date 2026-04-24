@@ -811,7 +811,17 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
         }
     }
 
-    target->output = _glActivePolyList();
+    int active_list = _glActivePolyList();
+    if(active_list != target->output->list_type) {
+        // Submit what we need to submit
+        glFlush();
+        SceneListFinish();
+
+        // Start the next list
+        SceneListBegin(active_list);
+    }
+
+    target->output->list_type = active_list;
     gl_assert(target->output);
 
     uint32_t vector_size = aligned_vector_size(&target->output->vector);

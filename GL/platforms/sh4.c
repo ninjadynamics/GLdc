@@ -133,6 +133,7 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
 }
 
 #define SPAN_SORT_CFG 0x005F8030
+#define TA_LIST_CONT  0x005F8160
 static volatile uint32_t* PVR_LMMODE0 = (uint32_t*) 0xA05F6884;
 static volatile uint32_t *PVR_LMMODE1 = (uint32_t*) 0xA05F6888;
 
@@ -379,16 +380,27 @@ void SceneListSubmit(Vertex* vertices, int n) {
     sq_wait();
 }
 
+static uint32_t lists_submitted = 0;
+
 void SceneBegin() {
     pvr_wait_ready();
+
+    lists_submitted = 0;
     pvr_scene_begin();
 }
 
 static pvr_dr_state_t dr_state;
+
 void SceneListBegin(GPUList list) {
+    if(lists_submitted & (1 << (int) list)) {
+        // We already submitted this list so need to do a continuation
+        PVR_SET(TA_LIST_CONT, 0x80000000);
+        PVR_GET(TA_LIST_CONT);
+    }
+
+    lists_submitted |= (1 << (int) list);
+
     pvr_list_begin(list);
-    /* Direct rendering auto acquires/releases store queue */
-    pvr_dr_init(&dr_state);
 }
 
 void SceneListFinish() {
