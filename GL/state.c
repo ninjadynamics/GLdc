@@ -4,8 +4,6 @@
 
 #include "../include/GL/glext.h"
 #include "private.h"
-GLfloat HALF_LINE_WIDTH = 1.0f / 2.0f;
-GLfloat HALF_POINT_SIZE = 1.0f / 2.0f;
 
 static struct {
     GLboolean is_dirty;
@@ -28,6 +26,7 @@ static struct {
     GLboolean scissor_test_enabled;
     GLboolean fog_enabled;
     GLboolean depth_mask_enabled;
+    GLboolean secondary_color_enabled;
 
     struct {
         GLint x;
@@ -54,6 +53,14 @@ static struct {
     Material material;
 
     GLenum shade_model;
+
+    GLfloat current_color[4];
+    GLfloat current_normal[3];
+    GLfloat current_tex_coord0[2];
+    GLfloat current_tex_coord1[2];
+
+    GLfloat half_point_size;
+    GLfloat half_line_width;
 } GPUState = {
     .is_dirty = GL_TRUE,
     .depth_func = GL_LESS,
@@ -83,8 +90,39 @@ static struct {
     .color_material_mode = GL_AMBIENT_AND_DIFFUSE,
     .color_material_mask = AMBIENT_MASK | DIFFUSE_MASK,
     .enabled_light_count = 0,
-    .shade_model = GL_SMOOTH
+    .shade_model = GL_SMOOTH,
+    .current_color = {1.0f, 1.0f, 1.0f, 1.0f},
+    .current_normal = {0.0f, 0.0f, 1.0f},
+    .current_tex_coord0 = {0.0f, 0.0f},
+    .current_tex_coord1 = {0.0f, 0.0f},
+    .half_point_size = 0.5f,
+    .half_line_width = 0.5f,
 };
+
+float* _glCurrentColor() {
+    return GPUState.current_color;
+}
+
+float* _glCurrentNormal() {
+    return GPUState.current_normal;
+}
+
+float* _glCurrentTexCoord0() {
+    return GPUState.current_tex_coord0;
+}
+
+float* _glCurrentTexCoord1() {
+    return GPUState.current_tex_coord1;
+}
+
+GLfloat _glGetHalfPointSize() {
+    return GPUState.half_point_size;
+}
+
+GLfloat _glGetHalfLineWidth() {
+    return GPUState.half_line_width;
+}
+
 
 void _glGPUStateMarkClean() {
     GPUState.is_dirty = GL_FALSE;
@@ -250,12 +288,12 @@ GLenum _glGetGpuBlendDstFactor() {
         return GPU_BLEND_SRCALPHA;
     case GL_SRC_COLOR:
         // actually 'src' color in PVR2 when used as dst blend factor
-        return GPU_BLEND_DESTCOLOR; 
+        return GPU_BLEND_DESTCOLOR;
     case GL_DST_ALPHA:
         return GPU_BLEND_DESTALPHA;
     case GL_ONE_MINUS_SRC_COLOR:
         // actually 'src' color in PVR2 when used as dst blend factor
-        return GPU_BLEND_INVDESTCOLOR; 
+        return GPU_BLEND_INVDESTCOLOR;
     case GL_ONE_MINUS_SRC_ALPHA:
         return GPU_BLEND_INVSRCALPHA;
     case GL_ONE_MINUS_DST_ALPHA:
@@ -440,6 +478,12 @@ void _glInitContext() {
 
 GLAPI void APIENTRY glEnable(GLenum cap) {
     switch(cap) {
+        case GL_COLOR_SUM:
+            if(GPUState.secondary_color_enabled != GL_TRUE) {
+                GPUState.secondary_color_enabled = GL_TRUE;
+                GPUState.is_dirty = GL_TRUE;
+            }
+        break;
         case GL_TEXTURE_2D:
             if(TEXTURES_ENABLED[_glGetActiveTexture()] != GL_TRUE) {
                 TEXTURES_ENABLED[_glGetActiveTexture()] = GL_TRUE;
@@ -551,6 +595,12 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
 
 GLAPI void APIENTRY glDisable(GLenum cap) {
     switch(cap) {
+        case GL_COLOR_SUM:
+            if(GPUState.secondary_color_enabled != GL_FALSE) {
+                GPUState.secondary_color_enabled = GL_FALSE;
+                GPUState.is_dirty = GL_TRUE;
+            }
+        break;
         case GL_TEXTURE_2D:
             if(TEXTURES_ENABLED[_glGetActiveTexture()] != GL_FALSE) {
                 TEXTURES_ENABLED[_glGetActiveTexture()] = GL_FALSE;
@@ -776,11 +826,11 @@ GLAPI void APIENTRY glAlphaFunc(GLenum func, GLclampf ref) {
 }
 
 void glLineWidth(GLfloat width) {
-    HALF_LINE_WIDTH = width / 2.0f;
+    GPUState.half_line_width = width / 2.0f;
 }
 
 void glPointSize(GLfloat size) {
-    HALF_POINT_SIZE = size / 2.0f;
+    GPUState.half_point_size = size / 2.0f;
 }
 
 void glPolygonOffset(GLfloat factor, GLfloat units) {
@@ -956,7 +1006,7 @@ void APIENTRY glGetBooleanv(GLenum pname, GLboolean* params) {
         *params = (enabledAttrs & VERTEX_ENABLED_FLAG) == VERTEX_ENABLED_FLAG;
     break;
     case GL_COLOR_ARRAY:
-        *params = (enabledAttrs & DIFFUSE_ENABLED_FLAG) == DIFFUSE_ENABLED_FLAG;
+        *params = (enabledAttrs & COLOR_ENABLED_FLAG) == COLOR_ENABLED_FLAG;
     break;
     case GL_NORMAL_ARRAY:
         *params = (enabledAttrs & NORMAL_ENABLED_FLAG) == NORMAL_ENABLED_FLAG;
