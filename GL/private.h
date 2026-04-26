@@ -430,7 +430,7 @@ void _glApplyScissor(bool force);
 void _glSetColorMaterialMask(GLenum mask);
 void _glSetColorMaterialMode(GLenum mode);
 GLenum _glColorMaterialMode();
-
+GLenum _glColorMaterialMask();
 Material* _glActiveMaterial();
 void _glSetLightModelViewerInEyeCoordinates(GLboolean v);
 void _glSetLightModelSceneAmbient(const GLfloat* v);

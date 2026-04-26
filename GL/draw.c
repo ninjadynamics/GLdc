@@ -483,9 +483,12 @@ static void generateElementsFastPath(
 
         if(col) {
             col = (GLubyte*) ATTRIB_LIST.colour.ptr + (idx * dstride);
-            MEMCPY4(it->argb, col, sizeof(float) * 4);
+            it->argb[0] = ((float*) col)[0];
+            it->argb[1] = ((float*) col)[1];
+            it->argb[2] = ((float*) col)[2];
+            it->argb[3] = ((float*) col)[3];
         } else {
-            float* color = _glCurrentColor();
+            const float* color = _glCurrentColor();
             it->argb[0] = color[0];
             it->argb[1] = color[1];
             it->argb[2] = color[2];

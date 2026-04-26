@@ -358,7 +358,7 @@ void APIENTRY glColorMaterial(GLenum face, GLenum mode) {
 void _glUpdateColourMaterialA(const float* colour) {
     Material* material = _glActiveMaterial();
     vec4cpy(material->ambient, colour);
-    GLenum mask = _glColorMaterialMode();
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -367,7 +367,7 @@ void _glUpdateColourMaterialD(const float* colour) {
 
     vec4cpy(material->diffuse, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -375,7 +375,7 @@ void _glUpdateColourMaterialE(const float* colour) {
     Material* material = _glActiveMaterial();
     vec4cpy(material->emissive, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -385,7 +385,7 @@ void _glUpdateColourMaterialAD(const float* colour) {
     vec4cpy(material->ambient, colour);
     vec4cpy(material->diffuse, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
