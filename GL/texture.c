@@ -1,4 +1,5 @@
 #include "private.h"
+#include "gldc_stats.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -680,6 +681,7 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
 
 void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     TRACE();
+    GLDC_STAT_INC(texture_binds);
 
     GLint target_values [] = {GL_TEXTURE_2D, 0};
 

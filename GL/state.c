@@ -4,6 +4,7 @@
 
 #include "../include/GL/glext.h"
 #include "private.h"
+#include "gldc_stats.h"
 GLfloat HALF_LINE_WIDTH = 1.0f / 2.0f;
 GLfloat HALF_POINT_SIZE = 1.0f / 2.0f;
 
@@ -91,6 +92,7 @@ void _glGPUStateMarkClean() {
 }
 
 void _glGPUStateMarkDirty() {
+    GLDC_STAT_INC(state_dirty_events);
     GPUState.is_dirty = GL_TRUE;
 }
 

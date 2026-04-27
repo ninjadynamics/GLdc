@@ -7,6 +7,7 @@
 
 #include "private.h"
 #include "platform.h"
+#include "gldc_stats.h"
 
 GLubyte ACTIVE_CLIENT_TEXTURE;
 
@@ -532,12 +533,160 @@ static void generateArrays(SubmissionTarget* target, const GLsizei first, const 
     _readSTData(first, count, ve);
 }
 
+/* ---- Patch C: Specialized fast-path for Position + UV + Color only ----
+ * Skips ST and Normal loops entirely when those attributes are disabled.
+ * This is the most common case for 2D raylib work (sprites, shapes, text, UI).
+ * Saves ~40% of the per-vertex loop work compared to the generic fast path.
+ */
+
+#define ATTR_MASK_PUC (VERTEX_ENABLED_FLAG | UV_ENABLED_FLAG | DIFFUSE_ENABLED_FLAG)
+
+static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+
+    GLuint min = 0;
+    for(min = 0; min < count; min += 60) {
+        const Vertex* start = ((Vertex*) _glSubmissionTargetStart(target)) + min;
+        const int_fast32_t loop = ((min + 60) > count) ? count - min : 60;
+        const int offset = (first + min);
+        Vertex* it;
+        GLuint stride;
+        const GLubyte* ptr;
+
+        /* UV */
+        stride = ATTRIB_LIST.uv.stride;
+        ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
+        it = (Vertex*) start;
+        if(ptr) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->uv[0] = ((float*) ptr)[0];
+                it->uv[1] = ((float*) ptr)[1];
+                ptr += stride;
+            }
+        } else {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->uv[0] = 0; it->uv[1] = 0;
+            }
+        }
+
+        /* Color */
+        stride = ATTRIB_LIST.colour.stride;
+        ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
+        it = (Vertex*) start;
+        if(ptr) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->bgra[0] = ptr[0]; it->bgra[1] = ptr[1];
+                it->bgra[2] = ptr[2]; it->bgra[3] = ptr[3];
+                ptr += stride;
+            }
+        } else {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                *((uint32_t*) it->bgra) = ~0;
+            }
+        }
+
+        /* Position + transform + quad vertex flags */
+        stride = ATTRIB_LIST.vertex.stride;
+        ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
+        it = (Vertex*) start;
+        for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+            TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
+            it->flags = GPU_CMD_VERTEX;
+            if(((min + i + 1) % 4) == 0) {
+                Vertex t = *it;
+                *it = *(it - 1);
+                *(it - 1) = t;
+                it->flags = GPU_CMD_VERTEX_EOL;
+            }
+            ptr += stride;
+        }
+
+        /* ST and Normal loops: SKIPPED — not enabled */
+    }
+}
+
+static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+
+    GLuint min = 0;
+    for(min = 0; min < count; min += 60) {
+        const Vertex* start = ((Vertex*) _glSubmissionTargetStart(target)) + min;
+        const int_fast32_t loop = ((min + 60) > count) ? count - min : 60;
+        const int offset = (first + min);
+        Vertex* it;
+        GLuint stride;
+        const GLubyte* ptr;
+
+        /* UV */
+        stride = ATTRIB_LIST.uv.stride;
+        ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
+        it = (Vertex*) start;
+        if(ptr) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->uv[0] = ((float*) ptr)[0];
+                it->uv[1] = ((float*) ptr)[1];
+                ptr += stride;
+            }
+        } else {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->uv[0] = 0; it->uv[1] = 0;
+            }
+        }
+
+        /* Color */
+        stride = ATTRIB_LIST.colour.stride;
+        ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
+        it = (Vertex*) start;
+        if(ptr) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                it->bgra[0] = ptr[0]; it->bgra[1] = ptr[1];
+                it->bgra[2] = ptr[2]; it->bgra[3] = ptr[3];
+                ptr += stride;
+            }
+        } else {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                *((uint32_t*) it->bgra) = ~0;
+            }
+        }
+
+        /* Position + transform + triangle vertex flags */
+        stride = ATTRIB_LIST.vertex.stride;
+        ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
+        it = (Vertex*) start;
+        for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+            TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
+            it->flags = ((min + i + 1) % 3 == 0) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+            ptr += stride;
+        }
+
+        /* ST and Normal loops: SKIPPED — not enabled */
+    }
+}
+
+/* ---- End Patch C ---- */
+
 static void generate(SubmissionTarget* target, const GLenum mode, const GLsizei first, const GLuint count,
         const GLubyte* indices, const GLenum type) {
     /* Read from the client buffers and generate an array of ClipVertices */
     TRACE();
 
     if(ATTRIB_LIST.fast_path) {
+        GLDC_STAT_INC(fast_path_hits);
+
+        /* Patch C: Specialized P+UV+Color dispatch — skips ST/Normal entirely */
+        if(!indices && (ATTRIB_LIST.enabled & (ST_ENABLED_FLAG | NORMAL_ENABLED_FLAG)) == 0) {
+            switch(mode) {
+                case GL_QUADS:
+                    generateArraysFastPath_PUC_QUADS(target, first, count);
+                    return;
+                case GL_TRIANGLES:
+                    generateArraysFastPath_PUC_TRIS(target, first, count);
+                    return;
+                default:
+                    break;  /* Fall through to generic fast path */
+            }
+        }
+
         if(indices) {
             generateElementsFastPath(target, first, count, indices, type);
         } else {
@@ -553,6 +702,7 @@ static void generate(SubmissionTarget* target, const GLenum mode, const GLsizei 
             }
         }
     } else {
+        GLDC_STAT_INC(fast_path_misses);
         if(indices) {
             generateElements(target, first, count, indices, type);
         } else {
@@ -638,6 +788,7 @@ GL_FORCE_INLINE int _calc_pvr_depth_test() {
 
 GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextureHeader, PolyList* activePolyList, GLshort textureUnit) {
     TRACE();
+    GLDC_STAT_INC(headers_emitted);
 
     // Compile the header
     PolyContext ctx;
@@ -764,6 +915,8 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     AlignedVector* const extras = target->extras;
 
     TRACE();
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, count);
 
     /* Do nothing if vertices aren't enabled */
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
@@ -870,6 +1023,7 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
 
 void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {
     TRACE();
+    GLDC_STAT_INC(draw_elements_calls);
 
     if(_glCheckImmediateModeInactive(__func__)) {
         return;
@@ -880,6 +1034,7 @@ void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvo
 
 void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     TRACE();
+    GLDC_STAT_INC(draw_arrays_calls);
 
     if(_glCheckImmediateModeInactive(__func__)) {
         return;

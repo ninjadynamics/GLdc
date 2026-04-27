@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "private.h"
+#include "gldc_stats.h"
 
 GLboolean IMMEDIATE_MODE_ACTIVE = GL_FALSE;
 static GLenum ACTIVE_POLYGON_MODE = GL_TRIANGLES;
@@ -76,6 +77,7 @@ void _glInitImmediateMode(GLuint initial_size) {
 }
 
 void APIENTRY glBegin(GLenum mode) {
+    GLDC_STAT_INC(immediate_begin_calls);
     if(IMMEDIATE_MODE_ACTIVE) {
         _glKosThrowError(GL_INVALID_OPERATION, __func__);
         return;
@@ -167,6 +169,7 @@ typedef union punned {
 
 void APIENTRY glVertex3f(GLfloat x, GLfloat y, GLfloat z) {
     IM_ATTRIBS.enabled |= VERTEX_ENABLED_FLAG;
+    GLDC_STAT_INC(immediate_vertices);
 
     IMVertex* vert = aligned_vector_extend(&VERTICES, 1);
 
@@ -253,6 +256,7 @@ void APIENTRY glNormal3fv(const GLfloat* v) {
 
 void APIENTRY glEnd() {
     IMMEDIATE_MODE_ACTIVE = GL_FALSE;
+    GLDC_STAT_INC(immediate_end_calls);
 
     /* Resizing could've invalidated the pointers */
     IM_ATTRIBS.vertex.ptr = VERTICES.data;
