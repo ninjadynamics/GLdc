@@ -4,6 +4,7 @@
 
 #include "../platform.h"
 #include "sh4.h"
+#include "../gldc_stats.h"
 
 
 #define CLIP_DEBUG 0
@@ -100,8 +101,23 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
 static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, Vertex* vout) {
     const float d0 = v1->w + v1->xyz[2];
     const float d1 = v2->w + v2->xyz[2];
-    const float t = (fabsf(d0) * (1.0f / sqrtf((d1 - d0) * (d1 - d0))));
+
+    /* Phase 1: Replace sqrtf(x*x) with fabsf — mathematically identical,
+     * saves ~20 SH4 cycles per clip edge. Original was:
+     *   t = fabsf(d0) * (1.0f / sqrtf((d1 - d0) * (d1 - d0)))
+     * which is just |d0| / |d1 - d0| computed the expensive way. */
+    const float denom = d1 - d0;
+    float t = fabsf(d0) / fabsf(denom);
+
+    /* Phase 1: Directional epsilon — nudge t toward the inside vertex to
+     * prevent rounding from leaving the clipped vertex behind the near plane.
+     * Extracted from GLdc better-clipping branch (GL/clip.c line 33). */
+#define CLIP_EPSILON 1e-6f
+    t += (denom > 0.0f) ? CLIP_EPSILON : -CLIP_EPSILON;
+
     const float invt = 1.0f - t;
+
+    GLDC_STAT_INC(clip_edges_generated);
 
     vout->xyz[0] = invt * v1->xyz[0] + t * v2->xyz[0];
     vout->xyz[1] = invt * v1->xyz[1] + t * v2->xyz[1];
@@ -146,6 +162,9 @@ void SceneListSubmit(Vertex* vertices, int n) {
         return;
     }
 
+    GLDC_STAT_INC(scene_list_submits);
+    GLDC_STAT_ADD(scene_vertices_in, n);
+
     PVR_SET(SPAN_SORT_CFG, 0x0);
 
     //Set PVR DMA registers
@@ -186,6 +205,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
         if(is_header(v0)) {
             _glPushHeaderOrVertex(v0, 1);
             visible_mask = 0;
+            GLDC_STAT_INC(scene_headers_seen);
             continue;
         }
 
@@ -228,6 +248,16 @@ void SceneListSubmit(Vertex* vertices, int n) {
             (v1->xyz[2] >= -v1->w) << 1 |
             (v2->xyz[2] >= -v2->w) << 2
         );
+
+        /* Phase 0: Clipping instrumentation */
+        GLDC_STAT_INC(clip_triangles_tested);
+        if (visible_mask == ALL_VISIBLE) {
+            GLDC_STAT_INC(clip_all_visible);
+        } else if (visible_mask == NONE_VISIBLE) {
+            GLDC_STAT_INC(clip_none_visible);
+        } else {
+            GLDC_STAT_INC(clip_partial);
+        }
 
         /* If we've gone behind the plane, we finish the strip
         otherwise we submit however it was */

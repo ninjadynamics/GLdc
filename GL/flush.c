@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nWelcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.04.27 23:55]\n\n", GLDC_VERSION);
+    printf("\nWelcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.04.28 22:00]\n\n", GLDC_VERSION);
 
     InitGPU(config->autosort_enabled, config->fsaa_enabled);
 
