@@ -2,6 +2,10 @@
 #include <math.h>
 #include <stdio.h>
 
+#ifdef USE_SH4ZAM
+#include <sh4zam/shz_matrix.h>
+#endif
+
 #include "private.h"
 
 #include "../containers/stack.h"
@@ -125,8 +129,14 @@ static void UpdateProjectionMatrix() {
 static void UpdateNormalMatrix() {
     NORMAL_DIRTY = false;
     MEMCPY4(NORMAL_MATRIX, stack_top(MATRIX_STACKS + (GL_MODELVIEW & 0xF)), sizeof(Matrix4x4));
+#ifdef USE_SH4ZAM
+    shz_mat4x4_t inv;
+    shz_mat4x4_inverse((const shz_mat4x4_t*) NORMAL_MATRIX, &inv);
+    shz_mat4x4_transpose(&inv, (shz_mat4x4_t*) NORMAL_MATRIX);
+#else
     inverse((GLfloat*) NORMAL_MATRIX);
     transpose((GLfloat*) NORMAL_MATRIX);
+#endif
 }
 
 static void OnMatrixChanged() {
@@ -374,7 +384,7 @@ void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
     VIEWPORT_MATRIX[M5]  = height * -0.5f;
     VIEWPORT_MATRIX[M10] = 1.0f;
     VIEWPORT_MATRIX[M15] = 1.0f;
-    
+
     VIEWPORT_MATRIX[M12] = x + width * 0.5f;
     VIEWPORT_MATRIX[M13] = GetVideoMode()->height - (y + height * 0.5f);
     PROJECTION_DIRTY = true;

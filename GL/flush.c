@@ -64,7 +64,13 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nWelcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.04.28 22:00]\n\n", GLDC_VERSION);
+    printf("\nGLdc: Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.04.29 23:38]\n", GLDC_VERSION);
+
+#ifdef USE_SH4ZAM
+    printf("GLdc: Hello SH4ZAM!\n\n");
+#else
+    printf("GLdc: SH4ZAM is NOT enabled.\n\n");
+#endif
 
     InitGPU(config->autosort_enabled, config->fsaa_enabled);
 

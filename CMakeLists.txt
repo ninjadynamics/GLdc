@@ -6,6 +6,7 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 # Options to control optional targets
 option(BUILD_SAMPLES "Build example/sample programs" ON)
 option(BUILD_TESTS   "Build test executables" ON)
+option(USE_SH4ZAM    "Use SH4ZAM optimized Dreamcast math" OFF)
 
 # set the default backend
 if(PLATFORM_DREAMCAST)
@@ -116,6 +117,11 @@ else()
 endif()
 
 add_library(GL STATIC ${SOURCES})
+
+if(PLATFORM_DREAMCAST AND USE_SH4ZAM)
+    target_compile_definitions(GL PUBLIC USE_SH4ZAM)
+    target_link_libraries(GL PUBLIC sh4zam)
+endif()
 
 if(FLTO_SUPPORTED)
     set_property(TARGET GL PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
