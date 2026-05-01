@@ -10,7 +10,7 @@
 #define CLIP_DEBUG 0
 
 #define PVR_VERTEX_BUF_SIZE 2560 * 256
-#define PVR_OPB_COUNT       2
+#define PVR_OPB_COUNT       4
 
 #define likely(x)      __builtin_expect(!!(x), 1)
 #define unlikely(x)    __builtin_expect(!!(x), 0)
@@ -26,10 +26,12 @@ GL_FORCE_INLINE bool glIsLastVertex(const float flags) {
 
 void InitGPU(_Bool autosort, _Bool fsaa) {
     pvr_init_params_t params = {
-        /* Enable opaque and translucent polygons with size 32 and 32 */
-        {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32},
+        /* Bin sizes: opaque, op_modifier, translucent, tr_modifier, punch-through.
+           KOS caps bin size at _32. Punch-through disabled — game does no
+           alpha-tested geometry. */
+        {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_0},
         PVR_VERTEX_BUF_SIZE, /* Vertex buffer size */
-        0, /* No DMA */
+        1, /* No DMA */
         fsaa, /* No FSAA */
         (autosort) ? 0 : 1, /* Disable translucent auto-sorting to match traditional GL */
         PVR_OPB_COUNT /* Number of tile object pointer overflow bins. */
@@ -65,7 +67,7 @@ GL_FORCE_INLINE float _glFastInvert(float x) {
 GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
     TRACE();
 
-    for(int v = 0; v < count; ++v) { 
+    for(int v = 0; v < count; ++v) {
         const float f = _glFastInvert(vertex[v].w);
 
         /* Convert to screenspace */
@@ -150,8 +152,10 @@ enum Visible {
     ALL_VISIBLE = 7
 };
 
-static inline bool is_header(Vertex* v) {
-    return !(v->flags == GPU_CMD_VERTEX || v->flags == GPU_CMD_VERTEX_EOL);
+static inline bool is_header(const Vertex* v) {
+    /* Header cmd is 0x80840000; vertex/EOL are 0xE0000000/0xF0000000.
+     * Single unsigned compare beats two equality tests. */
+    return v->flags < (uint32_t)GPU_CMD_VERTEX;
 }
 
 void SceneListSubmit(Vertex* vertices, int n) {
@@ -191,8 +195,10 @@ void SceneListSubmit(Vertex* vertices, int n) {
     static Vertex __attribute__((aligned(32))) qv;
     Vertex* queued_vertex = NULL;
 
+    /* Use fmov.d-paired copy (fschg) for the 32-byte queue write — this fires
+     * every iteration in the ALL_VISIBLE common path, so the savings add up. */
 #define QUEUE_VERTEX(v) \
-    do { queued_vertex = &qv; *queued_vertex = *(v); } while(0)
+    do { queued_vertex = &qv; memcpy_vertex(queued_vertex, (v)); } while(0)
 
 #define SUBMIT_QUEUED_VERTEX(sflags) \
     do { if(queued_vertex) { queued_vertex->flags = (sflags); _glPushHeaderOrVertex(queued_vertex, 1); queued_vertex = NULL; } } while(0)
@@ -200,9 +206,18 @@ void SceneListSubmit(Vertex* vertices, int n) {
     int visible_mask = 0;
     sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
 
+    /* Hoisted out of the loop: stable address across iterations (a queued
+     * pointer into scratch must remain valid into the next iter's submit),
+     * and avoids the per-iter stack adjust. */
+    Vertex __attribute__((aligned(32))) scratch[4];
+
     Vertex* v0 = vertices;
+    Vertex* const vend = vertices + n;
     for(int i = 0; i < n - 1; ++i, ++v0) {
-        if(is_header(v0)) {
+        /* Prefetch one line ahead (Vertex is 32 bytes = one SH4 cache line). */
+        if(likely(v0 + 2 < vend)) PREFETCH(v0 + 2);
+
+        if(unlikely(is_header(v0))) {
             _glPushHeaderOrVertex(v0, 1);
             visible_mask = 0;
             GLDC_STAT_INC(scene_headers_seen);
@@ -271,13 +286,18 @@ void SceneListSubmit(Vertex* vertices, int n) {
         fprintf(stderr, "0x%x 0x%x 0x%x -> %d\n", v0, v1, v2, visible_mask);
 #endif
 
-        Vertex __attribute__((aligned(32))) scratch[4];
         Vertex* a = &scratch[0], *b = &scratch[1], *c = &scratch[2], *d = &scratch[3];
+
+        if(likely(visible_mask == ALL_VISIBLE)) {
+            _glPerspectiveDivideVertex(v0, 1);
+            QUEUE_VERTEX(v0);
+            continue;
+        }
 
         switch(visible_mask) {
             case ALL_VISIBLE:
-                _glPerspectiveDivideVertex(v0, 1);
-                QUEUE_VERTEX(v0);
+                /* unreachable — handled by the fast path above */
+                __builtin_unreachable();
             break;
             case NONE_VISIBLE:
                 break;
@@ -385,7 +405,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                 _glPushHeaderOrVertex(c, 1);
 
                 _glPushHeaderOrVertex(b, 1);
-                
+
                 QUEUE_VERTEX(c);
             break;
             default:
