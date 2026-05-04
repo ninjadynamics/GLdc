@@ -42,10 +42,10 @@ void APIENTRY glKosInitConfig(GLdcConfig* config) {
     config->autosort_enabled = GL_FALSE;
     config->fsaa_enabled = GL_FALSE;
 
-    config->initial_op_capacity = 1024 * 3;
-    config->initial_pt_capacity = 512 * 3;
-    config->initial_tr_capacity = 1024 * 3;
-    config->initial_immediate_capacity = 1024 * 3;
+    config->initial_op_capacity = 1024 * 4;
+    config->initial_pt_capacity = 512 * 4;
+    config->initial_tr_capacity = 1024 * 4;
+    config->initial_immediate_capacity = 1024 * 4;
 
     // RGBA4444 is the fastest general format - 8888 will cause a perf issue
     config->internal_palette_format = GL_RGBA4;
@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.05.01 02:53]\n", GLDC_VERSION);
+    printf("\nGLdc: Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.05.03 21:01]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
