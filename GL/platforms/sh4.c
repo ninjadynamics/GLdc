@@ -27,11 +27,10 @@ GL_FORCE_INLINE bool glIsLastVertex(const float flags) {
 void InitGPU(_Bool autosort, _Bool fsaa) {
     pvr_init_params_t params = {
         /* Bin sizes: opaque, op_modifier, translucent, tr_modifier, punch-through.
-           KOS caps bin size at _32. Punch-through disabled — game does no
-           alpha-tested geometry. */
-        {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_0},
+           KOS caps bin size at _32. */
+        {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32},
         PVR_VERTEX_BUF_SIZE, /* Vertex buffer size */
-        1, /* No DMA */
+        0, /* No DMA */
         fsaa, /* No FSAA */
         (autosort) ? 0 : 1, /* Disable translucent auto-sorting to match traditional GL */
         PVR_OPB_COUNT /* Number of tile object pointer overflow bins. */

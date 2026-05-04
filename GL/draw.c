@@ -828,9 +828,10 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
         ctx.blend.src = GPU_BLEND_ONE;
         ctx.blend.dst = GPU_BLEND_ZERO;
     } else if(ctx.list_type == GPU_LIST_PT_POLY) {
-        /* Punch-through polys require fixed blending and depth modes */
-        ctx.blend.src = GPU_BLEND_SRCALPHA;
-        ctx.blend.dst = GPU_BLEND_INVSRCALPHA;
+        /* Alpha-test routes here only when GL_BLEND is disabled. The PT list
+           supplies the texel discard; kept pixels still write opaquely. */
+        ctx.blend.src = GPU_BLEND_ONE;
+        ctx.blend.dst = GPU_BLEND_ZERO;
         ctx.depth.comparison = GPU_DEPTHCMP_LEQUAL;
     } else {
         ctx.blend.src = _glGetGpuBlendSrcFactor();
