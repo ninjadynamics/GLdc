@@ -1754,6 +1754,15 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         }
 
         GLubyte* conversionBuffer = (GLubyte*) memalign(32, srcBytes);
+
+        /* Heap may be exhausted (srcBytes is up to 1MB for a 512x512 RGBA8888
+           source). Bail like the PVR out-of-memory path above instead of
+           writing the conversion through a NULL pointer and faulting. */
+        if(!conversionBuffer) {
+            _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+            return;
+        }
+
         const GLubyte* src = data;
         GLubyte* dst = conversionBuffer;
 
