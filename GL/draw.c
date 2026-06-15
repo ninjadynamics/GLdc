@@ -828,10 +828,14 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
         ctx.blend.src = GPU_BLEND_ONE;
         ctx.blend.dst = GPU_BLEND_ZERO;
     } else if(ctx.list_type == GPU_LIST_PT_POLY) {
-        /* Alpha-test routes here only when GL_BLEND is disabled. The PT list
-           supplies the texel discard; kept pixels still write opaquely. */
-        ctx.blend.src = GPU_BLEND_ONE;
-        ctx.blend.dst = GPU_BLEND_ZERO;
+        /* Alpha-test routes here only when GL_BLEND is disabled. Use SRC_ALPHA/
+           INV_SRC_ALPHA (NOT one/zero): on real PVR the punch-through texel
+           discard is unreliable, so "transparent" texels can survive the alpha
+           test. With alpha blending they still resolve to dst (invisible);
+           one/zero writes them as opaque boxes (fine on emulators, broken on
+           hardware). Opaque texels (alpha 255) still write fully. */
+        ctx.blend.src = GPU_BLEND_SRCALPHA;
+        ctx.blend.dst = GPU_BLEND_INVSRCALPHA;
         ctx.depth.comparison = GPU_DEPTHCMP_LEQUAL;
     } else {
         ctx.blend.src = _glGetGpuBlendSrcFactor();
