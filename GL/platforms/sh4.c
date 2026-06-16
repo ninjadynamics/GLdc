@@ -422,6 +422,17 @@ void SceneBegin() {
     pvr_scene_begin();
 }
 
+/* Like SceneBegin, but renders this scene into a texture in VRAM instead of the
+   framebuffer (KOS render-to-texture). Used by glKosFlushToTexture for the
+   two-pass HUD overlay: pass 1 renders the world into a texture, pass 2 draws
+   that texture + the HUD to the screen so the HUD composites on top of
+   everything. w/h are the (power-of-two) target dimensions. */
+void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
+    uint32_t rx = w, ry = h;
+    pvr_wait_ready();
+    pvr_scene_begin_txr((pvr_ptr_t) tex, &rx, &ry);
+}
+
 static pvr_dr_state_t dr_state;
 void SceneListBegin(GPUList list) {
     pvr_list_begin(list);

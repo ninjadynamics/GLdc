@@ -707,6 +707,15 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     _glGPUStateMarkDirty();
 }
 
+/* Return the raw VRAM (pvr_ptr) of a texture's level-0 data, so it can be used
+   as a render-to-texture target for glKosFlushToTexture. NULL if the id has no
+   data. The texture must be a NONTWIDDLED 16-bit format for the RTT output to
+   sample correctly. */
+GLvoid* APIENTRY glKosTextureData(GLuint texId) {
+    TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texId);
+    return (txr) ? txr->data : NULL;
+}
+
 void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     TRACE();
 

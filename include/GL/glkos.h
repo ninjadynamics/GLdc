@@ -92,6 +92,16 @@ GLAPI void APIENTRY glKosInitConfig(GLdcConfig* config);
  */
 GLAPI void APIENTRY glKosInitEx(GLdcConfig* config);
 GLAPI void APIENTRY glKosSwapBuffers();
+
+/* Render everything submitted so far into a VRAM texture (`tex`, a
+   pvr_mem_malloc'd w x h power-of-two target) instead of the screen, then clear
+   the lists. Pass 1 of the two-pass HUD overlay — see flush.c. */
+GLAPI void APIENTRY glKosFlushToTexture(void* tex, unsigned int w, unsigned int h);
+
+/* Raw VRAM pointer of a texture id's data, for use as a glKosFlushToTexture
+   target (texture must be a NONTWIDDLED 16-bit format). NULL if no data. */
+GLAPI GLvoid* APIENTRY glKosTextureData(GLuint texId);
+
 GLAPI void APIENTRY glKosShutdown();
 
 /*

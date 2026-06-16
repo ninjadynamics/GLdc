@@ -259,6 +259,7 @@ enum GPUCommand {
 typedef float Matrix4x4[16];
 
 void SceneBegin();
+void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h);
 
 void SceneListBegin(GPUList list);
 void SceneListSubmit(Vertex* v2, int n);
