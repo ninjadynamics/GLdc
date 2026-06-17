@@ -93,6 +93,15 @@ GLAPI void APIENTRY glKosInitConfig(GLdcConfig* config);
 GLAPI void APIENTRY glKosInitEx(GLdcConfig* config);
 GLAPI void APIENTRY glKosSwapBuffers();
 
+/* Queue PVR fog table/color register writes so they are applied after GLdc has
+   waited for the renderer and immediately before the next scene begins. This
+   avoids changing global fog registers while real hardware may still be drawing
+   the previous scene. Color order matches KOS: a, r, g, b. */
+GLAPI void APIENTRY glKosQueueFogTableLinear(GLfloat a, GLfloat r, GLfloat g, GLfloat b,
+                                            GLfloat start, GLfloat end);
+GLAPI void APIENTRY glKosQueueFogTableFlat(GLfloat amount, GLfloat a, GLfloat r, GLfloat g,
+                                          GLfloat b, GLfloat farDepth);
+
 /* Render everything submitted so far into a VRAM texture (`tex`, a
    pvr_mem_malloc'd w x h power-of-two target) instead of the screen, then clear
    the lists. Pass 1 of the two-pass HUD overlay — see flush.c. */

@@ -15,6 +15,62 @@
 #define likely(x)      __builtin_expect(!!(x), 1)
 #define unlikely(x)    __builtin_expect(!!(x), 0)
 
+typedef enum {
+    DEFERRED_FOG_NONE = 0,
+    DEFERRED_FOG_LINEAR,
+    DEFERRED_FOG_FLAT
+} DeferredFogMode;
+
+static struct {
+    DeferredFogMode mode;
+    float amount;
+    float a;
+    float r;
+    float g;
+    float b;
+    float start;
+    float end;
+    float far_depth;
+} deferredFog;
+
+void APIENTRY glKosQueueFogTableLinear(GLfloat a, GLfloat r, GLfloat g, GLfloat b,
+                                       GLfloat start, GLfloat end) {
+    deferredFog.mode = DEFERRED_FOG_LINEAR;
+    deferredFog.a = a;
+    deferredFog.r = r;
+    deferredFog.g = g;
+    deferredFog.b = b;
+    deferredFog.start = start;
+    deferredFog.end = end;
+}
+
+void APIENTRY glKosQueueFogTableFlat(GLfloat amount, GLfloat a, GLfloat r, GLfloat g,
+                                     GLfloat b, GLfloat farDepth) {
+    deferredFog.mode = DEFERRED_FOG_FLAT;
+    deferredFog.amount = amount;
+    deferredFog.a = a;
+    deferredFog.r = r;
+    deferredFog.g = g;
+    deferredFog.b = b;
+    deferredFog.far_depth = farDepth;
+}
+
+static void ApplyDeferredFogTable(void) {
+    if(deferredFog.mode == DEFERRED_FOG_LINEAR) {
+        pvr_fog_table_color(deferredFog.a, deferredFog.r, deferredFog.g, deferredFog.b);
+        pvr_fog_table_linear(deferredFog.start, deferredFog.end);
+    } else if(deferredFog.mode == DEFERRED_FOG_FLAT) {
+        float table[129];
+        for(int i = 0; i < 129; i++) {
+            table[i] = deferredFog.amount;
+        }
+        pvr_fog_far_depth(deferredFog.far_depth);
+        pvr_fog_table_color(deferredFog.a, deferredFog.r, deferredFog.g, deferredFog.b);
+        pvr_fog_table_custom(table);
+    }
+
+    deferredFog.mode = DEFERRED_FOG_NONE;
+}
 
 GL_FORCE_INLINE bool glIsVertex(const float flags) {
     return flags == GPU_CMD_VERTEX_EOL || flags == GPU_CMD_VERTEX;
@@ -419,6 +475,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
 
 void SceneBegin() {
     pvr_wait_ready();
+    ApplyDeferredFogTable();
     pvr_scene_begin();
 }
 
@@ -430,6 +487,7 @@ void SceneBegin() {
 void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
     uint32_t rx = w, ry = h;
     pvr_wait_ready();
+    ApplyDeferredFogTable();
     pvr_scene_begin_txr((pvr_ptr_t) tex, &rx, &ry);
 }
 
