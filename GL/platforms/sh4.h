@@ -10,6 +10,10 @@
 #include "../types.h"
 #include "../private.h"
 
+#ifdef USE_SH4ZAM
+#include <sh4zam/shz_xmtrx.h>   /* shz_xmtrx_load/apply/store_4x4 (faster than KOS mat_*) */
+#endif
+
 #ifndef NDEBUG
 #define PERF_WARNING(msg) printf("[PERF] %s\n", msg)
 #else
@@ -109,16 +113,32 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
 #define VEC3_LENGTH(x, y, z, l) vec3f_length((x), (y), (z), (l))
 #define VEC3_DOT(x1, y1, z1, x2, y2, z2, d) vec3f_dot((x1), (y1), (z1), (x2), (y2), (z2), (d))
 
+/* SH4ZAM xmtrx load/apply/store: same XMTRX semantics as KOS mat_load/apply/
+   store (same fmov.d 8-byte alignment, apply post-multiplies XMTRX), but ~2x
+   faster per Falco. Layouts are interchangeable (Matrix4x4 == column-major
+   float[16] == shz_mat4x4_t). */
 GL_FORCE_INLINE void UploadMatrix4x4(const Matrix4x4* mat) {
+#ifdef USE_SH4ZAM
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*) mat);
+#else
     mat_load((matrix_t*) mat);
+#endif
 }
 
 GL_FORCE_INLINE void DownloadMatrix4x4(Matrix4x4* mat) {
+#ifdef USE_SH4ZAM
+    shz_xmtrx_store_4x4((shz_mat4x4_t*) mat);
+#else
     mat_store((matrix_t*) mat);
+#endif
 }
 
 GL_FORCE_INLINE void MultiplyMatrix4x4(const Matrix4x4* mat) {
+#ifdef USE_SH4ZAM
+    shz_xmtrx_apply_4x4((const shz_mat4x4_t*) mat);
+#else
     mat_apply((matrix_t*) mat);
+#endif
 }
 
 GL_FORCE_INLINE void TransformVec3(float* x) {

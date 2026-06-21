@@ -117,12 +117,38 @@ static void transpose(GLfloat* m) {
     swap(m[11], m[14]);
 }
 
+/* XMTRX <- a . b (load a, apply b), pipelined under SH4ZAM. Result stays live
+   in XMTRX (no store) — for callers that then transform vertices. */
+GL_FORCE_INLINE void LoadApplyMatrix4x4(const Matrix4x4* a, const Matrix4x4* b) {
+#ifdef USE_SH4ZAM
+    shz_xmtrx_load_apply_4x4((const shz_mat4x4_t*) a, (const shz_mat4x4_t*) b);
+#else
+    UploadMatrix4x4(a);
+    MultiplyMatrix4x4(b);
+#endif
+}
+
+/* out <- a . b (load a, apply b, store out), fully pipelined under SH4ZAM.
+   out may alias a (a is fully read before out is written). */
+GL_FORCE_INLINE void LoadApplyStoreMatrix4x4(Matrix4x4* out,
+                                             const Matrix4x4* a,
+                                             const Matrix4x4* b) {
+#ifdef USE_SH4ZAM
+    shz_xmtrx_load_apply_store_4x4((shz_mat4x4_t*) out,
+                                   (const shz_mat4x4_t*) a,
+                                   (const shz_mat4x4_t*) b);
+#else
+    UploadMatrix4x4(a);
+    MultiplyMatrix4x4(b);
+    DownloadMatrix4x4(out);
+#endif
+}
+
 /* When projection matrix changes, need to pre-multiply with viewport transform matrix */
 static void UpdateProjectionMatrix() {
     PROJECTION_DIRTY = false;
-    UploadMatrix4x4(&VIEWPORT_MATRIX);
-    MultiplyMatrix4x4(stack_top(MATRIX_STACKS + (GL_PROJECTION & 0xF)));
-    DownloadMatrix4x4(&PROJECTION_MATRIX);
+    LoadApplyStoreMatrix4x4(&PROJECTION_MATRIX, &VIEWPORT_MATRIX,
+                            (const Matrix4x4*) stack_top(MATRIX_STACKS + (GL_PROJECTION & 0xF)));
 }
 
 /* When modelview matrix changes, need to re-compute normal matrix */
@@ -182,11 +208,10 @@ void APIENTRY glLoadIdentity() {
 }
 
 void GL_FORCE_INLINE _glMultMatrix(const Matrix4x4* mat) {
-    void* top = stack_top(MATRIX_CUR);
+    Matrix4x4* top = (Matrix4x4*) stack_top(MATRIX_CUR);
 
-    UploadMatrix4x4(top);
-    MultiplyMatrix4x4(mat);
-    DownloadMatrix4x4(top);
+    /* top <- top . mat, one pipelined load+apply+store. */
+    LoadApplyStoreMatrix4x4(top, top, mat);
     OnMatrixChanged();
 }
 
@@ -212,6 +237,20 @@ void APIENTRY glScalef(GLfloat x, GLfloat y, GLfloat z) {
 }
 
 void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat  y, GLfloat z) {
+#ifdef USE_SH4ZAM
+    /* SH4ZAM: build the rotation directly in the XMTRX register file and
+       post-multiply the current matrix in one shot, skipping the in-memory
+       matrix build + mat_load/mat_apply/mat_store round-trip below.
+       shz_xmtrx_rotate() takes radians, normalizes the axis internally
+       (fipr/fsrra, like VEC3_NORMALIZE), and post-multiplies XMTRX by R
+       (XMTRX = XMTRX . R) matching glRotatef/GL semantics (confirmed by
+       Falco) — so this yields exactly the _glMultMatrix(rotate) result. */
+    Matrix4x4* top = (Matrix4x4*) stack_top(MATRIX_CUR);
+    shz_xmtrx_load_4x4((const shz_mat4x4_t*) top);
+    shz_xmtrx_rotate(DEG2RAD * angle, x, y, z);
+    shz_xmtrx_store_4x4((shz_mat4x4_t*) top);
+    OnMatrixChanged();
+#else
     Matrix4x4 rotate __attribute__((aligned(32))) = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -251,6 +290,7 @@ void APIENTRY glRotatef(GLfloat angle, GLfloat x, GLfloat  y, GLfloat z) {
     rotate[M10] = (z * z) * invc + c;
 
     _glMultMatrix(&rotate);
+#endif
 }
 
 /* Load an arbitrary matrix */
@@ -482,8 +522,10 @@ void _glMatrixLoadProjection() {
 
 void _glMatrixLoadModelViewProjection() {
     if (PROJECTION_DIRTY) UpdateProjectionMatrix();
-    UploadMatrix4x4(&PROJECTION_MATRIX);
-    MultiplyMatrix4x4((const Matrix4x4*) stack_top(MATRIX_STACKS + (GL_MODELVIEW & 0xF)));
+    /* XMTRX <- PROJECTION . MODELVIEW, one pipelined load+apply (no store —
+       left live for the vertex transforms that follow). Per-draw hot path. */
+    LoadApplyMatrix4x4(&PROJECTION_MATRIX,
+                       (const Matrix4x4*) stack_top(MATRIX_STACKS + (GL_MODELVIEW & 0xF)));
 }
 
 void _glMatrixLoadNormal() {

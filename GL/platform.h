@@ -256,7 +256,11 @@ enum GPUCommand {
     GPU_CMD_SPRITE = 0xA0000000
 };
 
-typedef float Matrix4x4[16];
+/* 32-byte aligned so SH4ZAM's xmtrx load/apply/store hit their fast path on
+   every instance (the `pref` cache-line prefetch wants a 32-byte boundary).
+   Layout/size are unchanged (64 bytes); only the start alignment is raised,
+   which is safe for the memcpy/pointer uses across GLdc. */
+typedef float Matrix4x4[16] __attribute__((aligned(32)));
 
 void SceneBegin();
 void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h);
