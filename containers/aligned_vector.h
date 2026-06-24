@@ -32,6 +32,13 @@ static inline void* memalign(size_t alignment, size_t size) {
 
 #ifdef _arch_dreamcast
 
+#ifdef USE_SH4ZAM
+#include <sh4zam/shz_mem.h>
+/* sh4zam runtime-dispatched fast copy (no alignment/size requirement);
+   replaces the mov.b one-byte-per-iteration loop below. */
+#define AV_MEMCPY4 shz_memcpy
+#else
+
 AV_FORCE_INLINE void *AV_MEMCPY4(void *dest, const void *src, size_t len)
 {
   if(!len)
@@ -61,6 +68,8 @@ AV_FORCE_INLINE void *AV_MEMCPY4(void *dest, const void *src, size_t len)
 
   return dest;
 }
+
+#endif /* USE_SH4ZAM */
 
 #else
 #define AV_MEMCPY4 memcpy

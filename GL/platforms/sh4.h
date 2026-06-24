@@ -12,6 +12,7 @@
 
 #ifdef USE_SH4ZAM
 #include <sh4zam/shz_xmtrx.h>   /* shz_xmtrx_load/apply/store_4x4 (faster than KOS mat_*) */
+#include <sh4zam/shz_mem.h>     /* shz_memcpy — replaces the byte-at-a-time copy loop */
 #endif
 
 #ifndef NDEBUG
@@ -65,6 +66,12 @@ GL_FORCE_INLINE float MATH_Fast_Invert(float x)
 #define PREFETCH(addr) __builtin_prefetch((addr))
 
 GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
+#ifdef USE_SH4ZAM
+  /* sh4zam picks the best aligned / store-queue specialization at runtime (no
+     alignment or size requirement), replacing the mov.b one-byte-per-iteration
+     loop below. */
+  return shz_memcpy(dest, src, len);
+#else
   if(!len) {
     return dest;
   }
@@ -90,6 +97,7 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
   );
 
   return dest;
+#endif
 }
 
 /* We use sq_cpy if the src and size is properly aligned. We control that the
@@ -105,7 +113,11 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
     } while(0)
 
 
-#define MEMCPY4(dst, src, bytes) memcpy_fast(dst, src, bytes)
+/* MEMCPY4 is only ever called with compile-time-constant sizes (4/8/12/64),
+   so __builtin_memcpy lowers each to the minimal inline load/store sequence —
+   faster than any runtime-dispatched copy (sh4zam or the byte loop), and it
+   needs no alignment guarantee. */
+#define MEMCPY4(dst, src, bytes) __builtin_memcpy(dst, src, bytes)
 
 #define MEMSET4(dst, v, size) memset((dst), (v), (size))
 
