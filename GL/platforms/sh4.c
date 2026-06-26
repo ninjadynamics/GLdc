@@ -9,7 +9,14 @@
 
 #define CLIP_DEBUG 0
 
-#define PVR_VERTEX_BUF_SIZE 2560 * 256
+/* Shared PVR vertex buffer (all lists, one frame). Enlarged from the stock 2560*256
+   (655,360 B = 20,480 verts): the HyperSolar city stage submits its whole geometry TWICE
+   under CITY_DOUBLE_PASS (opaque base + punch-through windows), which overran the old buffer
+   and stalled the TA -> hard hang / dcload reset. 6144*256 = 1,572,864 B = 49,152 verts holds
+   2x the capped city (CITY_SUBMIT_VCAP) plus the rest of the scene. Costs ~917 KB extra VRAM
+   over stock (of 8 MB; framebuffers + VQ textures leave room). The game also caps the city
+   submission as a hard backstop, so this size is headroom, not a hard dependency. */
+#define PVR_VERTEX_BUF_SIZE 6144 * 256
 #define PVR_OPB_COUNT       4
 
 #define likely(x)      __builtin_expect(!!(x), 1)
