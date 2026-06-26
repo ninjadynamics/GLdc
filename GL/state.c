@@ -531,6 +531,7 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
             if(GPUState.polygon_offset_enabled != GL_TRUE) {
                 GPUState.polygon_offset_enabled = GL_TRUE;
                 GPUState.is_dirty = GL_TRUE;
+                _glUpdatePolygonOffset();
             }
         break;
         case GL_NORMALIZE:
@@ -640,6 +641,7 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
             if(GPUState.polygon_offset_enabled != GL_FALSE) {
                 GPUState.polygon_offset_enabled = GL_FALSE;
                 GPUState.is_dirty = GL_TRUE;
+                _glUpdatePolygonOffset();
             }
         break;
         case GL_NORMALIZE:
@@ -785,10 +787,24 @@ void glPointSize(GLfloat size) {
     HALF_POINT_SIZE = size / 2.0f;
 }
 
+/* Simplified polygon offset for the PVR W-buffer. Depth is stored as 1/w (larger = nearer), so
+   the bias is a MULTIPLIER on 1/w, not the GL window-Z add. GLdc's perspective divide is deferred
+   to flush, where this global is already reset — so submitVertices() bakes it per draw at record
+   time (pre-scaling clip x/y/w by 1/this; see draw.c). Driven by offset_units (negative = toward
+   the camera, the decal convention); units = -4 => ~1% nearer, enough to lift a coplanar overlay. */
+float _glPolygonOffsetMul = 1.0f;
+#define GL_PVR_POLYGON_OFFSET_SCALE 0.0025f
+void _glUpdatePolygonOffset(void) {
+    _glPolygonOffsetMul = GPUState.polygon_offset_enabled
+        ? (1.0f - GPUState.offset_units * GL_PVR_POLYGON_OFFSET_SCALE)
+        : 1.0f;
+}
+
 void glPolygonOffset(GLfloat factor, GLfloat units) {
     GPUState.offset_factor = factor;
     GPUState.offset_units = units;
     GPUState.is_dirty = GL_TRUE;
+    _glUpdatePolygonOffset();
 }
 
 void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params) {

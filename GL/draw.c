@@ -982,6 +982,25 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
 
     _glTnlApplyEffects(target);
 
+    /* Polygon offset (PVR W-buffer): the perspective divide is deferred to flush (SceneListSubmit),
+       by which point the global offset state is already reset — so bake the bias HERE, per draw,
+       while it's valid. We want the flushed depth (1/w) pulled toward the camera by
+       _glPolygonOffsetMul while screen x/y (x/w, y/w) stay put, so pre-scale clip x/y/w by its
+       reciprocal:  1/(w/pom) = pom/w (depth biased);  (x/pom)/(w/pom) = x/w (screen unchanged).
+       Perspective verts only — the w==1 ortho path derives depth from z, not 1/w. */
+    if(_glPolygonOffsetMul != 1.0f) {
+        const float inv = 1.0f / _glPolygonOffsetMul;
+        Vertex* v   = _glSubmissionTargetStart(target);
+        Vertex* end = v + target->count;
+        for(; v < end; ++v) {
+            if(v->w != 1.0f) {
+                v->xyz[0] *= inv;
+                v->xyz[1] *= inv;
+                v->w      *= inv;
+            }
+        }
+    }
+
     // /*
     //    Now, if multitexturing is enabled, we want to send exactly the same vertices again, except:
     //    - We want to enable blending, and send them to the TR list

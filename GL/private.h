@@ -310,6 +310,14 @@ PolyList* _glOpaquePolyList();
 PolyList* _glPunchThruPolyList();
 PolyList *_glTransparentPolyList();
 
+/* Polygon-offset depth bias for the PVR W-buffer (multiplier on the stored 1/w depth; 1.0 = none).
+   GLdc's perspective divide runs at deferred flush, after this global is reset, so submitVertices()
+   bakes it per draw at record time (pre-scaling clip x/y/w by its reciprocal; see draw.c). Maintained
+   by _glUpdatePolygonOffset() whenever GL_POLYGON_OFFSET_FILL or glPolygonOffset() changes. >1 pulls
+   the polygon toward the camera (the decal case) so coplanar overlays win the depth test, no geometry moved. */
+extern float _glPolygonOffsetMul;
+void _glUpdatePolygonOffset(void);
+
 void _glInitAttributePointers();
 void _glInitContext();
 void _glInitLights();
