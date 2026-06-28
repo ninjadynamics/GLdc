@@ -828,12 +828,13 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
         ctx.blend.src = GPU_BLEND_ONE;
         ctx.blend.dst = GPU_BLEND_ZERO;
     } else if(ctx.list_type == GPU_LIST_PT_POLY) {
-        /* Alpha-test routes here only when GL_BLEND is disabled. Use SRC_ALPHA/
-           INV_SRC_ALPHA (NOT one/zero): on real PVR the punch-through texel
-           discard is unreliable, so "transparent" texels can survive the alpha
-           test. With alpha blending they still resolve to dst (invisible);
-           one/zero writes them as opaque boxes (fine on emulators, broken on
-           hardware). Opaque texels (alpha 255) still write fully. */
+        /* HOLLY2 punch-through REQUIRES SRC_Alpha/Inv_SRC_Alpha here: the TSP
+           Instruction Word must specify SRC Alpha Instruction = 4 for PT polys
+           (DC Dev.Box System Architecture, sec 3.7.9.2). PT pixels are still drawn
+           OPAQUE ("translucent processing is not performed", sec 3.4.3) — this is a
+           mandatory format, NOT a real blend, so it costs no extra fill. ONE/ZERO
+           (the opaque-poly setting) violates the spec and renders transparent texels
+           as opaque boxes on hardware. */
         ctx.blend.src = GPU_BLEND_SRCALPHA;
         ctx.blend.dst = GPU_BLEND_INVSRCALPHA;
         ctx.depth.comparison = GPU_DEPTHCMP_LEQUAL;
