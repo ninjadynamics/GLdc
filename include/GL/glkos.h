@@ -101,6 +101,8 @@ GLAPI void APIENTRY glKosQueueFogTableLinear(GLfloat a, GLfloat r, GLfloat g, GL
                                             GLfloat start, GLfloat end);
 GLAPI void APIENTRY glKosQueueFogTableFlat(GLfloat amount, GLfloat a, GLfloat r, GLfloat g,
                                           GLfloat b, GLfloat farDepth);
+GLAPI void APIENTRY glKosQueueFogTableExp2(GLfloat a, GLfloat r, GLfloat g, GLfloat b,
+                                          GLfloat start, GLfloat end, GLfloat power);
 
 /* Render everything submitted so far into a VRAM texture (`tex`, a
    pvr_mem_malloc'd w x h power-of-two target) instead of the screen, then clear

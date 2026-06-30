@@ -25,7 +25,8 @@
 typedef enum {
     DEFERRED_FOG_NONE = 0,
     DEFERRED_FOG_LINEAR,
-    DEFERRED_FOG_FLAT
+    DEFERRED_FOG_FLAT,
+    DEFERRED_FOG_EXP2
 } DeferredFogMode;
 
 static struct {
@@ -62,6 +63,35 @@ void APIENTRY glKosQueueFogTableFlat(GLfloat amount, GLfloat a, GLfloat r, GLflo
     deferredFog.far_depth = farDepth;
 }
 
+/* "Exp2"-style distance fog that ACTUALLY matches the scene scale. KOS's pvr_fog_table_exp2()
+   hardcodes pvr_fog_far_depth(260), which fights any scene whose draw distance isn't ~260 (the city's
+   is much larger) -> fog vanishes. So instead we reuse pvr_fog_table_linear's proven perspective slot
+   mapping (far depth = end, the known-good scale) but ease each per-slot fog fraction f -> f^power.
+   `power` is a RUNTIME arg (the curve shape lives in the caller, NOT here): <1 thicker-earlier, 1
+   linear, >1 thicker-later — so retuning the curve never rebuilds GLdc. start/end are world/eye units
+   like glKosQueueFogTableLinear. */
+void APIENTRY glKosQueueFogTableExp2(GLfloat a, GLfloat r, GLfloat g, GLfloat b,
+                                     GLfloat start, GLfloat end, GLfloat power) {
+    deferredFog.mode = DEFERRED_FOG_EXP2;
+    deferredFog.a = a;
+    deferredFog.r = r;
+    deferredFog.g = g;
+    deferredFog.b = b;
+    deferredFog.start = start;
+    deferredFog.end = end;
+    deferredFog.amount = power;   /* reuse 'amount' to carry the curve exponent */
+}
+
+/* Per-slot perspective fog fraction, identical to KOS's internal inverse_w_depth[]
+   (pvr_fog_tables.h): inverse_w_depth[i] = 1/t with t = 2^(j>>4) * ((j&0xf)+16)/16
+   for j = i+1. Embedded here so the eased table is self-contained (no dependency on
+   the unexported KOS symbol). i in [0,127]. */
+GL_FORCE_INLINE float fog_invw_depth(int i) {
+    int j = i + 1;
+    float t = (float)(1u << (j >> 4)) * (float)((j & 0xf) + 16) * 0.0625f;
+    return 1.0f / t;
+}
+
 static void ApplyDeferredFogTable(void) {
     if(deferredFog.mode == DEFERRED_FOG_LINEAR) {
         pvr_fog_table_color(deferredFog.a, deferredFog.r, deferredFog.g, deferredFog.b);
@@ -72,6 +102,39 @@ static void ApplyDeferredFogTable(void) {
             table[i] = deferredFog.amount;
         }
         pvr_fog_far_depth(deferredFog.far_depth);
+        pvr_fog_table_color(deferredFog.a, deferredFog.r, deferredFog.g, deferredFog.b);
+        pvr_fog_table_custom(table);
+    } else if(deferredFog.mode == DEFERRED_FOG_EXP2) {
+        /* Eased distance fog. We mirror pvr_fog_table_linear's EXACT register layout (its perspective
+           1/W slot mapping is the only fill that actually renders; a naive depth-indexed table lands in
+           the wrong slots and shows nothing) but ease each per-slot linear fog fraction f -> f^power.
+           far depth = end keeps the known-good scale; pvr_fog_table_exp2's hardcoded far_depth(260) is
+           avoided. `power` is the caller's runtime curve knob: <1 thicker-earlier (concave), 1 = the
+           plain linear fill, >1 thicker-later (convex). */
+        float start = deferredFog.start < 0.0f ? -deferredFog.start : deferredFog.start;
+        float end   = deferredFog.end   < 0.0f ? -deferredFog.end   : deferredFog.end;
+        if(start >= end) { deferredFog.mode = DEFERRED_FOG_NONE; return; }
+        float power = deferredFog.amount;
+        if(power < 0.01f) power = 0.01f;   /* guard: power<=0 would make every slot fully fogged */
+
+        uint32_t table_start = (uint32_t)((start / end) * 128.0f);   /* slots cleared near the eye */
+        uint32_t non_zero_entries = 128 - table_start;
+        uint32_t step_size = 128 / non_zero_entries;                 /* stretch fill across the table */
+
+        /* table[0] = farthest = full occlusion (= linear's initial valh); table[j+1] = register j. */
+        float table[129];
+        table[0] = 1.0f;
+        for(uint32_t j = 0; j < 128; j++) {
+            uint32_t tdx = 127 - j;
+            if(tdx >= table_start) {
+                float f = fog_invw_depth((int)(j * step_size));   /* linear perspective fraction */
+                table[j + 1] = __builtin_powf(f, power);          /* eased by the caller's curve knob */
+            } else {
+                table[j + 1] = 0.0f;
+            }
+        }
+
+        pvr_fog_far_depth(end);
         pvr_fog_table_color(deferredFog.a, deferredFog.r, deferredFog.g, deferredFog.b);
         pvr_fog_table_custom(table);
     }
