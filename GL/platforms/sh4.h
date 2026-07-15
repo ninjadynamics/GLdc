@@ -65,6 +65,15 @@ GL_FORCE_INLINE float MATH_Fast_Invert(float x)
 
 #define PREFETCH(addr) __builtin_prefetch((addr))
 
+/* Allocate (validate) the 32-byte cache line at `addr` WITHOUT reading it from RAM
+   (SH4 MOVCA.L). For write-only streams whose records are exactly one line (the
+   32-byte-aligned Vertex array), this removes a full memory read per record — the
+   line would otherwise be fetched just to be overwritten. The word at offset 0 is
+   left with garbage (r0): callers MUST overwrite all 32 bytes before relying on
+   them (the PUC generators write every field across their passes). */
+#define VERTEX_CACHE_ALLOC(addr) \
+    __asm__ volatile("movca.l r0, @%0" : : "r"(addr) : "memory")
+
 GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
 #ifdef USE_SH4ZAM
   /* sh4zam picks the best aligned / store-queue specialization at runtime (no

@@ -553,19 +553,33 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         GLuint stride;
         const GLubyte* ptr;
 
-        /* UV */
+        /* UV — the FIRST writer of each output vertex: allocate its cache line
+           (exactly one line per 32B-aligned Vertex, MOVCA.L) so this write stream
+           never reads RAM it is about to overwrite; every field gets filled across
+           the UV/color/position passes below. Prefetch the input stream ahead. */
         stride = ATTRIB_LIST.uv.stride;
         ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
         it = (Vertex*) start;
+        /* Destinations are SWIZZLED to PVR strip order (0,1,3,2 within each quad,
+           see PUC_DST below): writing the final order directly removes the old
+           two-record 32-byte swap per quad (>=128B of cache traffic each). Batch
+           starts are quad-aligned (60 %% 4 == 0), so the swizzle never crosses a
+           batch boundary. */
+#define PUC_DST(base, i) ((base) + ((i) ^ ((((i) & 3) == 2 || (((i) & 3) == 3)) ? 1 : 0)))
         if(ptr) {
-            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->uv[0] = ((float*) ptr)[0];
-                it->uv[1] = ((float*) ptr)[1];
+            for(int_fast32_t i = 0; i < loop; ++i) {
+                Vertex* dst = PUC_DST(it, i);
+                PREFETCH(ptr + (stride << 1));
+                VERTEX_CACHE_ALLOC(dst);
+                dst->uv[0] = ((float*) ptr)[0];
+                dst->uv[1] = ((float*) ptr)[1];
                 ptr += stride;
             }
         } else {
-            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->uv[0] = 0; it->uv[1] = 0;
+            for(int_fast32_t i = 0; i < loop; ++i) {
+                Vertex* dst = PUC_DST(it, i);
+                VERTEX_CACHE_ALLOC(dst);
+                dst->uv[0] = 0; dst->uv[1] = 0;
             }
         }
 
@@ -574,14 +588,24 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
         it = (Vertex*) start;
         if(ptr) {
-            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->bgra[0] = ptr[0]; it->bgra[1] = ptr[1];
-                it->bgra[2] = ptr[2]; it->bgra[3] = ptr[3];
-                ptr += stride;
+            if(((((uintptr_t) ptr) | stride) & 3) == 0) {
+                /* aligned client colors (the common case): one word copy, not 4 byte ops */
+                for(int_fast32_t i = 0; i < loop; ++i) {
+                    PREFETCH(ptr + (stride << 2));
+                    *((uint32_t*) PUC_DST(it, i)->bgra) = *((const uint32_t*) ptr);
+                    ptr += stride;
+                }
+            } else {
+                for(int_fast32_t i = 0; i < loop; ++i) {
+                    Vertex* dst = PUC_DST(it, i);
+                    dst->bgra[0] = ptr[0]; dst->bgra[1] = ptr[1];
+                    dst->bgra[2] = ptr[2]; dst->bgra[3] = ptr[3];
+                    ptr += stride;
+                }
             }
         } else {
-            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                *((uint32_t*) it->bgra) = ~0;
+            for(int_fast32_t i = 0; i < loop; ++i) {
+                *((uint32_t*) PUC_DST(it, i)->bgra) = ~0;
             }
         }
 
@@ -589,17 +613,15 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         stride = ATTRIB_LIST.vertex.stride;
         ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
         it = (Vertex*) start;
-        for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-            TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
-            it->flags = GPU_CMD_VERTEX;
-            if(((min + i + 1) % 4) == 0) {
-                Vertex t = *it;
-                *it = *(it - 1);
-                *(it - 1) = t;
-                it->flags = GPU_CMD_VERTEX_EOL;
-            }
+        for(int_fast32_t i = 0; i < loop; ++i) {
+            Vertex* dst = PUC_DST(it, i);
+            PREFETCH(ptr + (stride << 1));
+            TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, dst->xyz, &dst->w);
+            /* strip-order slot 3 (source vertex 2) carries EOL — no record swap needed */
+            dst->flags = (((i & 3) == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
             ptr += stride;
         }
+#undef PUC_DST
 
         /* ST and Normal loops: SKIPPED — not enabled */
     }
@@ -885,6 +907,90 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
 static AlignedVector VERTEX_EXTRAS;
 static SubmissionTarget SUBMISSION_TARGET;
 
+/* ---- Capture & replay (2026-07-15, HyperSolar P4: transform-once dual-list emit) ----
+   The DC city deliberately submits the SAME window-stream geometry twice: OPAQUE with the
+   base tiles (bit-identical depth is what kills wall z-fighting), then PUNCH-THROUGH with
+   the window tiles. That re-ran the whole TnL for ~2k verts every frame. Capture remembers
+   the span the next draw wrote into its poly list (post-TnL clip-space, pre-divide); replay
+   clones that span into the CURRENT list under the CURRENT GPU state (header: texture,
+   blend, fog), optionally overrides the per-vertex color with a constant, and re-bakes the
+   CURRENT polygon-offset multiplier (the capture ran without one). Upstream sketched this
+   exact idea for multitexture in the commented block at the end of submitVertices.
+   Captures hold INDICES (the vectors realloc as they grow) and are invalidated every swap
+   (the lists are cleared then — a stale replay would read recycled memory). */
+#define GLDC_CAPTURE_SLOTS 8
+
+typedef struct {
+    PolyList* list;
+    uint32_t  start;   /* index of the first captured vertex in list->vector */
+    uint32_t  count;
+} CapturedSpan;
+
+static CapturedSpan CAPTURED_SPANS[GLDC_CAPTURE_SLOTS];
+static int CAPTURE_PENDING = -1;
+
+void APIENTRY glKosCaptureArrays(GLuint slot) {
+    if(slot < GLDC_CAPTURE_SLOTS) {
+        CAPTURE_PENDING = (int) slot;
+    }
+}
+
+void _glInvalidateCapturedArrays(void) {
+    for(int i = 0; i < GLDC_CAPTURE_SLOTS; ++i) {
+        CAPTURED_SPANS[i].count = 0;
+    }
+    CAPTURE_PENDING = -1;
+}
+
+void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
+    if(slot >= GLDC_CAPTURE_SLOTS) return;
+
+    CapturedSpan* c = &CAPTURED_SPANS[slot];
+    if(!c->count || !c->list) return;
+
+    PolyList* out = _glActivePolyList();
+    const uint32_t vec = aligned_vector_size(&out->vector);
+    const GLboolean header_required = (vec == 0) || _glGPUStateIsDirty();
+
+    aligned_vector_extend(&out->vector, c->count + (header_required ? 1 : 0));
+
+    if(header_required) {
+        apply_poly_header((PolyHeader*) aligned_vector_at(&out->vector, vec), GL_FALSE, out, 0);
+        _glGPUStateMarkClean();
+    }
+
+    /* Resolve source AFTER the extend: a same-list replay would have realloc'd it. */
+    Vertex* src = (Vertex*) aligned_vector_at(&c->list->vector, c->start);
+    Vertex* dst = (Vertex*) aligned_vector_at(&out->vector, vec + (header_required ? 1 : 0));
+    memcpy(dst, src, c->count * sizeof(Vertex));
+
+    if(bgra) {   /* constant color override (NULL keeps the captured tints) */
+        Vertex* v = dst;
+        Vertex* const end = dst + c->count;
+        for(; v < end; ++v) {
+            v->bgra[0] = bgra[0];
+            v->bgra[1] = bgra[1];
+            v->bgra[2] = bgra[2];
+            v->bgra[3] = bgra[3];
+        }
+    }
+
+    /* Same per-draw bake submitVertices does (see its polygon offset comment): the
+       capture ran without an offset, the replay pass may have one active. */
+    if(_glPolygonOffsetMul != 1.0f) {
+        const float inv = 1.0f / _glPolygonOffsetMul;
+        Vertex* v = dst;
+        Vertex* const end = dst + c->count;
+        for(; v < end; ++v) {
+            if(v->w != 1.0f) {
+                v->xyz[0] *= inv;
+                v->xyz[1] *= inv;
+                v->w      *= inv;
+            }
+        }
+    }
+}
+
 
 void _glInitSubmissionTarget() {
     SubmissionTarget* target = &SUBMISSION_TARGET;
@@ -1000,6 +1106,14 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
                 v->w      *= inv;
             }
         }
+    }
+
+    if(CAPTURE_PENDING >= 0) {
+        CapturedSpan* c = &CAPTURED_SPANS[CAPTURE_PENDING];
+        c->list = target->output;
+        c->start = target->start_offset;
+        c->count = target->count;
+        CAPTURE_PENDING = -1;
     }
 
     // /*

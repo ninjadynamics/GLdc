@@ -77,6 +77,16 @@ typedef struct {
 } GLVertexKOS;
 
 GLAPI void APIENTRY glVertexPackColor3fKOS(GLVertexKOS* vertex, float r, float g, float b);
+
+/* Transform-once dual-list emit (fork extension, 2026-07-15): glKosCaptureArrays(slot) arms
+   a capture — the NEXT draw call records the span it wrote into its poly list (post-TnL).
+   glKosReplayArrays(slot, bgra) clones that span into the list selected by the CURRENT GPU
+   state (texture/blend/fog header), overriding every vertex color with the constant `bgra`
+   (4 bytes, GLdc vertex order) — or keeping the captured colors when NULL — and re-baking
+   the current polygon-offset. Captures are invalidated at every swap. Intended for
+   coplanar two-pass techniques that submit identical geometry twice. */
+GLAPI void APIENTRY glKosCaptureArrays(GLuint slot);
+GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 
 GLAPI void APIENTRY glKosInitConfig(GLdcConfig* config);

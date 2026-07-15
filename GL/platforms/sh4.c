@@ -186,7 +186,10 @@ void ShutdownGPU() {
 }
 
 GL_FORCE_INLINE float _glFastInvert(float x) {
-    return (1.0f / __builtin_sqrtf(x * x));
+    /* 1/|x| via FSRRA (~3 cycles) instead of fsqrt+fdiv (~40): this is the single
+       hottest per-vertex op at flush (2026-07-15 HyperSolar audit). Same 1/|x|
+       semantics as the old 1.0f / sqrtf(x*x) — the sign is dropped either way. */
+    return MATH_fsrra(x * x);
 }
 
 GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
@@ -283,11 +286,14 @@ static inline bool is_header(const Vertex* v) {
     return v->flags < (uint32_t)GPU_CMD_VERTEX;
 }
 
-void SceneListSubmit(Vertex* vertices, int n) {
+/* The ORIGINAL per-triangle submission loop, kept bit-for-bit as the exact
+   fallback for strips that cross the near plane (or are malformed). The fast
+   wrapper below feeds it single header-less strip spans, so the minimum
+   renderable span here is 3 vertices, not header+3. */
+static void SceneListSubmitGeneric(Vertex* vertices, int n) {
     TRACE();
 
-    /* You need at least a header, and 3 vertices to render anything */
-    if(n < 4) {
+    if(n < 3) {
         return;
     }
 
@@ -539,6 +545,83 @@ void SceneListSubmit(Vertex* vertices, int n) {
     }
 
     SUBMIT_QUEUED_VERTEX(GPU_CMD_VERTEX_EOL);
+
+    sq_wait();
+}
+
+/* ---- All-visible run finalizer (2026-07-15, HyperSolar investigation) ----
+   [GLDC-T] proved the old submission loop IS the swap cost (wait=0.01ms, op+tr
+   ~6.5ms at heavy city load): every vertex paid a 32-byte qv staging copy plus
+   a count=1 sq_fast_cpy (FSCHG entry/exit per record, always queue SQ0). But
+   near-plane clipping is RARE — almost every strip in a frame is fully
+   visible. So: scan the list at STRIP granularity; divide all-visible strips
+   in place; accumulate maximal runs (headers ride along untouched — they are
+   plain 32-byte records); submit each run with ONE multi-record sq_fast_cpy
+   (KOS's asm alternates SQ0/SQ1 internally and pays FSCHG once per call).
+   Any strip that crosses the near plane (or lacks an EOL terminator) flushes
+   the run and takes SceneListSubmitGeneric above — the byte-exact old path. */
+void SceneListSubmit(Vertex* vertices, int n) {
+    TRACE();
+
+    /* You need at least a header, and 3 vertices to render anything */
+    if(n < 4) {
+        return;
+    }
+
+    GLDC_STAT_INC(scene_list_submits);
+    GLDC_STAT_ADD(scene_vertices_in, n);
+
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+
+    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+
+    Vertex* v = vertices;
+    Vertex* const vend = vertices + n;
+    Vertex* run_start = v;
+
+    while(v < vend) {
+        if(is_header(v)) {
+            ++v;                      /* headers ride the current run */
+            continue;
+        }
+
+        /* Scan this strip: [v .. first EOL]. Track visibility as we go. */
+        Vertex* strip_end = v;        /* will point AT the EOL vertex */
+        int all_visible = 1;
+        while(strip_end < vend && !is_header(strip_end)) {
+            PREFETCH(strip_end + 2);
+            all_visible &= (strip_end->xyz[2] >= -strip_end->w);
+            if(strip_end->flags == GPU_CMD_VERTEX_EOL) break;
+            ++strip_end;
+        }
+
+        if(strip_end >= vend || is_header(strip_end)) {
+            /* Unterminated strip: not renderable as a run — the generic path
+               handles (and EOL-terminates) it exactly like the old loop did. */
+            all_visible = 0;
+            --strip_end;              /* last real vertex of the span */
+        }
+
+        if(all_visible) {
+            _glPerspectiveDivideVertex(v, (int)(strip_end - v) + 1);
+            v = strip_end + 1;        /* strip stays in the run */
+        } else {
+            /* Flush everything accumulated before this strip, then let the
+               exact old path do the clip work on the strip alone. */
+            if(v > run_start) {
+                sq_fast_cpy((void*) sq_dest_addr, run_start, (size_t)(v - run_start));
+            }
+            SceneListSubmitGeneric(v, (int)(strip_end - v) + 1);
+            v = strip_end + 1;
+            run_start = v;
+        }
+    }
+
+    if(v > run_start) {
+        sq_fast_cpy((void*) sq_dest_addr, run_start, (size_t)(v - run_start));
+    }
 
     sq_wait();
 }

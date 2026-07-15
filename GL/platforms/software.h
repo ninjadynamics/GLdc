@@ -8,6 +8,7 @@
 #define __restrict
 
 #define PREFETCH(addr) do {} while(0)
+#define VERTEX_CACHE_ALLOC(addr) do {} while(0)
 
 #define MATH_fsrra(x) (1.0f / sqrtf((x)))
 #define MATH_Fast_Invert(x) (1.0f / (x))
