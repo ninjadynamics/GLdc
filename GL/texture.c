@@ -626,6 +626,61 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
     gl_assert(TEXTURE_OBJECTS.element_size > 0);
 }
 
+/* DEFERRED texture-VRAM release (2026-07-15): the PVR renders frame N's lists while
+   the CPU builds frame N+1. Freeing texture VRAM the moment glDeleteTextures runs lets
+   the very next glTexImage recycle memory the IN-FLIGHT render is still sampling — one
+   visibly corrupted frame on every stage/mode transition (it surfaced once HyperSolar's
+   loads got fast: VQ .tex + romdisk). glFinish() is a stub here, so instead of stalling
+   we age the frees: the block is released only after GLDC_DEFER_FRAMES swaps, when every
+   list that could reference it has rendered. PVR palette slots ride the same queue
+   (palette RAM is just as live to the in-flight frame); the CPU-side heap copies are
+   freed immediately as before (the PVR never reads them). NOTE: re-speccing a LIVE
+   texture id with glTexImage2D still frees the old data immediately — same hazard, out
+   of scope until someone actually does that mid-frame. */
+#define GLDC_DEFERRED_FREES 96
+#define GLDC_DEFER_FRAMES   2
+
+typedef struct {
+    void*    data;          /* alloc_free(ALLOC_BASE, ..) payload, or NULL */
+    GLshort  palette_bank;  /* _glReleasePaletteSlot bank, or -1 */
+    GLushort palette_size;
+    GLubyte  age;
+} DeferredFree;
+
+static DeferredFree DEFERRED_FREES[GLDC_DEFERRED_FREES];
+static int DEFERRED_FREE_COUNT = 0;
+
+static void _glDeferFree(void* data, GLshort bank, GLushort size) {
+    if(DEFERRED_FREE_COUNT >= GLDC_DEFERRED_FREES) {
+        /* Overflow: fall back to the old immediate free — worst case is the old
+           one-frame artifact for this texture, never a leak. */
+        if(data) alloc_free(ALLOC_BASE, data);
+        if(bank > -1) _glReleasePaletteSlot(bank, size);
+        return;
+    }
+    DeferredFree* df = &DEFERRED_FREES[DEFERRED_FREE_COUNT++];
+    df->data = data;
+    df->palette_bank = bank;
+    df->palette_size = size;
+    df->age = 0;
+}
+
+/* Called once per glKosSwapBuffers: everything queued two swaps ago is now
+   guaranteed un-referenced by any in-flight scene — release it. */
+void _glProcessDeferredFrees(void) {
+    int i = 0;
+    while(i < DEFERRED_FREE_COUNT) {
+        DeferredFree* df = &DEFERRED_FREES[i];
+        if(++df->age >= GLDC_DEFER_FRAMES) {
+            if(df->data) alloc_free(ALLOC_BASE, df->data);
+            if(df->palette_bank > -1) _glReleasePaletteSlot(df->palette_bank, df->palette_size);
+            *df = DEFERRED_FREES[--DEFERRED_FREE_COUNT];   /* swap-remove keeps ages intact */
+        } else {
+            ++i;
+        }
+    }
+}
+
 void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
     TRACE();
 
@@ -654,13 +709,13 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
             }
 
             if(txr->data) {
-                alloc_free(ALLOC_BASE, txr->data);
+                _glDeferFree(txr->data, -1, 0);   /* VRAM: in-flight render may still sample it */
                 txr->data = NULL;
             }
 
             if(txr->palette && txr->palette->data) {
                 if (txr->palette->bank > -1) {
-                    _glReleasePaletteSlot(txr->palette->bank, txr->palette->size);
+                    _glDeferFree(NULL, txr->palette->bank, txr->palette->size);
                     txr->palette->bank = -1;
                 }
                 free(txr->palette->data);

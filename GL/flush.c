@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.06.30 19:15]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.15 16:49]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -120,6 +120,8 @@ void APIENTRY glKosInit() {
     glKosInitEx(&config);
 }
 
+extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM release */
+
 void APIENTRY glKosSwapBuffers() {
     TRACE();
 
@@ -148,6 +150,8 @@ void APIENTRY glKosSwapBuffers() {
     aligned_vector_clear(&TR_LIST.vector);
 
     _glApplyScissor(true);
+
+    _glProcessDeferredFrees();   /* release texture VRAM queued >= 2 swaps ago */
 }
 
 /* Render everything submitted so far into a VRAM texture instead of the screen,
