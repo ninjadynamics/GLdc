@@ -54,6 +54,14 @@ static inline void TransformNormalNoMod(const float* xIn, float* xOut) {
 
 void TransformVertex(float x, float y, float z, float w, float* oxyz, float* ow);
 
+/* Portable twin of the SH4 dual-FTRV pair (w fixed at 1.0f). */
+static inline void TransformVertex2(
+        float x0, float y0, float z0, float* oxyz0, float* ow0,
+        float x1, float y1, float z1, float* oxyz1, float* ow1) {
+    TransformVertex(x0, y0, z0, 1.0f, oxyz0, ow0);
+    TransformVertex(x1, y1, z1, 1.0f, oxyz1, ow1);
+}
+
 void InitGPU(_Bool autosort, _Bool fsaa);
 void ShutdownGPU();
 

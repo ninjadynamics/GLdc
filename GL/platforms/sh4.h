@@ -199,6 +199,103 @@ GL_FORCE_INLINE void TransformVertex(float x, float y, float z, float w, float* 
     *ow = __w;
 }
 
+/* Dual-vertex transform (2026-07-16, the heavy-city gap): FTRV has ~4-cycle
+   issue latency and the single-vertex form serializes load->FTRV->store per
+   vertex. Two back-to-back FTRVs on fv4/fv8 let the second issue while the
+   first drains, and give GCC eight loads to schedule BEFORE the block and
+   eight stores after — the FTRV latency hides under real work instead of
+   stalling. w is fixed at 1.0f (every fused-writer caller passes 1.0f). */
+GL_FORCE_INLINE void TransformVertex2(
+        float x0, float y0, float z0, float* oxyz0, float* ow0,
+        float x1, float y1, float z1, float* oxyz1, float* ow1) {
+    register float __a0 __asm__("fr4")  = x0;
+    register float __a1 __asm__("fr5")  = y0;
+    register float __a2 __asm__("fr6")  = z0;
+    register float __a3 __asm__("fr7")  = 1.0f;
+    register float __b0 __asm__("fr8")  = x1;
+    register float __b1 __asm__("fr9")  = y1;
+    register float __b2 __asm__("fr10") = z1;
+    register float __b3 __asm__("fr11") = 1.0f;
+
+    __asm__ __volatile__(
+        "ftrv   xmtrx,fv4\n\t"
+        "ftrv   xmtrx,fv8\n"
+        : "=f" (__a0), "=f" (__a1), "=f" (__a2), "=f" (__a3),
+          "=f" (__b0), "=f" (__b1), "=f" (__b2), "=f" (__b3)
+        : "0" (__a0), "1" (__a1), "2" (__a2), "3" (__a3),
+          "4" (__b0), "5" (__b1), "6" (__b2), "7" (__b3)
+    );
+
+    oxyz0[0] = __a0;
+    oxyz0[1] = __a1;
+    oxyz0[2] = __a2;
+    *ow0 = __a3;
+    oxyz1[0] = __b0;
+    oxyz1[1] = __b1;
+    oxyz1[2] = __b2;
+    *ow1 = __b3;
+}
+
+/* ---- The GOLD pair writer (2026-07-16): two COMPLETE 32-byte vertex records
+   in one scheduled block. The C pair form still serializes FTRV -> result
+   stores; here the second vertex's position loads hide the first FTRV's
+   latency, the uv loads hide the second's, MOVCA allocates each destination
+   line without a read, and the records fill DESCENDING with @-Rn stores
+   (flags/x/y/z/u/v/bgra/w — the exact Vertex layout). w is fldi1 (the callers
+   always transform w=1). Colors and flags arrive as words so GCC schedules
+   their loads before the block. Destinations MUST be 32-byte-aligned Vertex
+   records (aligned_vector guarantees it). Pointers are consumed (pass copies). */
+#define HAVE_GOLD_PAIR 1
+GL_FORCE_INLINE void TransformFillPair(
+        const float* p0, const float* p1,
+        const float* u0, const float* u1,
+        uint32_t c0, uint32_t c1,
+        uint32_t f0, uint32_t f1,
+        void* da, void* db) {
+    __asm__ __volatile__(
+        "fldi1   fr7\n\t"
+        "fmov.s  @%[p0]+, fr4\n\t"
+        "fmov.s  @%[p0]+, fr5\n\t"
+        "fmov.s  @%[p0]+, fr6\n\t"
+        "fldi1   fr11\n\t"
+        "ftrv    xmtrx, fv4\n\t"
+        "fmov.s  @%[p1]+, fr8\n\t"      /* v1 loads issue under fv4's FTRV */
+        "fmov.s  @%[p1]+, fr9\n\t"
+        "fmov.s  @%[p1]+, fr10\n\t"
+        "ftrv    xmtrx, fv8\n\t"
+        "fmov.s  @%[u0]+, fr0\n\t"      /* uv loads issue under fv8's FTRV */
+        "fmov.s  @%[u0]+, fr1\n\t"
+        "fmov.s  @%[u1]+, fr2\n\t"
+        "fmov.s  @%[u1]+, fr3\n\t"
+        "movca.l r0, @%[da]\n\t"        /* allocate da's line, no RAM read */
+        "add     #32, %[da]\n\t"
+        "fmov.s  fr7,  @-%[da]\n\t"     /* w0  (offset 28) */
+        "mov.l   %[c0], @-%[da]\n\t"    /* bgra0 (24) */
+        "fmov.s  fr1,  @-%[da]\n\t"     /* v0  (20) */
+        "fmov.s  fr0,  @-%[da]\n\t"     /* u0  (16) */
+        "fmov.s  fr6,  @-%[da]\n\t"     /* z0  (12) */
+        "fmov.s  fr5,  @-%[da]\n\t"     /* y0  (8)  */
+        "fmov.s  fr4,  @-%[da]\n\t"     /* x0  (4)  */
+        "mov.l   %[f0], @-%[da]\n\t"    /* flags0 (0) */
+        "movca.l r0, @%[db]\n\t"
+        "add     #32, %[db]\n\t"
+        "fmov.s  fr11, @-%[db]\n\t"
+        "mov.l   %[c1], @-%[db]\n\t"
+        "fmov.s  fr3,  @-%[db]\n\t"
+        "fmov.s  fr2,  @-%[db]\n\t"
+        "fmov.s  fr10, @-%[db]\n\t"
+        "fmov.s  fr9,  @-%[db]\n\t"
+        "fmov.s  fr8,  @-%[db]\n"
+        "mov.l   %[f1], @-%[db]\n\t"
+        : [p0] "+&r" (p0), [p1] "+&r" (p1),
+          [u0] "+&r" (u0), [u1] "+&r" (u1),
+          [da] "+&r" (da), [db] "+&r" (db)
+        : [c0] "r" (c0), [c1] "r" (c1), [f0] "r" (f0), [f1] "r" (f1)
+        : "r0", "fr0", "fr1", "fr2", "fr3", "fr4", "fr5", "fr6", "fr7",
+          "fr8", "fr9", "fr10", "fr11", "memory"
+    );
+}
+
 void InitGPU(_Bool autosort, _Bool fsaa);
 
 void ShutdownGPU();

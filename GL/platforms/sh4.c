@@ -542,17 +542,59 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n) {
     sq_wait();
 }
 
+/* Fused divide+submit for an all-visible run (2026-07-16, the heavy-city gap):
+   the three-pass shape (scan, divide-in-place, sq_fast_cpy) reads the run's
+   bytes three times, and at heavy city load the op+tr walks are the largest
+   byte volume in the frame. This replaces divide+copy: read each 32-byte
+   record ONCE, perspective-divide in registers, store straight to the store
+   queues. Same contract sq_fast_cpy relies on: QACR is already TA-bound by
+   SceneListBegin's pvr_dr_init, and successive +32 destinations alternate
+   SQ0/SQ1 by address bit 5. Headers ride the run verbatim. The math is the
+   _glPerspectiveDivideVertex math verbatim (same fsrra, same w==1 ortho
+   branch), so the TA sees byte-identical records. */
+static void _glDivideSubmitRun(Vertex* v, int n) {
+    uintptr_t d = sq_dest_addr;
+    for(; n--; ++v, d += 32) {
+        uint32_t* q = (uint32_t*)d;
+        PREFETCH(v + 2);
+        if(unlikely(is_header(v))) {
+            const uint32_t* s = (const uint32_t*)v;
+            q[0] = s[0]; q[1] = s[1]; q[2] = s[2]; q[3] = s[3];
+            q[4] = s[4]; q[5] = s[5]; q[6] = s[6]; q[7] = s[7];
+        } else {
+            const float w = v->w;
+            const float f = _glFastInvert(w);
+            float z;
+            if(unlikely(w == 1.0f)) {
+                z = _glFastInvert(1.0001f + v->xyz[2]);
+            } else {
+                z = f;
+            }
+            q[0] = v->flags;
+            ((float*)q)[1] = v->xyz[0] * f;
+            ((float*)q)[2] = v->xyz[1] * f;
+            ((float*)q)[3] = z;
+            q[4] = ((const uint32_t*)v)[4];
+            q[5] = ((const uint32_t*)v)[5];
+            q[6] = ((const uint32_t*)v)[6];
+            q[7] = ((const uint32_t*)v)[7];
+        }
+        __asm__ __volatile__("pref @%0" : : "r"(d) : "memory");   /* fire the 32B burst */
+    }
+}
+
 /* ---- All-visible run finalizer (2026-07-15, HyperSolar investigation) ----
    [GLDC-T] proved the old submission loop IS the swap cost (wait=0.01ms, op+tr
    ~6.5ms at heavy city load): every vertex paid a 32-byte qv staging copy plus
    a count=1 sq_fast_cpy (FSCHG entry/exit per record, always queue SQ0). But
    near-plane clipping is RARE — almost every strip in a frame is fully
-   visible. So: scan the list at STRIP granularity; divide all-visible strips
-   in place; accumulate maximal runs (headers ride along untouched — they are
-   plain 32-byte records); submit each run with ONE multi-record sq_fast_cpy
-   (KOS's asm alternates SQ0/SQ1 internally and pays FSCHG once per call).
-   Any strip that crosses the near plane (or lacks an EOL terminator) flushes
-   the run and takes SceneListSubmitGeneric above — the byte-exact old path. */
+   visible. So: scan the list at STRIP granularity; accumulate maximal
+   all-visible runs (headers ride along untouched — they are plain 32-byte
+   records); submit each run with _glDivideSubmitRun above, which fuses the
+   perspective divide INTO the store-queue write (one read of the run instead
+   of the old divide-in-place + copy two). Any strip that crosses the near
+   plane (or lacks an EOL terminator) flushes the run and takes
+   SceneListSubmitGeneric above — the byte-exact old path. */
 void SceneListSubmit(Vertex* vertices, int n) {
     TRACE();
 
@@ -599,13 +641,14 @@ void SceneListSubmit(Vertex* vertices, int n) {
         }
 
         if(all_visible) {
-            _glPerspectiveDivideVertex(v, (int)(strip_end - v) + 1);
+            /* Divide is FUSED into the run flush (_glDivideSubmitRun) — the
+               strip stays in clip space until submitted. */
             v = strip_end + 1;        /* strip stays in the run */
         } else {
             /* Flush everything accumulated before this strip, then let the
                exact old path do the clip work on the strip alone. */
             if(v > run_start) {
-                sq_fast_cpy((void*) sq_dest_addr, run_start, (size_t)(v - run_start));
+                _glDivideSubmitRun(run_start, (int)(v - run_start));
             }
             SceneListSubmitGeneric(v, (int)(strip_end - v) + 1);
             v = strip_end + 1;
@@ -614,7 +657,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
     }
 
     if(v > run_start) {
-        sq_fast_cpy((void*) sq_dest_addr, run_start, (size_t)(v - run_start));
+        _glDivideSubmitRun(run_start, (int)(v - run_start));
     }
 
     sq_wait();

@@ -552,6 +552,111 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
 
     Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
 
+    /* ---- Fused four-vertex kernel (2026-07-16, the city lane) ----
+       The three-pass SoA body below touches every output line three times
+       (uv, color, position) with the swizzle recomputed per pass; between
+       passes a MOVCA'd line can be evicted and read back. This kernel writes
+       each quad's four records COMPLETELY, one MOVCA + full 32-byte fill per
+       record, strip order (0,1,3,2) baked into the slot offsets, EOL on the
+       last strip record. Requires the full P3F/T2F/C4UB-aligned set — the
+       city and glow scratch always are; anything else takes the passes. */
+    {
+        const GLuint pstride = ATTRIB_LIST.vertex.stride;
+        const GLuint ustride = ATTRIB_LIST.uv.stride;
+        const GLuint cstride = ATTRIB_LIST.colour.stride;
+        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + first * pstride;
+        const GLubyte* up = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + first * ustride : NULL;
+        const GLubyte* cp = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + first * cstride : NULL;
+
+        if(up && cp && ((((uintptr_t) cp) | cstride) & 3) == 0) {
+            Vertex* it = batch_base;
+
+#define PUC_Q_VERT(slot, fl) do { \
+        Vertex* d = it + (slot); \
+        VERTEX_CACHE_ALLOC(d); \
+        TransformVertex(((const float*) pp)[0], ((const float*) pp)[1], \
+                        ((const float*) pp)[2], 1.0f, d->xyz, &d->w); \
+        d->uv[0] = ((const float*) up)[0]; \
+        d->uv[1] = ((const float*) up)[1]; \
+        *((uint32_t*) d->bgra) = *((const uint32_t*) cp); \
+        d->flags = (fl); \
+        pp += pstride; up += ustride; cp += cstride; \
+    } while(0)
+
+            /* Glyph/bar-scale draws (HUD): the pair machinery's setup overhead
+               outweighs the FTRV win — [PROF] measured hud= +0.25ms when small
+               batches rode the pairs. They take the proven single-vertex path. */
+            if(count < 64) {
+                for(GLuint q = count >> 2; q--; it += 4) {
+                    PUC_Q_VERT(0, GPU_CMD_VERTEX);
+                    PUC_Q_VERT(1, GPU_CMD_VERTEX);
+                    PUC_Q_VERT(3, GPU_CMD_VERTEX_EOL);
+                    PUC_Q_VERT(2, GPU_CMD_VERTEX);
+                }
+                for(GLuint r = 0; r < (count & 3); ++r, ++it) {
+                    PUC_Q_VERT(0, (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
+                }
+                return;   /* (PUC_Q_VERT's #undef stays at the block end below) */
+            }
+
+#ifdef HAVE_GOLD_PAIR
+/* The scheduled block does loads, both FTRVs, MOVCA and ALL stores itself —
+   uv loads and record stores ride the FTRV latency (see TransformFillPair). */
+#define PUC_Q_PAIR(sa, sb, fa, fb) do { \
+        TransformFillPair((const float*) pp, (const float*) (pp + pstride), \
+                          (const float*) up, (const float*) (up + ustride), \
+                          *((const uint32_t*) cp), *((const uint32_t*) (cp + cstride)), \
+                          (fa), (fb), it + (sa), it + (sb)); \
+        pp += pstride << 1; up += ustride << 1; cp += cstride << 1; \
+    } while(0)
+#else
+/* Two source vertices per shot through the dual-FTRV pair (fv4+fv8): the
+   second FTRV issues while the first drains, and the eight input loads /
+   eight result stores schedule around the block instead of serializing. */
+#define PUC_Q_PAIR(sa, sb, fa, fb) do { \
+        Vertex* da = it + (sa); \
+        Vertex* db = it + (sb); \
+        VERTEX_CACHE_ALLOC(da); \
+        VERTEX_CACHE_ALLOC(db); \
+        const float* qa = (const float*) pp; \
+        const float* qb = (const float*) (pp + pstride); \
+        TransformVertex2(qa[0], qa[1], qa[2], da->xyz, &da->w, \
+                         qb[0], qb[1], qb[2], db->xyz, &db->w); \
+        da->uv[0] = ((const float*) up)[0]; \
+        da->uv[1] = ((const float*) up)[1]; \
+        db->uv[0] = ((const float*) (up + ustride))[0]; \
+        db->uv[1] = ((const float*) (up + ustride))[1]; \
+        *((uint32_t*) da->bgra) = *((const uint32_t*) cp); \
+        *((uint32_t*) db->bgra) = *((const uint32_t*) (cp + cstride)); \
+        da->flags = (fa); \
+        db->flags = (fb); \
+        pp += pstride << 1; up += ustride << 1; cp += cstride << 1; \
+    } while(0)
+#endif
+
+            for(GLuint q = count >> 2; q--; it += 4) {
+                PREFETCH(pp + PUC_PREF_AHEAD);
+                PREFETCH(up + PUC_PREF_AHEAD);
+                PREFETCH(cp + PUC_PREF_AHEAD);
+                PUC_Q_PAIR(0, 1, GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+                PUC_Q_PAIR(3, 2, GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);   /* src 2 = last strip record */
+            }
+#undef PUC_Q_PAIR
+
+            /* Partial trailing quad (caller contract violation — the city never
+               sends one): the records are already reserved on the list, so they
+               must be initialized. Sequential, old flag pattern; the submit
+               finalizer's generic path EOL-handles the unterminated span. */
+            for(GLuint r = 0; r < (count & 3); ++r, ++it) {
+                PUC_Q_VERT(0, (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
+            }
+#undef PUC_Q_VERT
+            return;
+        }
+    }
+
+    /* Fallback: the original three-pass SoA body (missing uv/color, or
+       unaligned colors). */
     GLuint min = 0;
     for(min = 0; min < count; min += 60) {
         Vertex* const start = batch_base + min;
@@ -1251,8 +1356,41 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
     GLsizei eol_next = tris_eol ? 2 : c - 1;   /* index of the next EOL vertex */
 
     if(up && cp) {
-        for(GLsizei i = 0; i < c; ++i, ++it) {
+        GLsizei i = 0;
+        /* Two vertices per shot through the dual-FTRV pair (fv4+fv8): the
+           second FTRV issues while the first drains, and GCC schedules the
+           pair's loads/stores around the block instead of serializing. */
+        for(; i + 2 <= c; i += 2, it += 2) {
             PREFETCH(pp + (pstride << 1));
+            VERTEX_CACHE_ALLOC(it);
+            VERTEX_CACHE_ALLOC(it + 1);
+            const float* qa = (const float*) pp;
+            const float* qb = (const float*) (pp + pstride);
+            TransformVertex2(qa[0], qa[1], qa[2], it->xyz, &it->w,
+                             qb[0], qb[1], qb[2], (it + 1)->xyz, &(it + 1)->w);
+            it->uv[0] = ((const float*) up)[0];
+            it->uv[1] = ((const float*) up)[1];
+            (it + 1)->uv[0] = ((const float*) (up + ustride))[0];
+            (it + 1)->uv[1] = ((const float*) (up + ustride))[1];
+            *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
+            *((uint32_t*) (it + 1)->bgra) = *((const uint32_t*) (cp + cstride));
+            if(i == eol_next) {
+                it->flags = GPU_CMD_VERTEX_EOL;
+                eol_next += 3;   /* only reachable again on the tris rule */
+            } else {
+                it->flags = GPU_CMD_VERTEX;
+            }
+            if(i + 1 == eol_next) {
+                (it + 1)->flags = GPU_CMD_VERTEX_EOL;
+                eol_next += 3;
+            } else {
+                (it + 1)->flags = GPU_CMD_VERTEX;
+            }
+            pp += pstride << 1;
+            up += ustride << 1;
+            cp += cstride << 1;
+        }
+        for(; i < c; ++i, ++it) {   /* odd tail */
             VERTEX_CACHE_ALLOC(it);
             TransformVertex(((const float*) pp)[0], ((const float*) pp)[1],
                             ((const float*) pp)[2], 1.0f, it->xyz, &it->w);
@@ -1263,7 +1401,7 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
             cp += cstride;
             if(i == eol_next) {
                 it->flags = GPU_CMD_VERTEX_EOL;
-                eol_next += 3;   /* only reachable again on the tris rule */
+                eol_next += 3;
             } else {
                 it->flags = GPU_CMD_VERTEX;
             }
