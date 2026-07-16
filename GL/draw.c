@@ -937,11 +937,10 @@ GL_FORCE_INLINE int _calc_pvr_depth_test() {
     }
 }
 
-GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextureHeader, PolyList* activePolyList, GLshort textureUnit) {
-    TRACE();
-    GLDC_STAT_INC(headers_emitted);
-
-    // Compile the header
+/* Build the PolyContext for the CURRENT GL state on the given list — the state
+   half of apply_poly_header, shared with the sprite path (sh4 platform), which
+   compiles the same context into a sprite header instead. */
+void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort textureUnit) {
     PolyContext ctx;
     memset(&ctx, 0, sizeof(PolyContext));
 
@@ -1000,6 +999,16 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
     }
 
     _glUpdatePVRTextureContext(&ctx, textureUnit);
+
+    *out_ctx = ctx;
+}
+
+GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextureHeader, PolyList* activePolyList, GLshort textureUnit) {
+    TRACE();
+    GLDC_STAT_INC(headers_emitted);
+
+    PolyContext ctx;
+    _glBuildPolyContext(&ctx, activePolyList, textureUnit);
 
     if(multiTextureHeader) {
         gl_assert(ctx.list_type == GPU_LIST_TR_POLY);
@@ -1357,6 +1366,11 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
 
     if(up && cp) {
         GLsizei i = 0;
+        /* NOTE(2026-07-16): the gold block was tried here and REVERTED — model
+           strips average ~6 verts, so this writer runs 2 pairs + a tail per
+           call, and the block's schedule never amortizes (measured ply 1.47 ->
+           1.52, enm 1.07 -> 1.14). The C pairs are neutral; gold stays on the
+           long-run city quad kernel where it measured -0.1ms. */
         /* Two vertices per shot through the dual-FTRV pair (fv4+fv8): the
            second FTRV issues while the first drains, and GCC schedules the
            pair's loads/stores around the block instead of serializing. */
@@ -1481,6 +1495,26 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
 /* Triangles sibling of glKosDrawMultiStrips (same contract, same fused writer):
    for warm batch caches that draw pre-expanded triangle soup in one call — the
    enemy lane. EOL lands on every 3rd vertex. */
+/* TA sprite quads (2026-07-16, the glow lane): each planar single-color quad
+   becomes ONE 64-byte sprite record (vs four 32-byte vertex records) with the
+   color in a shared header emitted on color change — headers coalesce best
+   when the caller quantizes alpha. Transform + perspective divide happen HERE
+   (sprites carry screen coordinates), so the records bypass the submit
+   finalizer entirely. Sprites have NO clip path: a quad with any corner past
+   the near plane is DROPPED whole. Contract: 12 floats per quad (ring order,
+   matching the glow scratch), one color word per quad read at colors[q*4]
+   (the scratch's 4-equal-words layout), current texture/blend/depth state,
+   ADDITIVE/order-free content only (records land at the list tail). */
+void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLsizei quads) {
+    TRACE();
+
+    if(quads <= 0) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;   /* narrow contract */
+
+    _glTnlLoadMatrix();
+    SceneSpriteQuads(pos, colors, quads);
+}
+
 void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     TRACE();
 

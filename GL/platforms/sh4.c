@@ -663,6 +663,123 @@ void SceneListSubmit(Vertex* vertices, int n) {
     sq_wait();
 }
 
+/* ---- TA sprite quads (2026-07-16, the glow lane) ----
+   Builds compiled sprite headers + 64-byte sprite records into the active
+   list's sprite sidecar. The context comes from the SAME state builder the
+   poly headers use (_glBuildPolyContext) mapped onto KOS's sprite context —
+   GLdc's GPU_* constants are value-identical to the legacy PVR_* ones, so the
+   fields transfer raw. The divide math is the vertex path's verbatim (fsrra,
+   w==1 ortho branch) so sprites depth-match coplanar geometry exactly. */
+void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
+    PolyList* out = _glActivePolyList();
+    AlignedVector* sv = &out->sprites;
+
+    PolyContext ctx;
+    _glBuildPolyContext(&ctx, out, 0);
+
+    pvr_sprite_cxt_t sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.list_type       = ctx.list_type;
+    sc.gen.alpha       = ctx.gen.alpha;
+    sc.gen.fog_type    = ctx.gen.fog_type;
+    sc.gen.culling     = ctx.gen.culling;
+    sc.gen.color_clamp = ctx.gen.color_clamp;
+    sc.gen.clip_mode   = ctx.gen.clip_mode;
+    sc.gen.specular    = ctx.gen.specular;
+    sc.blend.src        = ctx.blend.src;
+    sc.blend.dst        = ctx.blend.dst;
+    sc.blend.src_enable = ctx.blend.src_enable;
+    sc.blend.dst_enable = ctx.blend.dst_enable;
+    sc.depth.comparison = ctx.depth.comparison;
+    sc.depth.write      = ctx.depth.write;
+    sc.txr.enable      = ctx.txr.enable;
+    sc.txr.filter      = ctx.txr.filter;
+    sc.txr.mipmap      = ctx.txr.mipmap;
+    sc.txr.mipmap_bias = ctx.txr.mipmap_bias;
+    sc.txr.uv_flip     = ctx.txr.uv_flip;
+    sc.txr.uv_clamp    = ctx.txr.uv_clamp;
+    sc.txr.alpha       = ctx.txr.alpha;
+    sc.txr.env         = ctx.txr.env;
+    sc.txr.width       = ctx.txr.width;
+    sc.txr.height      = ctx.txr.height;
+    sc.txr.format      = ctx.txr.format;
+    sc.txr.base        = (pvr_ptr_t) ctx.txr.base;
+
+    pvr_sprite_hdr_t shdr;
+    pvr_sprite_compile(&shdr, &sc);
+
+    uint32_t last_argb = 0;
+    int have_hdr = 0;
+
+    for(int q = 0; q < quads; ++q) {
+        const float* p = pos + q * 12;
+        float xyz[4][3];
+        float w[4];
+        TransformVertex2(p[0], p[1], p[2],  xyz[0], &w[0],
+                         p[3], p[4], p[5],  xyz[1], &w[1]);
+        TransformVertex2(p[6], p[7], p[8],  xyz[2], &w[2],
+                         p[9], p[10], p[11], xyz[3], &w[3]);
+
+        /* No sprite clip path: drop the quad whole if any corner crosses the
+           near plane (at that point a glow face is at the screen edge). */
+        if(xyz[0][2] < -w[0] || xyz[1][2] < -w[1] ||
+           xyz[2][2] < -w[2] || xyz[3][2] < -w[3]) {
+            continue;
+        }
+
+        /* Glow scratch layout: 4 equal per-vertex color words per face. BGRA
+           bytes in memory read as an ARGB32 word — exactly what the sprite
+           header wants. */
+        uint32_t argb = colors[q * 4];
+        if(!have_hdr || argb != last_argb) {
+            uint32_t* h = (uint32_t*) aligned_vector_extend(sv, 1);
+            memcpy(h, &shdr, 32);
+            h[4] = argb;   /* sprite base color (header words 4/5) */
+            h[5] = 0;      /* oargb */
+            last_argb = argb;
+            have_hdr = 1;
+        }
+
+        pvr_sprite_txr_t* s = (pvr_sprite_txr_t*) aligned_vector_extend(sv, 2);
+        const float fa = _glFastInvert(w[0]);
+        const float fb = _glFastInvert(w[1]);
+        const float fc = _glFastInvert(w[2]);
+        const float fd = _glFastInvert(w[3]);
+        s->flags = GPU_CMD_VERTEX_EOL;
+        s->ax = xyz[0][0] * fa;
+        s->ay = xyz[0][1] * fa;
+        s->az = (w[0] == 1.0f) ? _glFastInvert(1.0001f + xyz[0][2]) : fa;
+        s->bx = xyz[1][0] * fb;
+        s->by = xyz[1][1] * fb;
+        s->bz = (w[1] == 1.0f) ? _glFastInvert(1.0001f + xyz[1][2]) : fb;
+        s->cx = xyz[2][0] * fc;
+        s->cy = xyz[2][1] * fc;
+        s->cz = (w[2] == 1.0f) ? _glFastInvert(1.0001f + xyz[2][2]) : fc;
+        s->dx = xyz[3][0] * fd;
+        s->dy = xyz[3][1] * fd;
+        s->dummy = 0;
+        /* corner UVs (0,0)(1,0)(1,1) packed 16-bit (top halves of the floats);
+           the fourth corner's UV is hardware-derived like its Z */
+        s->auv = 0x00000000;
+        s->buv = 0x3F800000;
+        s->cuv = 0x3F803F80;
+    }
+}
+
+/* SQ a finished sprite sidecar verbatim (records are pre-divided, pre-compiled).
+   Self-contained register setup: the vertex submit may not have run this list. */
+void SceneSpritesSubmit(void* blob, int blocks32) {
+    if(blocks32 <= 0) return;
+
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+
+    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+    sq_fast_cpy((void*) sq_dest_addr, blob, (size_t) blocks32);
+    sq_wait();
+}
+
 void SceneBegin() {
     pvr_wait_ready();
     ApplyDeferredFogTable();

@@ -444,6 +444,15 @@ void SceneListSubmit(Vertex* v2, int n) {
     _glFlushBuffer();
 }
 
+/* TA sprites are a PVR-hardware path; the software platform draws nothing. */
+void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
+    (void) pos; (void) colors; (void) quads;
+}
+
+void SceneSpritesSubmit(void* blob, int blocks32) {
+    (void) blob; (void) blocks32;
+}
+
 void SceneListFinish() {
     uint32_t vidx = 0;
     const uint32_t* flags = (const uint32_t*) BUFFER;

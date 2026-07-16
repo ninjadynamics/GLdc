@@ -103,6 +103,10 @@ typedef struct {
 typedef struct {
     unsigned int list_type;
     AlignedVector vector;
+    /* TA sprite sidecar: pre-compiled sprite headers + 64B records (32B units),
+       already screen-space — SQ'd verbatim after the list's vertex stream and
+       cleared with it. Additive/order-free content only (it lands at list end). */
+    AlignedVector sprites;
 } PolyList;
 
 typedef struct {
@@ -349,6 +353,7 @@ void _glWipeTextureOnFramebuffers(GLuint texture);
 GLubyte _glInitTextures();
 
 void _glUpdatePVRTextureContext(PolyContext* context, GLshort textureUnit);
+void _glBuildPolyContext(PolyContext* ctx, PolyList* activePolyList, GLshort textureUnit);
 void _glAllocateSpaceForMipmaps(TextureObject* active);
 
 typedef struct {

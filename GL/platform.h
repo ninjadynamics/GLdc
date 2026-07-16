@@ -271,6 +271,13 @@ void SceneListFinish();
 
 void SceneFinish();
 
+/* TA sprite quads (the glow lane): transform+divide `quads` planar quads NOW
+   and append compiled sprite headers + 64-byte sprite records to the active
+   list's sprite sidecar; SceneSpritesSubmit SQs a finished sidecar blob
+   verbatim inside the list's begin/finish window. No-ops off Dreamcast. */
+void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads);
+void SceneSpritesSubmit(void* blob, int blocks32);
+
 #define GPU_TA_CMD_TYPE_SHIFT       24
 #define GPU_TA_CMD_TYPE_MASK        (7 << GPU_TA_CMD_TYPE_SHIFT)
 

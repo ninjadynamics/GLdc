@@ -95,6 +95,14 @@ GLAPI void APIENTRY glKosCaptureArrays(GLuint slot);
    the general glDrawArrays path automatically. See draw.c. */
 GLAPI void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n);
 GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
+/* TA sprite quads: one 64-byte hardware sprite per planar single-color quad
+   (vs four 32-byte vertices), color in a shared header emitted on change,
+   transform+divide done at call time (bypasses the submit finalizer). pos =
+   12 floats/quad in ring order, colors read at [quad*4] (the glow scratch
+   layout, BGRA bytes = ARGB word). ADDITIVE/order-free content only (records
+   land at the list tail); quads crossing the near plane are DROPPED whole
+   (no sprite clip path). Draws nothing off Dreamcast. See draw.c. */
+GLAPI void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLsizei quads);
 GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 

@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.16 09:27]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.16 11:08]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -103,6 +103,12 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
     aligned_vector_reserve(&OP_LIST.vector, config->initial_op_capacity);
     aligned_vector_reserve(&PT_LIST.vector, config->initial_pt_capacity);
     aligned_vector_reserve(&TR_LIST.vector, config->initial_tr_capacity);
+
+    /* Sprite sidecars (32B units: compiled headers + 64B sprite records) */
+    aligned_vector_init(&OP_LIST.sprites, 32);
+    aligned_vector_init(&PT_LIST.sprites, 32);
+    aligned_vector_init(&TR_LIST.sprites, 32);
+    aligned_vector_reserve(&TR_LIST.sprites, 512);   /* the glow lane lives on TR */
 }
 
 extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
@@ -112,6 +118,9 @@ void APIENTRY glKosShutdown() {
     aligned_vector_clear(&OP_LIST.vector);
     aligned_vector_clear(&PT_LIST.vector);
     aligned_vector_clear(&TR_LIST.vector);
+    aligned_vector_clear(&OP_LIST.sprites);
+    aligned_vector_clear(&PT_LIST.sprites);
+    aligned_vector_clear(&TR_LIST.sprites);
 
     _glInvalidateCapturedArrays();
     _glResetDeferredFrees();   /* ShutdownGPU tears the whole VRAM heap down anyway */
@@ -142,6 +151,32 @@ static int _gt_frames;
         var += timer_us_gettime64() - _t0; \
     } while(0)
 
+/* One list's full submission: vertex stream then the sprite sidecar (sprites
+   are additive/order-free by contract, so tail placement is safe). Begin/finish
+   are the caller's — it decides whether the list opens at all. */
+static void submit_list(PolyList* l) {
+    if(aligned_vector_header(&l->vector)->size > 2) {
+        SceneListSubmit((Vertex*) aligned_vector_front(&l->vector), aligned_vector_size(&l->vector));
+    }
+    const uint32_t sn = aligned_vector_size(&l->sprites);
+    if(sn) {
+        SceneSpritesSubmit(aligned_vector_front(&l->sprites), (int) sn);
+    }
+}
+
+static GLboolean list_has_content(PolyList* l) {
+    return aligned_vector_header(&l->vector)->size > 2 || aligned_vector_size(&l->sprites) > 0;
+}
+
+static void clear_lists(void) {
+    aligned_vector_clear(&OP_LIST.vector);
+    aligned_vector_clear(&PT_LIST.vector);
+    aligned_vector_clear(&TR_LIST.vector);
+    aligned_vector_clear(&OP_LIST.sprites);
+    aligned_vector_clear(&PT_LIST.sprites);
+    aligned_vector_clear(&TR_LIST.sprites);
+}
+
 void APIENTRY glKosSwapBuffers() {
     TRACE();
 
@@ -149,24 +184,21 @@ void APIENTRY glKosSwapBuffers() {
        apply + pvr_scene_begin, not the PVR fence alone. */
     GT_MARK(_gt_wait_us, SceneBegin());
 
-    if(aligned_vector_header(&OP_LIST.vector)->size > 2) {
+    if(list_has_content(&OP_LIST)) {
         SceneListBegin(GPU_LIST_OP_POLY);
-        GT_MARK(_gt_op_us,
-            SceneListSubmit((Vertex*) aligned_vector_front(&OP_LIST.vector), aligned_vector_size(&OP_LIST.vector)));
+        GT_MARK(_gt_op_us, submit_list(&OP_LIST));
         SceneListFinish();
     }
 
-    if(aligned_vector_header(&PT_LIST.vector)->size > 2) {
+    if(list_has_content(&PT_LIST)) {
         SceneListBegin(GPU_LIST_PT_POLY);
-        GT_MARK(_gt_pt_us,
-            SceneListSubmit((Vertex*) aligned_vector_front(&PT_LIST.vector), aligned_vector_size(&PT_LIST.vector)));
+        GT_MARK(_gt_pt_us, submit_list(&PT_LIST));
         SceneListFinish();
     }
 
-    if(aligned_vector_header(&TR_LIST.vector)->size > 2) {
+    if(list_has_content(&TR_LIST)) {
         SceneListBegin(GPU_LIST_TR_POLY);
-        GT_MARK(_gt_tr_us,
-            SceneListSubmit((Vertex*) aligned_vector_front(&TR_LIST.vector), aligned_vector_size(&TR_LIST.vector)));
+        GT_MARK(_gt_tr_us, submit_list(&TR_LIST));
         SceneListFinish();
     }
 
@@ -181,9 +213,7 @@ void APIENTRY glKosSwapBuffers() {
         _gt_frames = 0;
     }
 
-    aligned_vector_clear(&OP_LIST.vector);
-    aligned_vector_clear(&PT_LIST.vector);
-    aligned_vector_clear(&TR_LIST.vector);
+    clear_lists();
 
     _glApplyScissor(true);
 
@@ -201,28 +231,26 @@ void APIENTRY glKosFlushToTexture(void* tex, unsigned int w, unsigned int h) {
     TRACE();
 
     SceneBeginToTexture(tex, w, h);
-        if(aligned_vector_header(&OP_LIST.vector)->size > 2) {
+        if(list_has_content(&OP_LIST)) {
             SceneListBegin(GPU_LIST_OP_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&OP_LIST.vector), aligned_vector_size(&OP_LIST.vector));
+            submit_list(&OP_LIST);
             SceneListFinish();
         }
 
-        if(aligned_vector_header(&PT_LIST.vector)->size > 2) {
+        if(list_has_content(&PT_LIST)) {
             SceneListBegin(GPU_LIST_PT_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&PT_LIST.vector), aligned_vector_size(&PT_LIST.vector));
+            submit_list(&PT_LIST);
             SceneListFinish();
         }
 
-        if(aligned_vector_header(&TR_LIST.vector)->size > 2) {
+        if(list_has_content(&TR_LIST)) {
             SceneListBegin(GPU_LIST_TR_POLY);
-            SceneListSubmit((Vertex*) aligned_vector_front(&TR_LIST.vector), aligned_vector_size(&TR_LIST.vector));
+            submit_list(&TR_LIST);
             SceneListFinish();
         }
     SceneFinish();
 
-    aligned_vector_clear(&OP_LIST.vector);
-    aligned_vector_clear(&PT_LIST.vector);
-    aligned_vector_clear(&TR_LIST.vector);
+    clear_lists();
 
     _glApplyScissor(true);
 
