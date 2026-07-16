@@ -105,12 +105,24 @@ GL_FORCE_INLINE uint32_t twid_location(uint32_t i) {
 }
 
 
+static void _glDrainDeferredFrees(void);   /* defined with the queue below */
+
 static void* alloc_malloc_and_defrag(size_t size) {
     void* ret = alloc_malloc(ALLOC_BASE, size);
 
     if(!ret) {
-        /* Tried to allocate, but out of room, let's try defragging
-         * and repeating the alloc */
+        /* Under pressure the deferred texture frees (the 2-swap aging queue that
+           protects in-flight PVR frames) are the FIRST thing to reclaim: a full
+           game reset unloads + reloads everything without a swap in between, so
+           the whole old texture set can still sit queued (2026-07-15 reset OOM).
+           Draining early risks only the old one-frame artifact - infinitely
+           better than failing the allocation. */
+        _glDrainDeferredFrees();
+        ret = alloc_malloc(ALLOC_BASE, size);
+    }
+
+    if(!ret) {
+        /* Still out of room: defrag and repeat. */
         fprintf(stderr, "Ran out of memory, defragmenting\n");
         glDefragmentTextureMemory_KOS();
         ret = alloc_malloc(ALLOC_BASE, size);
@@ -634,9 +646,11 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
    we age the frees: the block is released only after GLDC_DEFER_FRAMES swaps, when every
    list that could reference it has rendered. PVR palette slots ride the same queue
    (palette RAM is just as live to the in-flight frame); the CPU-side heap copies are
-   freed immediately as before (the PVR never reads them). NOTE: re-speccing a LIVE
-   texture id with glTexImage2D still frees the old data immediately — same hazard, out
-   of scope until someone actually does that mid-frame. */
+   freed immediately as before (the PVR never reads them). Changed-spec re-specs of a
+   live id ride the queue too. NOTE: SAME-spec glTexImage2D / any TexSubImage / mip-chain
+   regeneration still overwrite live VRAM in place — closing that class needs
+   copy-on-write storage, out of scope until someone actually streams texture updates
+   mid-frame. */
 #define GLDC_DEFERRED_FREES 96
 #define GLDC_DEFER_FRAMES   2
 
@@ -667,6 +681,17 @@ static void _glDeferFree(void* data, GLshort bank, GLushort size) {
 
 /* Called once per glKosSwapBuffers: everything queued two swaps ago is now
    guaranteed un-referenced by any in-flight scene — release it. */
+/* Free EVERYTHING queued, regardless of age - the allocation-pressure escape
+   hatch used by alloc_malloc_and_defrag above. */
+static void _glDrainDeferredFrees(void) {
+    for(int i = 0; i < DEFERRED_FREE_COUNT; ++i) {
+        DeferredFree* df = &DEFERRED_FREES[i];
+        if(df->data) alloc_free(ALLOC_BASE, df->data);
+        if(df->palette_bank > -1) _glReleasePaletteSlot(df->palette_bank, df->palette_size);
+    }
+    DEFERRED_FREE_COUNT = 0;
+}
+
 void _glProcessDeferredFrees(void) {
     int i = 0;
     while(i < DEFERRED_FREE_COUNT) {
@@ -679,6 +704,12 @@ void _glProcessDeferredFrees(void) {
             ++i;
         }
     }
+}
+
+/* Shutdown/re-init: the VRAM heap the records point into is being torn down
+   whole — drop the records, free nothing. */
+void _glResetDeferredFrees(void) {
+    DEFERRED_FREE_COUNT = 0;
 }
 
 void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
@@ -705,21 +736,29 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
                 if(txr == TEXTURE_UNITS[j]) {
                     // Reset to the default texture
                     TEXTURE_UNITS[j] = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, 0);
+                    /* The unit changed under the current header: without this a
+                       same-state draw would reuse a header naming the dead texture. */
+                    _glGPUStateMarkDirty();
                 }
             }
 
-            if(txr->data) {
-                _glDeferFree(txr->data, -1, 0);   /* VRAM: in-flight render may still sample it */
-                txr->data = NULL;
-            }
+            /* One queue record covers both the VRAM data and the palette bank. */
+            GLshort bank = -1;
+            GLushort bank_size = 0;
 
             if(txr->palette && txr->palette->data) {
                 if (txr->palette->bank > -1) {
-                    _glDeferFree(NULL, txr->palette->bank, txr->palette->size);
+                    bank = txr->palette->bank;
+                    bank_size = txr->palette->size;
                     txr->palette->bank = -1;
                 }
                 free(txr->palette->data);
                 txr->palette->data = NULL;
+            }
+
+            if(txr->data || bank > -1) {
+                _glDeferFree(txr->data, bank, bank_size);   /* in-flight render may still sample both */
+                txr->data = NULL;
             }
 
             if(txr->palette) {
@@ -962,9 +1001,11 @@ void APIENTRY glCompressedTexImage2DARB(GLenum target,
     active->mipmap = (mipmapped) ? ~0 : (1 << level);  /* Set only a single bit if this wasn't mipmapped otherwise set all */
     active->isCompressed = GL_TRUE;
 
-    /* Odds are slim new data is same size as old, so free always */
+    /* Odds are slim new data is same size as old, so release always — deferred:
+       re-speccing a LIVE id is the same in-flight-render hazard as deletion
+       (the pressure drain in alloc_malloc_and_defrag reclaims it if VRAM is tight). */
     if(active->data) {
-        alloc_free(ALLOC_BASE, active->data);
+        _glDeferFree(active->data, -1, 0);
     }
 
     active->data = alloc_malloc_and_defrag(imageSize);
@@ -1718,8 +1759,9 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         if(active->width != width ||
            active->height != height ||
            active->internalFormat != cleanInternalFormat) {
-            /* changed - free old texture memory */
-            alloc_free(ALLOC_BASE, active->data);
+            /* changed - release old texture memory (deferred: same in-flight
+               hazard as deletion; see the queue comment above) */
+            _glDeferFree(active->data, -1, 0);
             active->data = NULL;
             active->mipmap = 0;
             active->mipmapCount = 0;
@@ -2424,6 +2466,16 @@ GLuint _glFreeContiguousTextureMemory() {
 
 static void update_data_pointer(void* src, void* dst, void* data) {
     _GL_UNUSED(data);
+    /* A block queued for deferred free is owned by the QUEUE, not by any live
+       texture — defrag must retarget the record or its eventual alloc_free
+       hands the allocator a moved address. Ownership is exclusive, so a queue
+       hit ends the search. */
+    for(int i = 0; i < DEFERRED_FREE_COUNT; ++i) {
+        if(DEFERRED_FREES[i].data == src) {
+            DEFERRED_FREES[i].data = dst;
+            return;
+        }
+    }
     for(size_t id = 0; id < MAX_TEXTURE_COUNT; id++){
         TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, id);
         if(txr && txr->data == src) {

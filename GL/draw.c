@@ -541,12 +541,20 @@ static void generateArrays(SubmissionTarget* target, const GLsizei first, const 
 
 #define ATTR_MASK_PUC (VERTEX_ENABLED_FLAG | UV_ENABLED_FLAG | DIFFUSE_ENABLED_FLAG)
 
+/* Input prefetch distance for the SoA passes below: a fixed two cache lines
+   ahead. The old (stride << 1) forms were near no-ops for the real streams
+   (uv 8B / color 4B / position 12B land 8-24B ahead — INSIDE the line already
+   being read); +64 always requests a future line. */
+#define PUC_PREF_AHEAD 64
+
 static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
 
+    Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
+
     GLuint min = 0;
     for(min = 0; min < count; min += 60) {
-        const Vertex* start = ((Vertex*) _glSubmissionTargetStart(target)) + min;
+        Vertex* const start = batch_base + min;
         const int_fast32_t loop = ((min + 60) > count) ? count - min : 60;
         const int offset = (first + min);
         Vertex* it;
@@ -559,7 +567,7 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
            the UV/color/position passes below. Prefetch the input stream ahead. */
         stride = ATTRIB_LIST.uv.stride;
         ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
-        it = (Vertex*) start;
+        it = start;
         /* Destinations are SWIZZLED to PVR strip order (0,1,3,2 within each quad,
            see PUC_DST below): writing the final order directly removes the old
            two-record 32-byte swap per quad (>=128B of cache traffic each). Batch
@@ -569,7 +577,7 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         if(ptr) {
             for(int_fast32_t i = 0; i < loop; ++i) {
                 Vertex* dst = PUC_DST(it, i);
-                PREFETCH(ptr + (stride << 1));
+                PREFETCH(ptr + PUC_PREF_AHEAD);
                 VERTEX_CACHE_ALLOC(dst);
                 dst->uv[0] = ((float*) ptr)[0];
                 dst->uv[1] = ((float*) ptr)[1];
@@ -586,12 +594,12 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         /* Color */
         stride = ATTRIB_LIST.colour.stride;
         ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
-        it = (Vertex*) start;
+        it = start;
         if(ptr) {
             if(((((uintptr_t) ptr) | stride) & 3) == 0) {
                 /* aligned client colors (the common case): one word copy, not 4 byte ops */
                 for(int_fast32_t i = 0; i < loop; ++i) {
-                    PREFETCH(ptr + (stride << 2));
+                    PREFETCH(ptr + PUC_PREF_AHEAD);
                     *((uint32_t*) PUC_DST(it, i)->bgra) = *((const uint32_t*) ptr);
                     ptr += stride;
                 }
@@ -612,10 +620,10 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         /* Position + transform + quad vertex flags */
         stride = ATTRIB_LIST.vertex.stride;
         ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
-        it = (Vertex*) start;
+        it = start;
         for(int_fast32_t i = 0; i < loop; ++i) {
             Vertex* dst = PUC_DST(it, i);
-            PREFETCH(ptr + (stride << 1));
+            PREFETCH(ptr + PUC_PREF_AHEAD);
             TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, dst->xyz, &dst->w);
             /* strip-order slot 3 (source vertex 2) carries EOL — no record swap needed */
             dst->flags = (((i & 3) == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
@@ -630,9 +638,11 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
 static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
 
+    Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
+
     GLuint min = 0;
     for(min = 0; min < count; min += 60) {
-        const Vertex* start = ((Vertex*) _glSubmissionTargetStart(target)) + min;
+        Vertex* const start = batch_base + min;
         const int_fast32_t loop = ((min + 60) > count) ? count - min : 60;
         const int offset = (first + min);
         Vertex* it;
@@ -642,15 +652,20 @@ static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsi
         /* UV */
         stride = ATTRIB_LIST.uv.stride;
         ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
-        it = (Vertex*) start;
+        it = start;
+        /* First writer of each output vertex: MOVCA the line, PREF the input
+           (same treatment as PUC_QUADS, 2026-07-15). */
         if(ptr) {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                PREFETCH(ptr + PUC_PREF_AHEAD);
+                VERTEX_CACHE_ALLOC(it);
                 it->uv[0] = ((float*) ptr)[0];
                 it->uv[1] = ((float*) ptr)[1];
                 ptr += stride;
             }
         } else {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                VERTEX_CACHE_ALLOC(it);
                 it->uv[0] = 0; it->uv[1] = 0;
             }
         }
@@ -658,12 +673,20 @@ static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsi
         /* Color */
         stride = ATTRIB_LIST.colour.stride;
         ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
-        it = (Vertex*) start;
+        it = start;
         if(ptr) {
-            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-                it->bgra[0] = ptr[0]; it->bgra[1] = ptr[1];
-                it->bgra[2] = ptr[2]; it->bgra[3] = ptr[3];
-                ptr += stride;
+            if(((((uintptr_t) ptr) | stride) & 3) == 0) {
+                for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                    PREFETCH(ptr + PUC_PREF_AHEAD);
+                    *((uint32_t*) it->bgra) = *((const uint32_t*) ptr);
+                    ptr += stride;
+                }
+            } else {
+                for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                    it->bgra[0] = ptr[0]; it->bgra[1] = ptr[1];
+                    it->bgra[2] = ptr[2]; it->bgra[3] = ptr[3];
+                    ptr += stride;
+                }
             }
         } else {
             for(int_fast32_t i = 0; i < loop; ++i, ++it) {
@@ -674,8 +697,9 @@ static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsi
         /* Position + transform + triangle vertex flags */
         stride = ATTRIB_LIST.vertex.stride;
         ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
-        it = (Vertex*) start;
+        it = start;
         for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+            PREFETCH(ptr + PUC_PREF_AHEAD);
             TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
             it->flags = ((min + i + 1) % 3 == 0) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
             ptr += stride;
@@ -907,6 +931,27 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
 static AlignedVector VERTEX_EXTRAS;
 static SubmissionTarget SUBMISSION_TARGET;
 
+/* Polygon offset (PVR W-buffer) bake, shared by every submission entry: the
+   perspective divide is deferred to flush (SceneListSubmit), by which point the
+   global offset state is already reset — so bake the bias HERE, per draw, while
+   it's valid. We want the flushed depth (1/w) pulled toward the camera by
+   _glPolygonOffsetMul while screen x/y (x/w, y/w) stay put, so pre-scale clip
+   x/y/w by its reciprocal:  1/(w/pom) = pom/w (depth biased);
+   (x/pom)/(w/pom) = x/w (screen unchanged). Perspective verts only — the w==1
+   ortho path derives depth from z, not 1/w. */
+static void _glBakePolygonOffset(Vertex* v, GLuint count) {
+    if(_glPolygonOffsetMul == 1.0f) return;
+    const float inv = 1.0f / _glPolygonOffsetMul;
+    Vertex* const end = v + count;
+    for(; v < end; ++v) {
+        if(v->w != 1.0f) {
+            v->xyz[0] *= inv;
+            v->xyz[1] *= inv;
+            v->w      *= inv;
+        }
+    }
+}
+
 /* ---- Capture & replay (2026-07-15, HyperSolar P4: transform-once dual-list emit) ----
    The DC city deliberately submits the SAME window-stream geometry twice: OPAQUE with the
    base tiles (bit-identical depth is what kills wall z-fighting), then PUNCH-THROUGH with
@@ -962,7 +1007,14 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
     /* Resolve source AFTER the extend: a same-list replay would have realloc'd it. */
     Vertex* src = (Vertex*) aligned_vector_at(&c->list->vector, c->start);
     Vertex* dst = (Vertex*) aligned_vector_at(&out->vector, vec + (header_required ? 1 : 0));
+#ifdef USE_SH4ZAM
+    /* Both sides are 32-byte-aligned Vertex records in aligned_vector storage
+       and the size is a multiple of 32: shz_memcpy32's exact contract. Cached
+       RAM destination, so the non-SQ variant. */
+    shz_memcpy32(dst, src, c->count * sizeof(Vertex));
+#else
     memcpy(dst, src, c->count * sizeof(Vertex));
+#endif
 
     if(bgra) {   /* constant color override (NULL keeps the captured tints) */
         Vertex* v = dst;
@@ -975,20 +1027,9 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
         }
     }
 
-    /* Same per-draw bake submitVertices does (see its polygon offset comment): the
-       capture ran without an offset, the replay pass may have one active. */
-    if(_glPolygonOffsetMul != 1.0f) {
-        const float inv = 1.0f / _glPolygonOffsetMul;
-        Vertex* v = dst;
-        Vertex* const end = dst + c->count;
-        for(; v < end; ++v) {
-            if(v->w != 1.0f) {
-                v->xyz[0] *= inv;
-                v->xyz[1] *= inv;
-                v->w      *= inv;
-            }
-        }
-    }
+    /* Same per-draw bake every entry does. PRECONDITION: the capture itself ran
+       offset-free (a captured non-identity offset would compound here). */
+    _glBakePolygonOffset(dst, c->count);
 }
 
 
@@ -1089,24 +1130,7 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
 
     _glTnlApplyEffects(target);
 
-    /* Polygon offset (PVR W-buffer): the perspective divide is deferred to flush (SceneListSubmit),
-       by which point the global offset state is already reset — so bake the bias HERE, per draw,
-       while it's valid. We want the flushed depth (1/w) pulled toward the camera by
-       _glPolygonOffsetMul while screen x/y (x/w, y/w) stay put, so pre-scale clip x/y/w by its
-       reciprocal:  1/(w/pom) = pom/w (depth biased);  (x/pom)/(w/pom) = x/w (screen unchanged).
-       Perspective verts only — the w==1 ortho path derives depth from z, not 1/w. */
-    if(_glPolygonOffsetMul != 1.0f) {
-        const float inv = 1.0f / _glPolygonOffsetMul;
-        Vertex* v   = _glSubmissionTargetStart(target);
-        Vertex* end = v + target->count;
-        for(; v < end; ++v) {
-            if(v->w != 1.0f) {
-                v->xyz[0] *= inv;
-                v->xyz[1] *= inv;
-                v->w      *= inv;
-            }
-        }
-    }
+    _glBakePolygonOffset(_glSubmissionTargetStart(target), target->count);
 
     if(CAPTURE_PENDING >= 0) {
         CapturedSpan* c = &CAPTURED_SPANS[CAPTURE_PENDING];
@@ -1158,6 +1182,192 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     //     ++vertex;
     //     ++ve;
     // }
+}
+
+/* ---- Fused client-array lanes (2026-07-15, the dcmesh model/batch lanes) ----
+   A model made of many short strips paid the per-call submitVertices overhead —
+   list bookkeeping plus a full XMTRX MVP concat — TIMES the strip count (the
+   F22 is 192 strips: 192 matrix loads per frame), and GL_TRIANGLE_STRIP /
+   batch GL_TRIANGLES have no PUC dispatch, so every vertex ALSO took the
+   generic per-attribute generator (ST/normal zero-fill, byte color copy).
+   These entries pay the overhead ONCE for the whole batch and run a PUC-grade
+   fused writer: MOVCA line-alloc, input prefetch, verbatim BGRA word copy
+   (GL_BGRA client colors are already GLdc vertex order), EOL prebaked.
+
+   NARROW CONTRACT: vertex 3f / uv 2f / color 4ub client arrays, any stride but
+   colors 4-byte aligned (word load); no ST/normals. GL lighting and non-identity
+   texture/color matrices, or a glBegin in flight, fall back to the general
+   glDrawArrays path (the fused writer goes straight to clip space and skips
+   _glTnlApplyEffects). */
+
+/* Shared prologue: reserve total verts (+header if needed) on the active list,
+   stamp the header, load the matrix ONCE. Returns the first output vertex. */
+static Vertex* _glBeginFusedDraw(GLuint total) {
+    SubmissionTarget* const target = &SUBMISSION_TARGET;
+    target->output = _glActivePolyList();
+
+    const uint32_t vector_size = aligned_vector_size(&target->output->vector);
+    const GLboolean header_required = (vector_size == 0) || _glGPUStateIsDirty();
+
+    target->count = total;
+    target->header_offset = vector_size;
+    target->start_offset = target->header_offset + (header_required ? 1 : 0);
+
+    aligned_vector_extend(&target->output->vector, total + (header_required ? 1 : 0));
+
+    if(header_required) {
+        apply_poly_header(_glSubmissionTargetHeader(target), GL_FALSE, target->output, 0);
+        _glGPUStateMarkClean();
+    }
+
+    _glTnlLoadMatrix();
+    return _glSubmissionTargetStart(target);
+}
+
+/* Shared epilogue: offset bake + capture handoff — mirrors submitVertices, so
+   glKosCaptureArrays's "next draw" promise holds on these lanes too. */
+static void _glEndFusedDraw(void) {
+    SubmissionTarget* const target = &SUBMISSION_TARGET;
+    _glBakePolygonOffset(_glSubmissionTargetStart(target), target->count);
+
+    if(CAPTURE_PENDING >= 0) {
+        CapturedSpan* c = &CAPTURED_SPANS[CAPTURE_PENDING];
+        c->list = target->output;
+        c->start = target->start_offset;
+        c->count = target->count;
+        CAPTURE_PENDING = -1;
+    }
+}
+
+/* The fused P3F/T2F/BGRA writer both lanes share. tris_eol picks the EOL rule
+   (GL_FALSE: strip — last vertex only; GL_TRUE: triangle soup — every 3rd) and
+   is a compile-time constant at each call site, so inlining folds it away.
+   The uv+color path is split out: the NULL tests are loop-invariant, and the
+   real callers always provide both. */
+GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
+        Vertex* it, const GLubyte* pp, const GLubyte* up, const GLubyte* cp,
+        GLuint pstride, GLuint ustride, GLuint cstride,
+        GLsizei c, GLboolean tris_eol) {
+    GLsizei eol_next = tris_eol ? 2 : c - 1;   /* index of the next EOL vertex */
+
+    if(up && cp) {
+        for(GLsizei i = 0; i < c; ++i, ++it) {
+            PREFETCH(pp + (pstride << 1));
+            VERTEX_CACHE_ALLOC(it);
+            TransformVertex(((const float*) pp)[0], ((const float*) pp)[1],
+                            ((const float*) pp)[2], 1.0f, it->xyz, &it->w);
+            it->uv[0] = ((const float*) up)[0];
+            it->uv[1] = ((const float*) up)[1];
+            up += ustride;
+            *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
+            cp += cstride;
+            if(i == eol_next) {
+                it->flags = GPU_CMD_VERTEX_EOL;
+                eol_next += 3;   /* only reachable again on the tris rule */
+            } else {
+                it->flags = GPU_CMD_VERTEX;
+            }
+            pp += pstride;
+        }
+    } else {
+        for(GLsizei i = 0; i < c; ++i, ++it) {
+            PREFETCH(pp + (pstride << 1));
+            VERTEX_CACHE_ALLOC(it);
+            TransformVertex(((const float*) pp)[0], ((const float*) pp)[1],
+                            ((const float*) pp)[2], 1.0f, it->xyz, &it->w);
+            if(up) {
+                it->uv[0] = ((const float*) up)[0];
+                it->uv[1] = ((const float*) up)[1];
+                up += ustride;
+            } else {
+                it->uv[0] = 0; it->uv[1] = 0;
+            }
+            if(cp) {
+                *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
+                cp += cstride;
+            } else {
+                *((uint32_t*) it->bgra) = ~0;
+            }
+            if(i == eol_next) {
+                it->flags = GPU_CMD_VERTEX_EOL;
+                eol_next += 3;
+            } else {
+                it->flags = GPU_CMD_VERTEX;
+            }
+            pp += pstride;
+        }
+    }
+    return it;
+}
+
+void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n) {
+    TRACE();
+
+    if(n <= 0) return;
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+    if(ATTRIB_LIST.dirty) _glUpdateAttributes();
+
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        /* Outside the narrow contract: the general path (or its error). */
+        for(GLsizei s = 0; s < n; ++s) {
+            glDrawArrays(GL_TRIANGLE_STRIP, firsts[s], counts[s]);
+        }
+        return;
+    }
+
+    GLsizei total = 0;
+    for(GLsizei i = 0; i < n; ++i) total += counts[i];
+    if(total < 3) return;
+
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint) total);
+
+    const GLuint pstride = ATTRIB_LIST.vertex.stride;
+    const GLuint ustride = ATTRIB_LIST.uv.stride;
+    const GLuint cstride = ATTRIB_LIST.colour.stride;
+    const GLboolean has_uv  = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) != 0;
+    const GLboolean has_col = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) != 0;
+
+    Vertex* it = _glBeginFusedDraw((GLuint) total);
+
+    for(GLsizei s = 0; s < n; ++s) {
+        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + firsts[s] * pstride;
+        const GLubyte* up = has_uv  ? ATTRIB_LIST.uv.ptr     + firsts[s] * ustride : NULL;
+        const GLubyte* cp = has_col ? ATTRIB_LIST.colour.ptr + firsts[s] * cstride : NULL;
+        it = _glWriteFusedVertices(it, pp, up, cp, pstride, ustride, cstride, counts[s], GL_FALSE);
+    }
+
+    _glEndFusedDraw();
+}
+
+/* Triangles sibling of glKosDrawMultiStrips (same contract, same fused writer):
+   for warm batch caches that draw pre-expanded triangle soup in one call — the
+   enemy lane. EOL lands on every 3rd vertex. */
+void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
+    TRACE();
+
+    if(count < 3) return;
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+    if(ATTRIB_LIST.dirty) _glUpdateAttributes();
+
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        glDrawArrays(GL_TRIANGLES, first, count);
+        return;
+    }
+
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint) count);
+
+    const GLuint pstride = ATTRIB_LIST.vertex.stride;
+    const GLuint ustride = ATTRIB_LIST.uv.stride;
+    const GLuint cstride = ATTRIB_LIST.colour.stride;
+    const GLubyte* pp = ATTRIB_LIST.vertex.ptr + first * pstride;
+    const GLubyte* up = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + first * ustride : NULL;
+    const GLubyte* cp = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + first * cstride : NULL;
+
+    Vertex* it = _glBeginFusedDraw((GLuint) count);
+    _glWriteFusedVertices(it, pp, up, cp, pstride, ustride, cstride, count, GL_TRUE);
+    _glEndFusedDraw();
 }
 
 void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid* indices) {

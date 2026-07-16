@@ -297,14 +297,8 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n) {
         return;
     }
 
-    GLDC_STAT_INC(scene_list_submits);
-    GLDC_STAT_ADD(scene_vertices_in, n);
-
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-
-    //Set PVR DMA registers
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
+    /* Stats and the PVR submission registers (SPAN_SORT_CFG, LMMODE0/1,
+       sq_dest_addr) are owned by the finalizer's prologue — the sole caller. */
 
 #if CLIP_DEBUG
     fprintf(stderr, "----\n");
@@ -335,7 +329,6 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n) {
     do { if(queued_vertex) { queued_vertex->flags = (sflags); _glPushHeaderOrVertex(queued_vertex, 1); queued_vertex = NULL; } } while(0)
 
     int visible_mask = 0;
-    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
 
     /* Hoisted out of the loop: stable address across iterations (a queued
      * pointer into scratch must remain valid into the next iter's submit),
@@ -583,6 +576,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
 
     while(v < vend) {
         if(is_header(v)) {
+            GLDC_STAT_INC(scene_headers_seen);
             ++v;                      /* headers ride the current run */
             continue;
         }

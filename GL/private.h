@@ -497,6 +497,7 @@ void _glGPUStateMarkDirty();
 
 void _glTnlLoadMatrix(void);
 void _glTnlApplyEffects(SubmissionTarget* target);
+GLboolean _glTnlEffectsActive(void);
 
 void _glTnlUpdateLighting(void);
 void _glTnlUpdateTextureMatrix(void);

@@ -33,6 +33,13 @@ static void updateEffects(void) {
     TNL_EFFECTS = TNL_LIGHTING | TNL_TEXTURE | TNL_COLOR;
 }
 
+/* The fused draw lanes (draw.c) go straight to clip space and skip
+   _glTnlApplyEffects — they must fall back to the general path whenever any
+   effect is live. */
+GLboolean _glTnlEffectsActive(void) {
+    return TNL_EFFECTS != 0;
+}
+
 static void transformVertices(SubmissionTarget* target) {
     TRACE();
 

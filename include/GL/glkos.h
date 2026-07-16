@@ -83,9 +83,18 @@ GLAPI void APIENTRY glVertexPackColor3fKOS(GLVertexKOS* vertex, float r, float g
    glKosReplayArrays(slot, bgra) clones that span into the list selected by the CURRENT GPU
    state (texture/blend/fog header), overriding every vertex color with the constant `bgra`
    (4 bytes, GLdc vertex order) — or keeping the captured colors when NULL — and re-baking
-   the current polygon-offset. Captures are invalidated at every swap. Intended for
-   coplanar two-pass techniques that submit identical geometry twice. */
+   the current polygon-offset. Captures are invalidated at every swap, at glKosFlushToTexture,
+   and at shutdown. PRECONDITION: the captured draw itself must run with polygon offset at
+   identity — the replay re-bake assumes the capture is offset-free (it would compound).
+   Intended for coplanar two-pass techniques that submit identical geometry twice. */
 GLAPI void APIENTRY glKosCaptureArrays(GLuint slot);
+/* Fused client-array lanes: one matrix load + one list extend for the whole
+   batch, EOL prebaked (per strip / every 3rd vertex). Contract: vertex 3f /
+   uv 2f / color 4ub arrays, any stride but colors 4-byte aligned; no
+   ST/normals. GL lighting or non-identity texture/color matrices fall back to
+   the general glDrawArrays path automatically. See draw.c. */
+GLAPI void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n);
+GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
 GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 

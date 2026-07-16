@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.15 19:01]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.15 23:49]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -105,10 +105,16 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
     aligned_vector_reserve(&TR_LIST.vector, config->initial_tr_capacity);
 }
 
+extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
+extern void _glResetDeferredFrees(void);        /* texture.c: drop queued records, no frees */
+
 void APIENTRY glKosShutdown() {
     aligned_vector_clear(&OP_LIST.vector);
     aligned_vector_clear(&PT_LIST.vector);
     aligned_vector_clear(&TR_LIST.vector);
+
+    _glInvalidateCapturedArrays();
+    _glResetDeferredFrees();   /* ShutdownGPU tears the whole VRAM heap down anyway */
 
     ShutdownGPU();
     _initialized = false;
@@ -135,32 +141,35 @@ static int _gt_frames;
         expr; \
         var += timer_us_gettime64() - _t0; \
     } while(0)
-extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
 
 void APIENTRY glKosSwapBuffers() {
     TRACE();
 
-    GT_MARK(_gt_wait_us, SceneBegin());   /* pvr_wait_ready lives in here */
-        if(aligned_vector_header(&OP_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_OP_POLY);
-            GT_MARK(_gt_op_us,
-                SceneListSubmit((Vertex*) aligned_vector_front(&OP_LIST.vector), aligned_vector_size(&OP_LIST.vector)));
-            SceneListFinish();
-        }
+    /* NOTE: the "wait" bucket is SceneBegin = pvr_wait_ready + deferred fog-table
+       apply + pvr_scene_begin, not the PVR fence alone. */
+    GT_MARK(_gt_wait_us, SceneBegin());
 
-        if(aligned_vector_header(&PT_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_PT_POLY);
-            GT_MARK(_gt_pt_us,
-                SceneListSubmit((Vertex*) aligned_vector_front(&PT_LIST.vector), aligned_vector_size(&PT_LIST.vector)));
-            SceneListFinish();
-        }
+    if(aligned_vector_header(&OP_LIST.vector)->size > 2) {
+        SceneListBegin(GPU_LIST_OP_POLY);
+        GT_MARK(_gt_op_us,
+            SceneListSubmit((Vertex*) aligned_vector_front(&OP_LIST.vector), aligned_vector_size(&OP_LIST.vector)));
+        SceneListFinish();
+    }
 
-        if(aligned_vector_header(&TR_LIST.vector)->size > 2) {
-            SceneListBegin(GPU_LIST_TR_POLY);
-            GT_MARK(_gt_tr_us,
-                SceneListSubmit((Vertex*) aligned_vector_front(&TR_LIST.vector), aligned_vector_size(&TR_LIST.vector)));
-            SceneListFinish();
-        }
+    if(aligned_vector_header(&PT_LIST.vector)->size > 2) {
+        SceneListBegin(GPU_LIST_PT_POLY);
+        GT_MARK(_gt_pt_us,
+            SceneListSubmit((Vertex*) aligned_vector_front(&PT_LIST.vector), aligned_vector_size(&PT_LIST.vector)));
+        SceneListFinish();
+    }
+
+    if(aligned_vector_header(&TR_LIST.vector)->size > 2) {
+        SceneListBegin(GPU_LIST_TR_POLY);
+        GT_MARK(_gt_tr_us,
+            SceneListSubmit((Vertex*) aligned_vector_front(&TR_LIST.vector), aligned_vector_size(&TR_LIST.vector)));
+        SceneListFinish();
+    }
+
     GT_MARK(_gt_fin_us, SceneFinish());
 
     if(++_gt_frames >= 600) {
@@ -216,4 +225,8 @@ void APIENTRY glKosFlushToTexture(void* tex, unsigned int w, unsigned int h) {
     aligned_vector_clear(&TR_LIST.vector);
 
     _glApplyScissor(true);
+
+    /* Captures index into the vectors just cleared — a replay between here and
+       the next swap would copy recycled memory into the TA. */
+    _glInvalidateCapturedArrays();
 }
