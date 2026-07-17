@@ -548,8 +548,10 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n) {
    byte volume in the frame. This replaces divide+copy: read each 32-byte
    record ONCE, perspective-divide in registers, store straight to the store
    queues. Same contract sq_fast_cpy relies on: QACR is already TA-bound by
-   SceneListBegin's pvr_dr_init, and successive +32 destinations alternate
-   SQ0/SQ1 by address bit 5. Headers ride the run verbatim. The math is the
+   SceneListBegin — pvr_list_begin calls sq_lock(PVR_TA_INPUT), which programs
+   QACR (pvr_dr_init is a deprecated no-op in current KOS; 2026-07-16 audit
+   correction) — and successive +32 destinations alternate SQ0/SQ1 by address
+   bit 5. Headers ride the run verbatim. The math is the
    _glPerspectiveDivideVertex math verbatim (same fsrra, same w==1 ortho
    branch), so the TA sees byte-identical records. */
 static void _glDivideSubmitRun(Vertex* v, int n) {
@@ -668,7 +670,8 @@ void SceneListSubmit(Vertex* vertices, int n) {
    list's sprite sidecar. The context comes from the SAME state builder the
    poly headers use (_glBuildPolyContext) mapped onto KOS's sprite context —
    GLdc's GPU_* constants are value-identical to the legacy PVR_* ones, so the
-   fields transfer raw. The divide math is the vertex path's verbatim (fsrra,
+   fields transfer raw (EXCEPT filter: GLdc pre-encodes it — see the >>1 below).
+   The divide math is the vertex path's verbatim (fsrra,
    w==1 ortho branch) so sprites depth-match coplanar geometry exactly. */
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     PolyList* out = _glActivePolyList();
@@ -693,7 +696,12 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     sc.depth.comparison = ctx.depth.comparison;
     sc.depth.write      = ctx.depth.write;
     sc.txr.enable      = ctx.txr.enable;
-    sc.txr.filter      = ctx.txr.filter;
+    /* GLdc pre-encodes GPUFilter as the raw TSP values (0/2/4/6); KOS's sprite
+       compiler FIELD_PREPs LOGICAL PVR_FILTER_* (0/1/2/3). Raw copy read
+       bilinear(2) as trilinear-pass-1, which point-samples on a non-mipped
+       texture (2026-07-16 audit) — the sprite glow shipped nearest-filtered.
+       >>1 restores the vertex path's true filtering. */
+    sc.txr.filter      = ctx.txr.filter >> 1;
     sc.txr.mipmap      = ctx.txr.mipmap;
     sc.txr.mipmap_bias = ctx.txr.mipmap_bias;
     sc.txr.uv_flip     = ctx.txr.uv_flip;

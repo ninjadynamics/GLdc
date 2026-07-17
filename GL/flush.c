@@ -64,7 +64,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.16 11:08]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.17 14:49]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -151,9 +151,11 @@ static int _gt_frames;
         var += timer_us_gettime64() - _t0; \
     } while(0)
 
-/* One list's full submission: vertex stream then the sprite sidecar (sprites
-   are additive/order-free by contract, so tail placement is safe). Begin/finish
-   are the caller's — it decides whether the list opens at all. */
+/* One list's full submission: vertex stream then the sprite sidecar. Sprites
+   are ADDITIVE-only by contract: tail placement reorders them against any
+   non-additive TR records (alpha blends) — accepted for the glow lane, not a
+   general guarantee. Begin/finish are the caller's — it decides whether the
+   list opens at all. */
 static void submit_list(PolyList* l) {
     if(aligned_vector_header(&l->vector)->size > 2) {
         SceneListSubmit((Vertex*) aligned_vector_front(&l->vector), aligned_vector_size(&l->vector));

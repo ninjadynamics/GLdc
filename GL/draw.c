@@ -939,9 +939,12 @@ GL_FORCE_INLINE int _calc_pvr_depth_test() {
 
 /* Build the PolyContext for the CURRENT GL state on the given list — the state
    half of apply_poly_header, shared with the sprite path (sh4 platform), which
-   compiles the same context into a sprite header instead. */
+   compiles the same context into a sprite header instead. Populates *out_ctx
+   DIRECTLY: the first extraction built a local and copied it out, adding a
+   196-byte bulk copy to EVERY header emitted (2026-07-16 audit, confirmed in
+   the ELF as an out-of-line __movmem call). */
 void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort textureUnit) {
-    PolyContext ctx;
+#define ctx (*out_ctx)
     memset(&ctx, 0, sizeof(PolyContext));
 
     ctx.list_type = activePolyList->list_type;
@@ -999,8 +1002,7 @@ void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort
     }
 
     _glUpdatePVRTextureContext(&ctx, textureUnit);
-
-    *out_ctx = ctx;
+#undef ctx
 }
 
 GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextureHeader, PolyList* activePolyList, GLshort textureUnit) {
