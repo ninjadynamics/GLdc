@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "alloc.h"
+#include "../gl_assert.h"   /* corruption guards must survive NDEBUG (see the hardening ledger) */
 
 
 /* This allocator is designed so that ideally all allocations larger
@@ -65,7 +66,7 @@ static inline intptr_t round_up(intptr_t n, int multiple)
         return n;
     }
 
-    assert(multiple);
+    gl_assert(multiple);
     return ((n + multiple - 1) / multiple) * multiple;
 }
 
@@ -257,7 +258,7 @@ int alloc_init(void* pool, size_t size) {
 
     pool_header.allocations = NULL;
 
-    assert(((uintptr_t) pool_header.base_address) % 2048 == 0);
+    gl_assert(((uintptr_t) pool_header.base_address) % 2048 == 0);
 
     return 0;
 }
@@ -440,7 +441,7 @@ void alloc_free(void* pool, void* p) {
             if(last) {
                 last->next = it->next;
             } else {
-                assert(it == pool_header.allocations);
+                gl_assert(it == pool_header.allocations);
                 pool_header.allocations = it->next;
             }
 
@@ -453,7 +454,7 @@ void alloc_free(void* pool, void* p) {
         it = it->next;
     }
 
-    assert("Freed pointer not found, heap corruption?" && 0);
+    gl_assert("Freed pointer not found, heap corruption?" && 0);
 }
 
 void alloc_run_defrag(void* pool, defrag_address_move callback, int max_iterations, void* user_data) {
