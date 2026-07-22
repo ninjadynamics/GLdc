@@ -449,6 +449,12 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     (void) pos; (void) colors; (void) quads;
 }
 
+void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprites,
+                        float ux, float uy, float uz, float vx, float vy, float vz) {
+    (void) centers; (void) colors; (void) sprites;
+    (void) ux; (void) uy; (void) uz; (void) vx; (void) vy; (void) vz;
+}
+
 void SceneSpritesSubmit(void* blob, int blocks32) {
     (void) blob; (void) blocks32;
 }

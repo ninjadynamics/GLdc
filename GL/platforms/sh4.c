@@ -719,26 +719,43 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     uint32_t last_argb = 0;
     int have_hdr = 0;
 
-    for(int q = 0; q < quads; ++q) {
-        const float* p = pos + q * 12;
-        float xyz[4][3];
-        float w[4];
-        TransformVertex2(p[0], p[1], p[2],  xyz[0], &w[0],
-                         p[3], p[4], p[5],  xyz[1], &w[1]);
-        TransformVertex2(p[6], p[7], p[8],  xyz[2], &w[2],
-                         p[9], p[10], p[11], xyz[3], &w[3]);
+    for(int q = 0; q < quads; q += 2) {
+        const int n = (q + 1 < quads) ? 2 : 1;
+        const float* p0 = pos + q * 12;
+        float xyz[2][4][3];
+        float w[2][4];
+
+        /* A sprite input is a planar parallelogram, so clip-space D is
+           exactly A+C-B. Across two quads, transform A/B/C as three dual-FTRV
+           pairs instead of transforming all four corners. */
+        TransformVertex2(p0[0], p0[1], p0[2], xyz[0][0], &w[0][0],
+                         p0[3], p0[4], p0[5], xyz[0][1], &w[0][1]);
+        if(n == 2) {
+            const float* p1 = p0 + 12;
+            TransformVertex2(p0[6], p0[7], p0[8], xyz[0][2], &w[0][2],
+                             p1[0], p1[1], p1[2], xyz[1][0], &w[1][0]);
+            TransformVertex2(p1[3], p1[4], p1[5], xyz[1][1], &w[1][1],
+                             p1[6], p1[7], p1[8], xyz[1][2], &w[1][2]);
+        } else {
+            TransformVertex(p0[6], p0[7], p0[8], 1.0f, xyz[0][2], &w[0][2]);
+        }
+
+        for(int k = 0; k < n; ++k) {
+            for(int a = 0; a < 3; ++a)
+                xyz[k][3][a] = xyz[k][0][a] + xyz[k][2][a] - xyz[k][1][a];
+            w[k][3] = w[k][0] + w[k][2] - w[k][1];
 
         /* No sprite clip path: drop the quad whole if any corner crosses the
            near plane (at that point a glow face is at the screen edge). */
-        if(xyz[0][2] < -w[0] || xyz[1][2] < -w[1] ||
-           xyz[2][2] < -w[2] || xyz[3][2] < -w[3]) {
+        if(xyz[k][0][2] < -w[k][0] || xyz[k][1][2] < -w[k][1] ||
+           xyz[k][2][2] < -w[k][2] || xyz[k][3][2] < -w[k][3]) {
             continue;
         }
 
         /* Glow scratch layout: 4 equal per-vertex color words per face. BGRA
            bytes in memory read as an ARGB32 word — exactly what the sprite
            header wants. */
-        uint32_t argb = colors[q * 4];
+        uint32_t argb = colors[(q + k) * 4];
         if(!have_hdr || argb != last_argb) {
             uint32_t* h = (uint32_t*) aligned_vector_extend(sv, 1);
             memcpy(h, &shdr, 32);
@@ -749,28 +766,142 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
         }
 
         pvr_sprite_txr_t* s = (pvr_sprite_txr_t*) aligned_vector_extend(sv, 2);
-        const float fa = _glFastInvert(w[0]);
-        const float fb = _glFastInvert(w[1]);
-        const float fc = _glFastInvert(w[2]);
-        const float fd = _glFastInvert(w[3]);
+        const float fa = _glFastInvert(w[k][0]);
+        const float fb = _glFastInvert(w[k][1]);
+        const float fc = _glFastInvert(w[k][2]);
+        const float fd = _glFastInvert(w[k][3]);
         s->flags = GPU_CMD_VERTEX_EOL;
-        s->ax = xyz[0][0] * fa;
-        s->ay = xyz[0][1] * fa;
-        s->az = (w[0] == 1.0f) ? _glFastInvert(1.0001f + xyz[0][2]) : fa;
-        s->bx = xyz[1][0] * fb;
-        s->by = xyz[1][1] * fb;
-        s->bz = (w[1] == 1.0f) ? _glFastInvert(1.0001f + xyz[1][2]) : fb;
-        s->cx = xyz[2][0] * fc;
-        s->cy = xyz[2][1] * fc;
-        s->cz = (w[2] == 1.0f) ? _glFastInvert(1.0001f + xyz[2][2]) : fc;
-        s->dx = xyz[3][0] * fd;
-        s->dy = xyz[3][1] * fd;
+        s->ax = xyz[k][0][0] * fa;
+        s->ay = xyz[k][0][1] * fa;
+        s->az = (w[k][0] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][0][2]) : fa;
+        s->bx = xyz[k][1][0] * fb;
+        s->by = xyz[k][1][1] * fb;
+        s->bz = (w[k][1] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][1][2]) : fb;
+        s->cx = xyz[k][2][0] * fc;
+        s->cy = xyz[k][2][1] * fc;
+        s->cz = (w[k][2] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][2][2]) : fc;
+        s->dx = xyz[k][3][0] * fd;
+        s->dy = xyz[k][3][1] * fd;
         s->dummy = 0;
         /* corner UVs (0,0)(1,0)(1,1) packed 16-bit (top halves of the floats);
            the fourth corner's UV is hardware-derived like its Z */
         s->auv = 0x00000000;
         s->buv = 0x3F800000;
         s->cuv = 0x3F803F80;
+        }
+    }
+}
+
+/* Homogeneous sprite family. The two object-space half axes are common to the
+   whole call, so transform them once with w=0; every sprite then needs only
+   one center FTRV. This is the road/roof glow lane. */
+void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprites,
+                        float ux, float uy, float uz, float vx, float vy, float vz) {
+    PolyList* out = _glActivePolyList();
+    AlignedVector* sv = &out->sprites;
+
+    PolyContext ctx;
+    _glBuildPolyContext(&ctx, out, 0);
+
+    pvr_sprite_cxt_t sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.list_type       = ctx.list_type;
+    sc.gen.alpha       = ctx.gen.alpha;
+    sc.gen.fog_type    = ctx.gen.fog_type;
+    sc.gen.culling     = ctx.gen.culling;
+    sc.gen.color_clamp = ctx.gen.color_clamp;
+    sc.gen.clip_mode   = ctx.gen.clip_mode;
+    sc.gen.specular    = ctx.gen.specular;
+    sc.blend.src        = ctx.blend.src;
+    sc.blend.dst        = ctx.blend.dst;
+    sc.blend.src_enable = ctx.blend.src_enable;
+    sc.blend.dst_enable = ctx.blend.dst_enable;
+    sc.depth.comparison = ctx.depth.comparison;
+    sc.depth.write      = ctx.depth.write;
+    sc.txr.enable       = ctx.txr.enable;
+    sc.txr.filter       = ctx.txr.filter >> 1;
+    sc.txr.mipmap       = ctx.txr.mipmap;
+    sc.txr.mipmap_bias  = ctx.txr.mipmap_bias;
+    sc.txr.uv_flip      = ctx.txr.uv_flip;
+    sc.txr.uv_clamp     = ctx.txr.uv_clamp;
+    sc.txr.alpha        = ctx.txr.alpha;
+    sc.txr.env          = ctx.txr.env;
+    sc.txr.width        = ctx.txr.width;
+    sc.txr.height       = ctx.txr.height;
+    sc.txr.format       = ctx.txr.format;
+    sc.txr.base         = (pvr_ptr_t) ctx.txr.base;
+
+    pvr_sprite_hdr_t shdr;
+    pvr_sprite_compile(&shdr, &sc);
+
+    float tu[3], tv[3], uw, vw;
+    TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
+    TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
+
+    uint32_t last_argb = 0;
+    int have_hdr = 0;
+    for(int q = 0; q < sprites; q += 2) {
+        const int n = (q + 1 < sprites) ? 2 : 1;
+        float tc[2][3], cw[2];
+        const float* p = centers + q * 3;
+        if(n == 2) {
+            TransformVertex2(p[0], p[1], p[2], tc[0], &cw[0],
+                             p[3], p[4], p[5], tc[1], &cw[1]);
+        } else {
+            TransformVertex(p[0], p[1], p[2], 1.0f, tc[0], &cw[0]);
+        }
+
+        for(int k = 0; k < n; ++k) {
+            float xyz[4][3];
+            float w[4];
+            for(int a = 0; a < 3; ++a) {
+                xyz[0][a] = tc[k][a] - tu[a] - tv[a];
+                xyz[1][a] = tc[k][a] + tu[a] - tv[a];
+                xyz[2][a] = tc[k][a] + tu[a] + tv[a];
+                xyz[3][a] = tc[k][a] - tu[a] + tv[a];
+            }
+            w[0] = cw[k] - uw - vw;
+            w[1] = cw[k] + uw - vw;
+            w[2] = cw[k] + uw + vw;
+            w[3] = cw[k] - uw + vw;
+
+            if(xyz[0][2] < -w[0] || xyz[1][2] < -w[1] ||
+               xyz[2][2] < -w[2] || xyz[3][2] < -w[3]) {
+                continue;
+            }
+
+            uint32_t argb = colors[q + k];
+            if(!have_hdr || argb != last_argb) {
+                uint32_t* h = (uint32_t*) aligned_vector_extend(sv, 1);
+                memcpy(h, &shdr, 32);
+                h[4] = argb;
+                h[5] = 0;
+                last_argb = argb;
+                have_hdr = 1;
+            }
+
+            pvr_sprite_txr_t* s = (pvr_sprite_txr_t*) aligned_vector_extend(sv, 2);
+            const float fa = _glFastInvert(w[0]);
+            const float fb = _glFastInvert(w[1]);
+            const float fc = _glFastInvert(w[2]);
+            const float fd = _glFastInvert(w[3]);
+            s->flags = GPU_CMD_VERTEX_EOL;
+            s->ax = xyz[0][0] * fa;
+            s->ay = xyz[0][1] * fa;
+            s->az = (w[0] == 1.0f) ? _glFastInvert(1.0001f + xyz[0][2]) : fa;
+            s->bx = xyz[1][0] * fb;
+            s->by = xyz[1][1] * fb;
+            s->bz = (w[1] == 1.0f) ? _glFastInvert(1.0001f + xyz[1][2]) : fb;
+            s->cx = xyz[2][0] * fc;
+            s->cy = xyz[2][1] * fc;
+            s->cz = (w[2] == 1.0f) ? _glFastInvert(1.0001f + xyz[2][2]) : fc;
+            s->dx = xyz[3][0] * fd;
+            s->dy = xyz[3][1] * fd;
+            s->dummy = 0;
+            s->auv = 0x00000000;
+            s->buv = 0x3F800000;
+            s->cuv = 0x3F803F80;
+        }
     }
 }
 

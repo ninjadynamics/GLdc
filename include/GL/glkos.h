@@ -95,7 +95,8 @@ GLAPI void APIENTRY glKosCaptureArrays(GLuint slot);
    the general glDrawArrays path automatically. See draw.c. */
 GLAPI void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n);
 GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
-/* TA sprite quads: one 64-byte hardware sprite per planar single-color quad
+/* TA sprite quads: one 64-byte hardware sprite per planar single-color
+   PARALLELOGRAM (D = A+C-B in object space)
    (vs four 32-byte vertices), color in a shared header emitted on change,
    transform+divide done at call time (bypasses the submit finalizer). pos =
    12 floats/quad in ring order, colors read at [quad*4] (the glow scratch
@@ -103,6 +104,14 @@ GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
    land at the list tail); quads crossing the near plane are DROPPED whole
    (no sprite clip path). Draws nothing off Dreamcast. See draw.c. */
 GLAPI void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLsizei quads);
+/* Homogeneous TA-sprite family: centers is 3 floats/sprite, colors is one
+   packed word/sprite, and u/v are the shared object-space half axes. This is
+   the low-bandwidth glow path: transform each axis once and one center per
+   sprite instead of three corners. Same additive/near-plane contract above. */
+GLAPI void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* colors,
+                                           GLsizei sprites,
+                                           GLfloat ux, GLfloat uy, GLfloat uz,
+                                           GLfloat vx, GLfloat vy, GLfloat vz);
 GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 

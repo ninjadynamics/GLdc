@@ -1497,7 +1497,8 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
 /* Triangles sibling of glKosDrawMultiStrips (same contract, same fused writer):
    for warm batch caches that draw pre-expanded triangle soup in one call — the
    enemy lane. EOL lands on every 3rd vertex. */
-/* TA sprite quads (2026-07-16, the glow lane): each planar single-color quad
+/* TA sprite quads (2026-07-16, the glow lane): each planar single-color
+   parallelogram (D = A+C-B in object space)
    becomes ONE 64-byte sprite record (vs four 32-byte vertex records) with the
    color in a shared header emitted on color change — headers coalesce best
    when the caller quantizes alpha. Transform + perspective divide happen HERE
@@ -1514,7 +1515,21 @@ void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLs
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;   /* narrow contract */
 
     _glTnlLoadMatrix();
-    SceneSpriteQuads(pos, colors, quads);
+    SceneSpriteQuads(pos, (const uint32_t*) colors, quads);
+}
+
+void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* colors,
+                                     GLsizei sprites,
+                                     GLfloat ux, GLfloat uy, GLfloat uz,
+                                     GLfloat vx, GLfloat vy, GLfloat vz) {
+    TRACE();
+
+    if(sprites <= 0) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+
+    _glTnlLoadMatrix();
+    SceneSpriteCenters(centers, (const uint32_t*) colors, sprites,
+                       ux, uy, uz, vx, vy, vz);
 }
 
 void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
