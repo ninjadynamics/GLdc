@@ -1,6 +1,16 @@
 
 #include "../containers/aligned_vector.h"
 #include "private.h"
+#include "config.h"
+
+#if GLDC_S3_SEGMENTED_OP
+/* S3 segmented hot drain — platforms/sh4.c */
+int  _glS3SceneOpen(void);
+int  _glS3OpOpen(void);
+void _glS3SwapReset(void);
+void _glS3SubmitOpTail(void);
+extern uint64_t _glS3DrainUs;
+#endif
 
 PolyList OP_LIST;
 PolyList PT_LIST;
@@ -64,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.22 11:22]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.23 20:53]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -179,9 +189,39 @@ static void clear_lists(void) {
     aligned_vector_clear(&TR_LIST.sprites);
 }
 
+#if GLDC_S3_SEGMENTED_OP
+/* S3 swap-side OP: the tail of the vector (undrained remainder) plus the sprite
+   sidecar, into the STILL-OPEN OP list. */
+static void submit_op_tail_s3(void) {
+    _glS3SubmitOpTail();
+    const uint32_t sn = aligned_vector_size(&OP_LIST.sprites);
+    if(sn) {
+        SceneSpritesSubmit(aligned_vector_front(&OP_LIST.sprites), (int) sn);
+    }
+}
+#endif
+
 void APIENTRY glKosSwapBuffers() {
     TRACE();
 
+#if GLDC_S3_SEGMENTED_OP
+    if(_glS3SceneOpen()) {
+        /* The scene began at the first mid-frame drain (its pvr_wait_ready is
+           inside the s3= bucket); wait= reads ~0 here by design. Submit the OP
+           tail + sprites and close the list the drains held open. */
+        GT_MARK(_gt_op_us, submit_op_tail_s3());
+        SceneListFinish();
+    } else {
+        /* No drain ran this frame (no OP->non-OP transition with content, or
+           an OP-less frame): byte-identical legacy behavior. */
+        GT_MARK(_gt_wait_us, SceneBegin());
+        if(list_has_content(&OP_LIST)) {
+            SceneListBegin(GPU_LIST_OP_POLY);
+            GT_MARK(_gt_op_us, submit_list(&OP_LIST));
+            SceneListFinish();
+        }
+    }
+#else
     /* NOTE: the "wait" bucket is SceneBegin = pvr_wait_ready + deferred fog-table
        apply + pvr_scene_begin, not the PVR fence alone. */
     GT_MARK(_gt_wait_us, SceneBegin());
@@ -191,6 +231,7 @@ void APIENTRY glKosSwapBuffers() {
         GT_MARK(_gt_op_us, submit_list(&OP_LIST));
         SceneListFinish();
     }
+#endif
 
     if(list_has_content(&PT_LIST)) {
         SceneListBegin(GPU_LIST_PT_POLY);
@@ -208,14 +249,26 @@ void APIENTRY glKosSwapBuffers() {
 
     if(++_gt_frames >= 600) {
         const float inv = 1.0f / (1000.0f * (float)_gt_frames);
+#if GLDC_S3_SEGMENTED_OP
+        /* s3= the mid-frame drains (incl. the first drain's pvr_wait_ready);
+           op= only the swap-time OP tail. Compare s3+op vs the flag-off op. */
+        fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f s3=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f (%d swaps)\n",
+                (float)_gt_wait_us * inv, (float)_glS3DrainUs * inv, (float)_gt_op_us * inv,
+                (float)_gt_pt_us * inv, (float)_gt_tr_us * inv, (float)_gt_fin_us * inv, _gt_frames);
+        _glS3DrainUs = 0;
+#else
         fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f (%d swaps)\n",
                 (float)_gt_wait_us * inv, (float)_gt_op_us * inv, (float)_gt_pt_us * inv,
                 (float)_gt_tr_us * inv, (float)_gt_fin_us * inv, _gt_frames);
+#endif
         _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
         _gt_frames = 0;
     }
 
     clear_lists();
+#if GLDC_S3_SEGMENTED_OP
+    _glS3SwapReset();
+#endif
 
     _glApplyScissor(true);
 
@@ -231,6 +284,16 @@ void APIENTRY glKosSwapBuffers() {
    all its TR). `tex` must be a pvr_mem_malloc'd target of (w x h), power-of-two. */
 void APIENTRY glKosFlushToTexture(void* tex, unsigned int w, unsigned int h) {
     TRACE();
+
+#if GLDC_S3_SEGMENTED_OP
+    /* S3 opens the to-screen scene at the first mid-frame drain; a mid-frame
+       render-to-texture pass cannot retarget it. Unused by HyperSolar — fail
+       loudly instead of corrupting the TA. */
+    if(_glS3SceneOpen()) {
+        fprintf(stderr, "glKosFlushToTexture: unsupported mid-frame with GLDC_S3_SEGMENTED_OP (scene already open)\n");
+        return;
+    }
+#endif
 
     SceneBeginToTexture(tex, w, h);
         if(list_has_content(&OP_LIST)) {

@@ -1179,6 +1179,11 @@ GL_FORCE_INLINE GLuint calcFinalVertices(GLenum mode, GLuint count) {
     return count;
 }
 
+#include "config.h"
+#if GLDC_S3_SEGMENTED_OP
+void _glS3DrainOP(void);   /* platforms/sh4.c — S3 segmented hot drain */
+#endif
+
 GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GLenum type, const GLvoid* indices) {
     SubmissionTarget* const target = &SUBMISSION_TARGET;
     AlignedVector* const extras = target->extras;
@@ -1217,6 +1222,12 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     target->output = _glActivePolyList();
     gl_assert(target->output);
     gl_assert(extras);
+
+#if GLDC_S3_SEGMENTED_OP
+    /* Leaving the OP list: hot-drain its undrained records to the TA now,
+       while they are still cache-resident (S3 — see config.h). */
+    if(target->output != _glOpaquePolyList()) _glS3DrainOP();
+#endif
 
     uint32_t vector_size = aligned_vector_size(&target->output->vector);
 
@@ -1321,6 +1332,10 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
 static Vertex* _glBeginFusedDraw(GLuint total) {
     SubmissionTarget* const target = &SUBMISSION_TARGET;
     target->output = _glActivePolyList();
+
+#if GLDC_S3_SEGMENTED_OP
+    if(target->output != _glOpaquePolyList()) _glS3DrainOP();   /* leaving OP: hot-drain */
+#endif
 
     const uint32_t vector_size = aligned_vector_size(&target->output->vector);
     const GLboolean header_required = (vector_size == 0) || _glGPUStateIsDirty();

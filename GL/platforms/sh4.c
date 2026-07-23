@@ -1,11 +1,17 @@
 #include <float.h>
 
 #include <dc/sq.h>
+#include <arch/timer.h>
 
 #include "../platform.h"
+#include "../config.h"
 #include "sh4.h"
 #include "../gldc_stats.h"
 
+#if GLDC_S3_SEGMENTED_OP
+/* S3 segmented hot drain — machinery at the end of this file. */
+void _glS3DrainOP(void);
+#endif
 
 #define CLIP_DEBUG 0
 
@@ -675,6 +681,9 @@ void SceneListSubmit(Vertex* vertices, int n) {
    w==1 ortho branch) so sprites depth-match coplanar geometry exactly. */
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     PolyList* out = _glActivePolyList();
+#if GLDC_S3_SEGMENTED_OP
+    if(out != _glOpaquePolyList()) _glS3DrainOP();   /* leaving OP: hot-drain it */
+#endif
     AlignedVector* sv = &out->sprites;
 
     PolyContext ctx;
@@ -958,3 +967,95 @@ const VideoMode* GetVideoMode() {
     mode.height = vid_mode->height;
     return &mode;
 }
+
+#if GLDC_S3_SEGMENTED_OP
+/* ---- S3 segmented hot drain (2026-07-23, HyperSolar ledger A3) -------------
+   The OP vector is READ-ONLY here: drains submit [cursor..size) through the
+   normal SceneListSubmit (run finalizer + the exact clip fallback), so capture/
+   replay spans, record layout and clipping behavior stay untouched. The scene
+   and the OP list open lazily at the FIRST drain — the pvr_wait_ready that used
+   to sit in swap happens there instead — and OP stays open until swap (a PVR
+   list can only begin once per scene). Drain boundaries are draw boundaries, so
+   strips never split; the TA keeps header state within the open list, so
+   headerless follow-up segments are fine. */
+static int      s3_scene_open = 0;
+static int      s3_op_open = 0;
+static uint32_t s3_op_drained = 0;
+uint64_t        _glS3DrainUs = 0;    /* summed drain time; printed by [GLDC-T] */
+
+int _glS3SceneOpen(void) { return s3_scene_open; }
+
+void _glS3SwapReset(void) {
+    s3_scene_open = 0;
+    s3_op_open = 0;
+    s3_op_drained = 0;
+}
+
+/* Re-arm what sq_lock programs for the TA: another store-queue user between
+   segments (texture upload etc.) would have retargeted QACR. Two stores, free. */
+static inline void s3_arm_qacr(void) {
+    *((volatile uint32_t*)0xFF000038) = ((uintptr_t)PVR_TA_INPUT >> 24) & 0x1C;  /* QACR0 */
+    *((volatile uint32_t*)0xFF00003C) = ((uintptr_t)PVR_TA_INPUT >> 24) & 0x1C;  /* QACR1 */
+}
+
+static void s3_ensure_op_open(void) {
+    if(!s3_scene_open) {
+        SceneBegin();
+        s3_scene_open = 1;
+    }
+    if(!s3_op_open) {
+        SceneListBegin(GPU_LIST_OP_POLY);
+        s3_op_open = 1;
+    }
+    s3_arm_qacr();
+}
+
+void _glS3DrainOP(void) {
+    PolyList* l = _glOpaquePolyList();
+    const uint32_t size = aligned_vector_size(&l->vector);
+    /* < 4 records can't render (header + a 3-vert strip); leave the fragment
+       for a later drain or the swap tail — the cursor holds, nothing is lost. */
+    if(size - s3_op_drained < 4) return;
+    /* OPPORTUNISTIC scene open: NEVER block mid-frame on the previous render.
+       On light scenes the PVR isn't ready until near the flip, so everything
+       defers to the swap — byte-identical legacy pacing and clean draw/swap
+       counters. On heavy scenes the previous render finishes mid-frame and the
+       drains kick in exactly when they're free. (First-boot S3 opened the scene
+       unconditionally and moved stage 1's ~14ms of vsync idle into the DRAW
+       timer — the fence belongs at swap unless draining is actually free.) */
+    if(!s3_scene_open && pvr_check_ready() < 0) return;
+    const uint64_t t0 = timer_us_gettime64();
+    s3_ensure_op_open();
+    SceneListSubmit((Vertex*)aligned_vector_at(&l->vector, s3_op_drained),
+                    (int)(size - s3_op_drained));
+    s3_op_drained = size;
+    _glS3DrainUs += timer_us_gettime64() - t0;
+}
+
+/* Swap-side: submit whatever OP content the frame left undrained, with the
+   relaxed guard a tiny headerless tail needs (the TA already holds the header
+   state from the previous segment; the generic path EOL-terminates exactly). */
+void _glS3SubmitOpTail(void) {
+    PolyList* l = _glOpaquePolyList();
+    const uint32_t size = aligned_vector_size(&l->vector);
+    const uint32_t n = size - s3_op_drained;
+    if(n == 0) return;
+    s3_ensure_op_open();
+    Vertex* start = (Vertex*)aligned_vector_at(&l->vector, s3_op_drained);
+    if(n >= 4) {
+        SceneListSubmit(start, (int)n);
+    } else {
+        PVR_SET(SPAN_SORT_CFG, 0x0);
+        *PVR_LMMODE0 = 0;
+        *PVR_LMMODE1 = 0;
+        sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+        SceneListSubmitGeneric(start, (int)n);
+        sq_wait();
+    }
+    s3_op_drained = size;
+}
+
+/* Swap needs to know whether OP must still be opened for its sprite sidecar
+   when the frame never drained (no scene open -> legacy path handles it). */
+int _glS3OpOpen(void) { return s3_op_open; }
+#endif /* GLDC_S3_SEGMENTED_OP */
