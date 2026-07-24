@@ -19,3 +19,19 @@
 #ifndef GLDC_S3_SEGMENTED_OP
 #define GLDC_S3_SEGMENTED_OP 0
 #endif
+
+/* B2 GOLD-BLOCK quad writer (2026-07-24, HyperSolar perf ledger B2): the city
+   PUC_QUADS lane transforms a whole quad per scheduled block — FOUR FTRVs in
+   true flight across fv0/fv4/fv8/fv12 (vs the pair's two), quad swizzle
+   (0,1,3,2) and EOL baked as fixed record offsets, uv/color moved as GP-word
+   copies.
+   MEASURED VERDICT (2026-07-24 hardware A/B, first boot correct): bld= 0.54 ->
+   0.51-0.53, win= 0.42-0.48 -> 0.40-0.42, city=/fps/late unchanged — the noise
+   floor, exactly as the ledger bounded it (the 2k-vert workload is already
+   cache-resident; FTRV latency was already mostly hidden by the pair). Per the
+   pre-agreed adopt-only-if-clear rule: DEFAULT OFF, dormant and hardware-
+   validated beside S3 for a future vertex-volume jump:
+       make gldc GLDC_GOLD_BLOCK=1 */
+#ifndef GLDC_GOLD_BLOCK
+#define GLDC_GOLD_BLOCK 0
+#endif

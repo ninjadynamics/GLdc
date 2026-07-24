@@ -9,6 +9,7 @@
 
 #include "../types.h"
 #include "../private.h"
+#include "../config.h"   /* GLDC_S3_SEGMENTED_OP / GLDC_GOLD_BLOCK flags */
 
 #ifdef USE_SH4ZAM
 #include <sh4zam/shz_xmtrx.h>   /* shz_xmtrx_load/apply/store_4x4 (faster than KOS mat_*) */
@@ -295,6 +296,131 @@ GL_FORCE_INLINE void TransformFillPair(
           "fr8", "fr9", "fr10", "fr11", "memory"
     );
 }
+
+/* ---- The GOLD-BLOCK quad writer (2026-07-24, perf ledger B2): one whole PUC
+   quad — four COMPLETE 32-byte records — per scheduled block. All four FP
+   banks carry positions (fv0/fv4/fv8/fv12: FOUR FTRVs in true flight vs the
+   pair's two; XMTRX lives in the BACK bank and FTRV reads it read-only, so
+   every front register is fair game — fr12-15 are call-saved and declared as
+   clobbers, GCC preserves them around the block). uv and color move as GP-WORD
+   copies (r1/r2/r3 scratch): bits are bits, and it frees the FP file for the
+   four position vectors. Record layout/store order matches TransformFillPair
+   (descending @-Rn: w,bgra,v,u,z,y,x,flags); w stores the TRANSFORMED fr3/7/
+   11/15 (the offset-bake/replay contract). Quad slot order 0,1,3,2 with EOL on
+   slot 3 is baked as fixed base offsets: records land at it+0,+32,+96,+64.
+   Strides are loop-invariant: the caller passes padj/uadj/cadj = stride-12/
+   -8/-4 so the walking pointers advance with one add each. Destinations MUST
+   be 32-byte-aligned contiguous Vertex records (aligned_vector guarantees). */
+#if GLDC_GOLD_BLOCK
+#define HAVE_GOLD_BLOCK 1
+GL_FORCE_INLINE void TransformFillQuad(
+        const uint8_t* p, const uint8_t* u, const uint8_t* c,
+        int padj, int uadj, int cadj,
+        uint32_t fvert, uint32_t feol,
+        void* d) {
+    __asm__ __volatile__(
+        /* ---- four position loads + four pipelined FTRVs ---- */
+        "fldi1   fr3\n\t"
+        "fmov.s  @%[p]+, fr0\n\t"
+        "fmov.s  @%[p]+, fr1\n\t"
+        "fmov.s  @%[p]+, fr2\n\t"
+        "add     %[padj], %[p]\n\t"
+        "ftrv    xmtrx, fv0\n\t"
+        "fldi1   fr7\n\t"
+        "fmov.s  @%[p]+, fr4\n\t"       /* v1 loads issue under fv0's FTRV */
+        "fmov.s  @%[p]+, fr5\n\t"
+        "fmov.s  @%[p]+, fr6\n\t"
+        "add     %[padj], %[p]\n\t"
+        "ftrv    xmtrx, fv4\n\t"
+        "fldi1   fr11\n\t"
+        "fmov.s  @%[p]+, fr8\n\t"       /* v2 loads under fv4's FTRV */
+        "fmov.s  @%[p]+, fr9\n\t"
+        "fmov.s  @%[p]+, fr10\n\t"
+        "add     %[padj], %[p]\n\t"
+        "ftrv    xmtrx, fv8\n\t"
+        "fldi1   fr15\n\t"
+        "fmov.s  @%[p]+, fr12\n\t"      /* v3 loads under fv8's FTRV */
+        "fmov.s  @%[p]+, fr13\n\t"
+        "fmov.s  @%[p]+, fr14\n\t"
+        "add     %[padj], %[p]\n\t"
+        "ftrv    xmtrx, fv12\n\t"
+        /* ---- record 0 (src0/fv0) at d+0 ---- */
+        "mov.l   @%[c]+, r1\n\t"        /* color word */
+        "add     %[cadj], %[c]\n\t"
+        "mov.l   @%[u]+, r2\n\t"        /* u word */
+        "mov.l   @%[u]+, r3\n\t"        /* v word */
+        "add     %[uadj], %[u]\n\t"
+        "movca.l r0, @%[d]\n\t"
+        "add     #32, %[d]\n\t"
+        "fmov.s  fr3,  @-%[d]\n\t"      /* w0 (transformed) */
+        "mov.l   r1,   @-%[d]\n\t"      /* bgra */
+        "mov.l   r3,   @-%[d]\n\t"      /* v */
+        "mov.l   r2,   @-%[d]\n\t"      /* u */
+        "fmov.s  fr2,  @-%[d]\n\t"
+        "fmov.s  fr1,  @-%[d]\n\t"
+        "fmov.s  fr0,  @-%[d]\n\t"
+        "mov.l   %[fvert], @-%[d]\n\t"  /* d back at +0 */
+        /* ---- record 1 (src1/fv4) at d+32 ---- */
+        "mov.l   @%[c]+, r1\n\t"
+        "add     %[cadj], %[c]\n\t"
+        "mov.l   @%[u]+, r2\n\t"
+        "mov.l   @%[u]+, r3\n\t"
+        "add     %[uadj], %[u]\n\t"
+        "add     #32, %[d]\n\t"
+        "movca.l r0, @%[d]\n\t"
+        "add     #32, %[d]\n\t"
+        "fmov.s  fr7,  @-%[d]\n\t"
+        "mov.l   r1,   @-%[d]\n\t"
+        "mov.l   r3,   @-%[d]\n\t"
+        "mov.l   r2,   @-%[d]\n\t"
+        "fmov.s  fr6,  @-%[d]\n\t"
+        "fmov.s  fr5,  @-%[d]\n\t"
+        "fmov.s  fr4,  @-%[d]\n\t"
+        "mov.l   %[fvert], @-%[d]\n\t"  /* d back at +32 */
+        /* ---- record at d+96 = slot 3 (src2/fv8, EOL) ---- */
+        "mov.l   @%[c]+, r1\n\t"
+        "add     %[cadj], %[c]\n\t"
+        "mov.l   @%[u]+, r2\n\t"
+        "mov.l   @%[u]+, r3\n\t"
+        "add     %[uadj], %[u]\n\t"
+        "add     #64, %[d]\n\t"         /* +96 */
+        "movca.l r0, @%[d]\n\t"
+        "add     #32, %[d]\n\t"         /* +128 */
+        "fmov.s  fr11, @-%[d]\n\t"
+        "mov.l   r1,   @-%[d]\n\t"
+        "mov.l   r3,   @-%[d]\n\t"
+        "mov.l   r2,   @-%[d]\n\t"
+        "fmov.s  fr10, @-%[d]\n\t"
+        "fmov.s  fr9,  @-%[d]\n\t"
+        "fmov.s  fr8,  @-%[d]\n\t"
+        "mov.l   %[feol], @-%[d]\n\t"   /* d back at +96 */
+        /* ---- record at d+64 = slot 2 (src3/fv12) ---- */
+        "mov.l   @%[c]+, r1\n\t"
+        "add     %[cadj], %[c]\n\t"
+        "mov.l   @%[u]+, r2\n\t"
+        "mov.l   @%[u]+, r3\n\t"
+        "add     %[uadj], %[u]\n\t"
+        "add     #-32, %[d]\n\t"        /* +64 */
+        "movca.l r0, @%[d]\n\t"
+        "add     #32, %[d]\n\t"         /* +96 */
+        "fmov.s  fr15, @-%[d]\n\t"
+        "mov.l   r1,   @-%[d]\n\t"
+        "mov.l   r3,   @-%[d]\n\t"
+        "mov.l   r2,   @-%[d]\n\t"
+        "fmov.s  fr14, @-%[d]\n\t"
+        "fmov.s  fr13, @-%[d]\n\t"
+        "fmov.s  fr12, @-%[d]\n\t"
+        "mov.l   %[fvert], @-%[d]\n\t"  /* slot 2 = plain VERTEX (EOL was slot 3) */
+        : [p] "+&r" (p), [u] "+&r" (u), [c] "+&r" (c), [d] "+&r" (d)
+        : [padj] "r" (padj), [uadj] "r" (uadj), [cadj] "r" (cadj),
+          [fvert] "r" (fvert), [feol] "r" (feol)
+        : "r0", "r1", "r2", "r3",
+          "fr0", "fr1", "fr2", "fr3", "fr4", "fr5", "fr6", "fr7",
+          "fr8", "fr9", "fr10", "fr11", "fr12", "fr13", "fr14", "fr15",
+          "memory"
+    );
+}
+#endif /* GLDC_GOLD_BLOCK */
 
 void InitGPU(_Bool autosort, _Bool fsaa);
 

@@ -74,12 +74,18 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.23 20:53]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.24 07:28]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
 #else
     printf("GLdc: SH4ZAM is NOT enabled.\n\n");
+#endif
+#if GLDC_GOLD_BLOCK
+    printf("GLdc: [ CANARY ] GOLD-BLOCK quad writer ENABLED (B2)\n");
+#endif
+#if GLDC_S3_SEGMENTED_OP
+    printf("GLdc: [ CANARY ] S3 segmented OP drain ENABLED\n");
 #endif
 
     InitGPU(config->autosort_enabled, config->fsaa_enabled);

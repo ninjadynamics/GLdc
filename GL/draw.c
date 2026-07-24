@@ -634,6 +634,26 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
     } while(0)
 #endif
 
+#if GLDC_GOLD_BLOCK
+            /* B2 GOLD-BLOCK (2026-07-24): one whole quad per scheduled block —
+               four FTRVs in true flight across all four FP banks, swizzle+EOL
+               baked as record offsets. The stride adjusts are loop-invariant. */
+            {
+                const int padj = (int)pstride - 12;
+                const int uadj = (int)ustride - 8;
+                const int cadj = (int)cstride - 4;
+                for(GLuint q = count >> 2; q--; it += 4) {
+                    PREFETCH(pp + PUC_PREF_AHEAD);
+                    PREFETCH(up + PUC_PREF_AHEAD);
+                    PREFETCH(cp + PUC_PREF_AHEAD);
+                    TransformFillQuad(pp, up, cp, padj, uadj, cadj,
+                                      GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, it);
+                    pp += pstride << 2;
+                    up += ustride << 2;
+                    cp += cstride << 2;
+                }
+            }
+#else
             for(GLuint q = count >> 2; q--; it += 4) {
                 PREFETCH(pp + PUC_PREF_AHEAD);
                 PREFETCH(up + PUC_PREF_AHEAD);
@@ -641,6 +661,7 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                 PUC_Q_PAIR(0, 1, GPU_CMD_VERTEX, GPU_CMD_VERTEX);
                 PUC_Q_PAIR(3, 2, GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);   /* src 2 = last strip record */
             }
+#endif
 #undef PUC_Q_PAIR
 
             /* Partial trailing quad (caller contract violation — the city never
