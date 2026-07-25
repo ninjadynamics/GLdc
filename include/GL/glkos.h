@@ -112,6 +112,11 @@ GLAPI void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint*
                                            GLsizei sprites,
                                            GLfloat ux, GLfloat uy, GLfloat uz,
                                            GLfloat vx, GLfloat vy, GLfloat vz);
+/* Variable-size center lane: one half-size and (u0,v0,u1,v1) rect per sprite. */
+GLAPI void APIENTRY glKosDrawSpriteCentersUVRectScale(
+    const GLfloat* centers, const GLuint* colors,
+    const GLfloat* half_sizes, const GLfloat* uv_rects, GLsizei sprites,
+    GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
 GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 
@@ -272,4 +277,3 @@ GLAPI GLvoid APIENTRY glDefragmentTextureMemory_KOS(void);
 #define GL_TEXTURE_TWIDDLE_KOS                      0xEF51
 
 __END_DECLS
-

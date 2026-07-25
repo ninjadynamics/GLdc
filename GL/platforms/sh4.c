@@ -679,6 +679,13 @@ void SceneListSubmit(Vertex* vertices, int n) {
    fields transfer raw (EXCEPT filter: GLdc pre-encodes it — see the >>1 below).
    The divide math is the vertex path's verbatim (fsrra,
    w==1 ortho branch) so sprites depth-match coplanar geometry exactly. */
+/* Pack a float UV pair into the sprite record's 16-bit-halves format. */
+static inline uint32_t _glSpriteUV16(float u, float v) {
+    union { float f; uint32_t i; } a, b;
+    a.f = u; b.f = v;
+    return (a.i & 0xFFFF0000u) | (b.i >> 16);
+}
+
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     PolyList* out = _glActivePolyList();
 #if GLDC_S3_SEGMENTED_OP
@@ -792,8 +799,7 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
         s->dx = xyz[k][3][0] * fd;
         s->dy = xyz[k][3][1] * fd;
         s->dummy = 0;
-        /* corner UVs (0,0)(1,0)(1,1) packed 16-bit (top halves of the floats);
-           the fourth corner's UV is hardware-derived like its Z */
+        /* full-texture corner UVs; the fourth is hardware-derived like its Z */
         s->auv = 0x00000000;
         s->buv = 0x3F800000;
         s->cuv = 0x3F803F80;
@@ -804,7 +810,8 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 /* Homogeneous sprite family. The two object-space half axes are common to the
    whole call, so transform them once with w=0; every sprite then needs only
    one center FTRV. This is the road/roof glow lane. */
-void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprites,
+void SceneSpriteCenters(const float* centers, const uint32_t* colors,
+                        const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
@@ -861,18 +868,21 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprite
         }
 
         for(int k = 0; k < n; ++k) {
+            const float hs = half_sizes ? half_sizes[q + k] : 1.0f;
             float xyz[4][3];
             float w[4];
             for(int a = 0; a < 3; ++a) {
-                xyz[0][a] = tc[k][a] - tu[a] - tv[a];
-                xyz[1][a] = tc[k][a] + tu[a] - tv[a];
-                xyz[2][a] = tc[k][a] + tu[a] + tv[a];
-                xyz[3][a] = tc[k][a] - tu[a] + tv[a];
+                const float suh = tu[a] * hs, svh = tv[a] * hs;
+                xyz[0][a] = tc[k][a] - suh - svh;
+                xyz[1][a] = tc[k][a] + suh - svh;
+                xyz[2][a] = tc[k][a] + suh + svh;
+                xyz[3][a] = tc[k][a] - suh + svh;
             }
-            w[0] = cw[k] - uw - vw;
-            w[1] = cw[k] + uw - vw;
-            w[2] = cw[k] + uw + vw;
-            w[3] = cw[k] - uw + vw;
+            const float suw = uw * hs, svw = vw * hs;
+            w[0] = cw[k] - suw - svw;
+            w[1] = cw[k] + suw - svw;
+            w[2] = cw[k] + suw + svw;
+            w[3] = cw[k] - suw + svw;
 
             if(xyz[0][2] < -w[0] || xyz[1][2] < -w[1] ||
                xyz[2][2] < -w[2] || xyz[3][2] < -w[3]) {
@@ -907,9 +917,16 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprite
             s->dx = xyz[3][0] * fd;
             s->dy = xyz[3][1] * fd;
             s->dummy = 0;
-            s->auv = 0x00000000;
-            s->buv = 0x3F800000;
-            s->cuv = 0x3F803F80;
+            if(uv_rects) {
+                const float* r = uv_rects + (q + k) * 4;
+                s->auv = _glSpriteUV16(r[0], r[1]);
+                s->buv = _glSpriteUV16(r[2], r[1]);
+                s->cuv = _glSpriteUV16(r[2], r[3]);
+            } else {
+                s->auv = 0x00000000;
+                s->buv = 0x3F800000;
+                s->cuv = 0x3F803F80;
+            }
         }
     }
 }

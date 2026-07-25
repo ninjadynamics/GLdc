@@ -110,12 +110,14 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
 #endif
 }
 
-/* We use sq_cpy if the src and size is properly aligned. We control that the
- * destination is properly aligned so we assert that. */
+/* Store-queue copies require a 32-byte destination. Texture sub-image rows can
+ * legitimately begin at an unaligned VRAM offset even when their byte count is
+ * a multiple of 32, so route those through the alignment-safe copy instead of
+ * asserting or feeding an invalid SQ destination. */
 #define FASTCPY(dst, src, bytes) \
     do { \
-        if(bytes % 32 == 0 && ((uintptr_t) src % 4) == 0) { \
-            gl_assert(((uintptr_t) dst) % 32 == 0); \
+        if(bytes % 32 == 0 && ((uintptr_t) src % 4) == 0 && \
+           ((uintptr_t) dst % 32) == 0) { \
             sq_cpy(dst, src, bytes); \
         } else { \
             memcpy_fast(dst, src, bytes); \

@@ -1564,7 +1564,27 @@ void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* color
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
 
     _glTnlLoadMatrix();
-    SceneSpriteCenters(centers, (const uint32_t*) colors, sprites,
+    SceneSpriteCenters(centers, (const uint32_t*) colors, NULL, NULL, sprites,
+                       ux, uy, uz, vx, vy, vz);
+}
+
+/* Per-sprite half-size and UV rectangle on the center lane. Variable-size,
+   screen-facing orb fields keep one center transform per light without making
+   the caller expand four object-space corners. */
+void APIENTRY glKosDrawSpriteCentersUVRectScale(const GLfloat* centers,
+                                                const GLuint* colors,
+                                                const GLfloat* half_sizes,
+                                                const GLfloat* uv_rects,
+                                                GLsizei sprites,
+                                                GLfloat ux, GLfloat uy, GLfloat uz,
+                                                GLfloat vx, GLfloat vy, GLfloat vz) {
+    TRACE();
+
+    if(sprites <= 0) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+
+    _glTnlLoadMatrix();
+    SceneSpriteCenters(centers, (const uint32_t*) colors, half_sizes, uv_rects, sprites,
                        ux, uy, uz, vx, vy, vz);
 }
 

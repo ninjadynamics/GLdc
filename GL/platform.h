@@ -276,7 +276,8 @@ void SceneFinish();
    list's sprite sidecar; SceneSpritesSubmit SQs a finished sidecar blob
    verbatim inside the list's begin/finish window. No-ops off Dreamcast. */
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads);
-void SceneSpriteCenters(const float* centers, const uint32_t* colors, int sprites,
+void SceneSpriteCenters(const float* centers, const uint32_t* colors,
+                        const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz);
 void SceneSpritesSubmit(void* blob, int blocks32);
 
