@@ -279,6 +279,11 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads);
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz);
+void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
+                             const float* half_sizes, const float* uv_rects,
+                             const uint8_t* cells, int sprites,
+                             int grid_log2, float inset,
+                             float ux, float uy, float uz, float vx, float vy, float vz);
 void SceneSpritesSubmit(void* blob, int blocks32);
 
 #define GPU_TA_CMD_TYPE_SHIFT       24

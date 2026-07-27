@@ -117,6 +117,23 @@ GLAPI void APIENTRY glKosDrawSpriteCentersUVRectScale(
     const GLfloat* centers, const GLuint* colors,
     const GLfloat* half_sizes, const GLfloat* uv_rects, GLsizei sprites,
     GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
+/* View-plane specialization of the variable-size center lane. The shared u/v
+   axes MUST lie in the current camera plane (ordinary and rotated billboards
+   both qualify). All four corners then share one homogeneous W, so the SH4
+   path performs one reciprocal per sprite instead of four while retaining the
+   same whole-sprite near-plane rejection and TA-sidecar ordering. */
+GLAPI void APIENTRY glKosDrawSpriteCentersUVRectScalePlane(
+    const GLfloat* centers, const GLuint* colors,
+    const GLfloat* half_sizes, const GLfloat* uv_rects, GLsizei sprites,
+    GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
+/* Compact square-atlas sibling (grid_log2=1 for 2x2, 2 for 4x4). `cells`
+   replaces four UV floats per sprite; inset is normalized texture space and
+   is applied at every cell edge. */
+GLAPI void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(
+    const GLfloat* centers, const GLuint* colors,
+    const GLfloat* half_sizes, const GLubyte* cells, GLsizei sprites,
+    GLint grid_log2, GLfloat inset,
+    GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
 GLAPI void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra);
 GLAPI void APIENTRY glVertexPackColor4fKOS(GLVertexKOS* vertex, float r, float g, float b, float a);
 

@@ -1588,6 +1588,50 @@ void APIENTRY glKosDrawSpriteCentersUVRectScale(const GLfloat* centers,
                        ux, uy, uz, vx, vy, vz);
 }
 
+/* Camera-plane sibling of the generic center lane. This is deliberately an
+   explicit contract rather than a fuzzy transformed-axis test: city lights
+   know that their billboard axes are camera-plane vectors, and exact routing
+   avoids a per-call/per-sprite heuristic in the hot path. */
+void APIENTRY glKosDrawSpriteCentersUVRectScalePlane(const GLfloat* centers,
+                                                     const GLuint* colors,
+                                                     const GLfloat* half_sizes,
+                                                     const GLfloat* uv_rects,
+                                                     GLsizei sprites,
+                                                     GLfloat ux, GLfloat uy, GLfloat uz,
+                                                     GLfloat vx, GLfloat vy, GLfloat vz) {
+    TRACE();
+
+    if(sprites <= 0) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+
+    _glTnlLoadMatrix();
+    SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
+                            half_sizes, uv_rects, NULL, sprites, 0, 0.0f,
+                            ux, uy, uz, vx, vy, vz);
+}
+
+void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
+                                                     const GLuint* colors,
+                                                     const GLfloat* half_sizes,
+                                                     const GLubyte* cells,
+                                                     GLsizei sprites,
+                                                     GLint grid_log2,
+                                                     GLfloat inset,
+                                                     GLfloat ux, GLfloat uy, GLfloat uz,
+                                                     GLfloat vx, GLfloat vy, GLfloat vz) {
+    TRACE();
+
+    if(sprites <= 0 || !cells) return;
+    if(grid_log2 < 1 || grid_log2 > 2) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+
+    _glTnlLoadMatrix();
+    SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
+                            half_sizes, NULL, cells, sprites,
+                            grid_log2, inset,
+                            ux, uy, uz, vx, vy, vz);
+}
+
 void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     TRACE();
 

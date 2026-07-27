@@ -686,6 +686,60 @@ static inline uint32_t _glSpriteUV16(float u, float v) {
     return (a.i & 0xFFFF0000u) | (b.i >> 16);
 }
 
+/* The sprite color lives in header words 4/5. Spell out this fixed 32-byte
+   copy so hot sprite runs do not pay an out-of-line memcpy call per color
+   change (and so the compiler can schedule the eight aligned stores). */
+static inline void _glWriteSpriteHeader(uint32_t* dst,
+                                        const pvr_sprite_hdr_t* header,
+                                        uint32_t argb) {
+    const uint32_t* src = (const uint32_t*) header;
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2];
+    dst[3] = src[3];
+    dst[4] = argb;
+    dst[5] = 0;
+    dst[6] = src[6];
+    dst[7] = src[7];
+}
+
+/* Context compilation is batch setup, not per-sprite work. The specialized
+   camera-plane lane keeps this mapping out of its hot transform loop. */
+static __attribute__((noinline))
+void _glCompileCurrentSpriteHeader(PolyList* out, pvr_sprite_hdr_t* header) {
+    PolyContext ctx;
+    _glBuildPolyContext(&ctx, out, 0);
+
+    pvr_sprite_cxt_t sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.list_type        = (pvr_list_t)ctx.list_type;
+    sc.gen.alpha        = ctx.gen.alpha;
+    sc.gen.fog_type     = ctx.gen.fog_type;
+    sc.gen.culling      = ctx.gen.culling;
+    sc.gen.color_clamp  = ctx.gen.color_clamp;
+    sc.gen.clip_mode    = ctx.gen.clip_mode;
+    sc.gen.specular     = ctx.gen.specular;
+    sc.blend.src        = ctx.blend.src;
+    sc.blend.dst        = ctx.blend.dst;
+    sc.blend.src_enable = ctx.blend.src_enable;
+    sc.blend.dst_enable = ctx.blend.dst_enable;
+    sc.depth.comparison = ctx.depth.comparison;
+    sc.depth.write      = ctx.depth.write;
+    sc.txr.enable       = ctx.txr.enable;
+    sc.txr.filter       = ctx.txr.filter >> 1;
+    sc.txr.mipmap       = ctx.txr.mipmap;
+    sc.txr.mipmap_bias  = ctx.txr.mipmap_bias;
+    sc.txr.uv_flip      = ctx.txr.uv_flip;
+    sc.txr.uv_clamp     = ctx.txr.uv_clamp;
+    sc.txr.alpha        = ctx.txr.alpha;
+    sc.txr.env          = ctx.txr.env;
+    sc.txr.width        = ctx.txr.width;
+    sc.txr.height       = ctx.txr.height;
+    sc.txr.format       = ctx.txr.format;
+    sc.txr.base         = (pvr_ptr_t) ctx.txr.base;
+    pvr_sprite_compile(header, &sc);
+}
+
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     PolyList* out = _glActivePolyList();
 #if GLDC_S3_SEGMENTED_OP
@@ -816,39 +870,8 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
 
-    PolyContext ctx;
-    _glBuildPolyContext(&ctx, out, 0);
-
-    pvr_sprite_cxt_t sc;
-    memset(&sc, 0, sizeof(sc));
-    sc.list_type       = ctx.list_type;
-    sc.gen.alpha       = ctx.gen.alpha;
-    sc.gen.fog_type    = ctx.gen.fog_type;
-    sc.gen.culling     = ctx.gen.culling;
-    sc.gen.color_clamp = ctx.gen.color_clamp;
-    sc.gen.clip_mode   = ctx.gen.clip_mode;
-    sc.gen.specular    = ctx.gen.specular;
-    sc.blend.src        = ctx.blend.src;
-    sc.blend.dst        = ctx.blend.dst;
-    sc.blend.src_enable = ctx.blend.src_enable;
-    sc.blend.dst_enable = ctx.blend.dst_enable;
-    sc.depth.comparison = ctx.depth.comparison;
-    sc.depth.write      = ctx.depth.write;
-    sc.txr.enable       = ctx.txr.enable;
-    sc.txr.filter       = ctx.txr.filter >> 1;
-    sc.txr.mipmap       = ctx.txr.mipmap;
-    sc.txr.mipmap_bias  = ctx.txr.mipmap_bias;
-    sc.txr.uv_flip      = ctx.txr.uv_flip;
-    sc.txr.uv_clamp     = ctx.txr.uv_clamp;
-    sc.txr.alpha        = ctx.txr.alpha;
-    sc.txr.env          = ctx.txr.env;
-    sc.txr.width        = ctx.txr.width;
-    sc.txr.height       = ctx.txr.height;
-    sc.txr.format       = ctx.txr.format;
-    sc.txr.base         = (pvr_ptr_t) ctx.txr.base;
-
     pvr_sprite_hdr_t shdr;
-    pvr_sprite_compile(&shdr, &sc);
+    _glCompileCurrentSpriteHeader(out, &shdr);
 
     float tu[3], tv[3], uw, vw;
     TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
@@ -856,6 +879,10 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
 
     uint32_t last_argb = 0;
     int have_hdr = 0;
+    const uint32_t base_blocks = aligned_vector_size(sv);
+    uint32_t* const batch = (uint32_t*) aligned_vector_extend(
+        sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+    uint32_t used_blocks = 0;
     for(int q = 0; q < sprites; q += 2) {
         const int n = (q + 1 < sprites) ? 2 : 1;
         float tc[2][3], cw[2];
@@ -869,53 +896,53 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
 
         for(int k = 0; k < n; ++k) {
             const float hs = half_sizes ? half_sizes[q + k] : 1.0f;
-            float xyz[4][3];
-            float w[4];
-            for(int a = 0; a < 3; ++a) {
-                const float suh = tu[a] * hs, svh = tv[a] * hs;
-                xyz[0][a] = tc[k][a] - suh - svh;
-                xyz[1][a] = tc[k][a] + suh - svh;
-                xyz[2][a] = tc[k][a] + suh + svh;
-                xyz[3][a] = tc[k][a] - suh + svh;
-            }
-            const float suw = uw * hs, svw = vw * hs;
-            w[0] = cw[k] - suw - svw;
-            w[1] = cw[k] + suw - svw;
-            w[2] = cw[k] + suw + svw;
-            w[3] = cw[k] - suw + svw;
-
-            if(xyz[0][2] < -w[0] || xyz[1][2] < -w[1] ||
-               xyz[2][2] < -w[2] || xyz[3][2] < -w[3]) {
+            const float sux = tu[0] * hs, suy = tu[1] * hs;
+            const float suz = tu[2] * hs, suw = uw * hs;
+            const float svx = tv[0] * hs, svy = tv[1] * hs;
+            const float svz = tv[2] * hs, svw = vw * hs;
+            /* min over all four (clip-Z + W) corners, algebraically exact for
+               the parallelogram and cheaper than materializing xyz[4]/w[4]. */
+            const float near_extent =
+                fabsf((tu[2] + uw) * hs) + fabsf((tv[2] + vw) * hs);
+            if(tc[k][2] + cw[k] < near_extent)
                 continue;
-            }
+
+            const float wa = cw[k] - suw - svw;
+            const float wb = cw[k] + suw - svw;
+            const float wc = cw[k] + suw + svw;
+            const float wd = cw[k] - suw + svw;
 
             uint32_t argb = colors[q + k];
             if(!have_hdr || argb != last_argb) {
-                uint32_t* h = (uint32_t*) aligned_vector_extend(sv, 1);
-                memcpy(h, &shdr, 32);
-                h[4] = argb;
-                h[5] = 0;
+                uint32_t* h = batch + used_blocks * 8u;
+                _glWriteSpriteHeader(h, &shdr, argb);
+                used_blocks++;
                 last_argb = argb;
                 have_hdr = 1;
             }
 
-            pvr_sprite_txr_t* s = (pvr_sprite_txr_t*) aligned_vector_extend(sv, 2);
-            const float fa = _glFastInvert(w[0]);
-            const float fb = _glFastInvert(w[1]);
-            const float fc = _glFastInvert(w[2]);
-            const float fd = _glFastInvert(w[3]);
+            pvr_sprite_txr_t* s =
+                (pvr_sprite_txr_t*) (batch + used_blocks * 8u);
+            used_blocks += 2;
+            const float fa = _glFastInvert(wa);
+            const float fb = _glFastInvert(wb);
+            const float fc = _glFastInvert(wc);
+            const float fd = _glFastInvert(wd);
             s->flags = GPU_CMD_VERTEX_EOL;
-            s->ax = xyz[0][0] * fa;
-            s->ay = xyz[0][1] * fa;
-            s->az = (w[0] == 1.0f) ? _glFastInvert(1.0001f + xyz[0][2]) : fa;
-            s->bx = xyz[1][0] * fb;
-            s->by = xyz[1][1] * fb;
-            s->bz = (w[1] == 1.0f) ? _glFastInvert(1.0001f + xyz[1][2]) : fb;
-            s->cx = xyz[2][0] * fc;
-            s->cy = xyz[2][1] * fc;
-            s->cz = (w[2] == 1.0f) ? _glFastInvert(1.0001f + xyz[2][2]) : fc;
-            s->dx = xyz[3][0] * fd;
-            s->dy = xyz[3][1] * fd;
+            s->ax = (tc[k][0] - sux - svx) * fa;
+            s->ay = (tc[k][1] - suy - svy) * fa;
+            s->az = (wa == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] - suz - svz) : fa;
+            s->bx = (tc[k][0] + sux - svx) * fb;
+            s->by = (tc[k][1] + suy - svy) * fb;
+            s->bz = (wb == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] + suz - svz) : fb;
+            s->cx = (tc[k][0] + sux + svx) * fc;
+            s->cy = (tc[k][1] + suy + svy) * fc;
+            s->cz = (wc == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] + suz + svz) : fc;
+            s->dx = (tc[k][0] - sux + svx) * fd;
+            s->dy = (tc[k][1] - suy + svy) * fd;
             s->dummy = 0;
             if(uv_rects) {
                 const float* r = uv_rects + (q + k) * 4;
@@ -929,6 +956,128 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             }
         }
     }
+    aligned_vector_resize(sv, base_blocks + used_blocks);
+}
+
+/* Camera-plane center lane. A view-plane billboard has equal homogeneous W
+   at all four corners; exploit that exact caller-owned invariant instead of
+   constructing four xyz/W vectors and running four FSRRA estimates. The
+   transformed axis Z/W extents remain in the conservative near test so tiny
+   floating-point camera-basis residue can only drop a boundary sprite, never
+   leak a corner through the near plane. */
+void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
+                             const float* half_sizes, const float* uv_rects,
+                             const uint8_t* cells, int sprites,
+                             int grid_log2, float inset,
+                             float ux, float uy, float uz,
+                             float vx, float vy, float vz) {
+    PolyList* out = _glActivePolyList();
+    AlignedVector* sv = &out->sprites;
+
+    pvr_sprite_hdr_t shdr;
+    _glCompileCurrentSpriteHeader(out, &shdr);
+
+    float tu[3], tv[3], uw, vw;
+    TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
+    TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
+
+    uint32_t cell_uv[16][3];
+    int cell_mask = 0;
+    if(cells) {
+        const int grid = 1 << grid_log2;
+        const float step = 1.0f / (float)grid;
+        cell_mask = grid * grid - 1;
+        for(int cell = 0; cell <= cell_mask; ++cell) {
+            const int col = cell & (grid - 1);
+            const int row = cell >> grid_log2;
+            const float u0 = (float)col * step + inset;
+            const float v0 = (float)row * step + inset;
+            const float u1 = (float)(col + 1) * step - inset;
+            const float v1 = (float)(row + 1) * step - inset;
+            cell_uv[cell][0] = _glSpriteUV16(u0, v0);
+            cell_uv[cell][1] = _glSpriteUV16(u1, v0);
+            cell_uv[cell][2] = _glSpriteUV16(u1, v1);
+        }
+    }
+
+    const uint32_t base_blocks = aligned_vector_size(sv);
+    uint32_t* const batch = (uint32_t*) aligned_vector_extend(
+        sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+    uint32_t used_blocks = 0;
+    uint32_t last_argb = 0;
+    int have_hdr = 0;
+
+    for(int q = 0; q < sprites; q += 2) {
+        const int n = (q + 1 < sprites) ? 2 : 1;
+        float tc[2][3], cw[2];
+        const float* p = centers + q * 3;
+        if(n == 2) {
+            TransformVertex2(p[0], p[1], p[2], tc[0], &cw[0],
+                             p[3], p[4], p[5], tc[1], &cw[1]);
+        } else {
+            TransformVertex(p[0], p[1], p[2], 1.0f, tc[0], &cw[0]);
+        }
+
+        for(int k = 0; k < n; ++k) {
+            const int i = q + k;
+            const float hs = half_sizes ? half_sizes[i] : 1.0f;
+            const float near_extent =
+                fabsf((tu[2] + uw) * hs) + fabsf((tv[2] + vw) * hs);
+            if(tc[k][2] + cw[k] < near_extent)
+                continue;
+
+            const uint32_t argb = colors[i];
+            if(!have_hdr || argb != last_argb) {
+                _glWriteSpriteHeader(batch + used_blocks * 8u, &shdr, argb);
+                used_blocks++;
+                last_argb = argb;
+                have_hdr = 1;
+            }
+
+            pvr_sprite_txr_t* s =
+                (pvr_sprite_txr_t*) (batch + used_blocks * 8u);
+            used_blocks += 2;
+
+            const float sux = tu[0] * hs;
+            const float suy = tu[1] * hs;
+            const float svx = tv[0] * hs;
+            const float svy = tv[1] * hs;
+            const float invw = _glFastInvert(cw[k]);
+            const float z = (cw[k] == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2]) : invw;
+
+            s->flags = GPU_CMD_VERTEX_EOL;
+            s->ax = (tc[k][0] - sux - svx) * invw;
+            s->ay = (tc[k][1] - suy - svy) * invw;
+            s->az = z;
+            s->bx = (tc[k][0] + sux - svx) * invw;
+            s->by = (tc[k][1] + suy - svy) * invw;
+            s->bz = z;
+            s->cx = (tc[k][0] + sux + svx) * invw;
+            s->cy = (tc[k][1] + suy + svy) * invw;
+            s->cz = z;
+            s->dx = (tc[k][0] - sux + svx) * invw;
+            s->dy = (tc[k][1] - suy + svy) * invw;
+            s->dummy = 0;
+            if(cells) {
+                const uint32_t* uv = cell_uv[cells[i] & cell_mask];
+                s->auv = uv[0];
+                s->buv = uv[1];
+                s->cuv = uv[2];
+            } else if(uv_rects) {
+                const float* r = uv_rects + i * 4;
+                s->auv = _glSpriteUV16(r[0], r[1]);
+                s->buv = _glSpriteUV16(r[2], r[1]);
+                s->cuv = _glSpriteUV16(r[2], r[3]);
+            } else {
+                s->auv = 0x00000000;
+                s->buv = 0x3F800000;
+                s->cuv = 0x3F803F80;
+            }
+        }
+    }
+
+    aligned_vector_resize(sv, base_blocks + used_blocks);
 }
 
 /* SQ a finished sprite sidecar verbatim (records are pre-divided, pre-compiled).

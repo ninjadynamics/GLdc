@@ -456,6 +456,16 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     (void) ux; (void) uy; (void) uz; (void) vx; (void) vy; (void) vz;
 }
 
+void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
+                             const float* half_sizes, const float* uv_rects,
+                             const uint8_t* cells, int sprites,
+                             int grid_log2, float inset,
+                             float ux, float uy, float uz, float vx, float vy, float vz) {
+    (void) centers; (void) colors; (void) half_sizes; (void) uv_rects;
+    (void) cells; (void) sprites; (void) grid_log2; (void) inset;
+    (void) ux; (void) uy; (void) uz; (void) vx; (void) vy; (void) vz;
+}
+
 void SceneSpritesSubmit(void* blob, int blocks32) {
     (void) blob; (void) blocks32;
 }
