@@ -20,7 +20,7 @@ void aligned_vector_init(AlignedVector* vector, uint32_t element_size) {
     /* Now initialize the header*/
     AlignedVectorHeader* const hdr = &vector->hdr;
     hdr->size = 0;
-    hdr->capacity = ALIGNED_VECTOR_CHUNK_SIZE;
+    hdr->capacity = 0;
     hdr->element_size = element_size;
     vector->data = NULL;
 
@@ -33,8 +33,12 @@ void aligned_vector_init(AlignedVector* vector, uint32_t element_size) {
 void* aligned_vector_reserve(AlignedVector* vector, uint32_t element_count) {
     AlignedVectorHeader* hdr = &vector->hdr;
 
-    if(element_count < hdr->capacity) {
-        return aligned_vector_at(vector, element_count);
+    if(vector->data && element_count <= hdr->capacity) {
+        /* reserve never changes logical size; return the logical-end address,
+           matching the allocation branch below. aligned_vector_at() is
+           intentionally unsuitable here because size itself is a valid
+           one-past-logical-end pointer value. */
+        return vector->data + hdr->size * hdr->element_size;
     }
 
     uint32_t original_byte_size = (hdr->size * hdr->element_size);

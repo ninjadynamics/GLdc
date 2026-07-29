@@ -788,7 +788,7 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     /* If this didn't come from glGenTextures, then we should initialize the
         * texture the first time it's bound */
     if(!txr) {
-        TextureObject* txr = named_array_reserve(&TEXTURE_OBJECTS, texture);
+        txr = named_array_reserve(&TEXTURE_OBJECTS, texture);
         _glInitializeTextureObject(txr, texture);
     }
 

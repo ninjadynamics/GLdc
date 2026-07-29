@@ -568,6 +568,54 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         const GLubyte* up = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + first * ustride : NULL;
         const GLubyte* cp = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + first * cstride : NULL;
 
+        /* Untextured colored quads: fuse zero-UV fill, color copy, transform
+           and strip swizzle into one pass.
+           The old fallback touched every output cache line three times even
+           though the UV stream was disabled. */
+        if(!up && cp && ((((uintptr_t) cp) | cstride) & 3) == 0) {
+            Vertex* it = batch_base;
+
+#define PC_Q_PAIR(sa, sb, fa, fb) do { \
+        Vertex* da = it + (sa); \
+        Vertex* db = it + (sb); \
+        VERTEX_CACHE_ALLOC(da); \
+        VERTEX_CACHE_ALLOC(db); \
+        const float* qa = (const float*) pp; \
+        const float* qb = (const float*) (pp + pstride); \
+        TransformVertex2(qa[0], qa[1], qa[2], da->xyz, &da->w, \
+                         qb[0], qb[1], qb[2], db->xyz, &db->w); \
+        da->uv[0] = 0.0f; da->uv[1] = 0.0f; \
+        db->uv[0] = 0.0f; db->uv[1] = 0.0f; \
+        *((uint32_t*) da->bgra) = *((const uint32_t*) cp); \
+        *((uint32_t*) db->bgra) = *((const uint32_t*) (cp + cstride)); \
+        da->flags = (fa); \
+        db->flags = (fb); \
+        pp += pstride << 1; cp += cstride << 1; \
+    } while(0)
+
+            for(GLuint q = count >> 2; q--; it += 4) {
+                PREFETCH(pp + PUC_PREF_AHEAD);
+                PREFETCH(cp + PUC_PREF_AHEAD);
+                PC_Q_PAIR(0, 1, GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+                PC_Q_PAIR(3, 2, GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+            }
+#undef PC_Q_PAIR
+
+            /* Defensive tail for non-quad-aligned callers. GL_QUADS normally
+               rejects such input before this point; initialize any reserved
+               records anyway, matching the established fallback flags. */
+            for(GLuint r = 0; r < (count & 3); ++r, ++it) {
+                VERTEX_CACHE_ALLOC(it);
+                TransformVertex(((const float*) pp)[0], ((const float*) pp)[1],
+                                ((const float*) pp)[2], 1.0f, it->xyz, &it->w);
+                it->uv[0] = 0.0f; it->uv[1] = 0.0f;
+                *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
+                it->flags = (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+                pp += pstride; cp += cstride;
+            }
+            return;
+        }
+
         if(up && cp && ((((uintptr_t) cp) | cstride) & 3) == 0) {
             Vertex* it = batch_base;
 
@@ -1124,6 +1172,40 @@ void _glInvalidateCapturedArrays(void) {
     CAPTURE_PENDING = -1;
 }
 
+/* City window replay's hot case is not a plain clone: every record is copied,
+   recolored to a constant and polygon-offset in succession. The old sequence
+   made three complete passes over the destination (shz copy, color patch,
+   offset patch). Fuse that exact combination into one cache-line write. The
+   two simpler API cases retain the proven shz_memcpy32 path below. */
+GL_FORCE_INLINE void _glReplayCopyColorOffset(
+        Vertex* dst, const Vertex* src, GLuint count,
+        const GLubyte* bgra, float offset_inv) {
+    const uint32_t color =
+        (uint32_t)bgra[0] |
+        ((uint32_t)bgra[1] << 8) |
+        ((uint32_t)bgra[2] << 16) |
+        ((uint32_t)bgra[3] << 24);
+    Vertex* const end = dst + count;
+    for(; dst < end; ++dst, ++src) {
+        PREFETCH(src + 2);
+        VERTEX_CACHE_ALLOC(dst);
+        dst->flags = src->flags;
+        if(src->w != 1.0f) {
+            dst->xyz[0] = src->xyz[0] * offset_inv;
+            dst->xyz[1] = src->xyz[1] * offset_inv;
+            dst->w      = src->w      * offset_inv;
+        } else {
+            dst->xyz[0] = src->xyz[0];
+            dst->xyz[1] = src->xyz[1];
+            dst->w      = src->w;
+        }
+        dst->xyz[2] = src->xyz[2];
+        dst->uv[0] = src->uv[0];
+        dst->uv[1] = src->uv[1];
+        *((uint32_t*) dst->bgra) = color;
+    }
+}
+
 void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
     if(slot >= GLDC_CAPTURE_SLOTS) return;
 
@@ -1144,6 +1226,11 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
     /* Resolve source AFTER the extend: a same-list replay would have realloc'd it. */
     Vertex* src = (Vertex*) aligned_vector_at(&c->list->vector, c->start);
     Vertex* dst = (Vertex*) aligned_vector_at(&out->vector, vec + (header_required ? 1 : 0));
+    if(bgra && _glPolygonOffsetMul != 1.0f) {
+        _glReplayCopyColorOffset(dst, src, c->count, bgra,
+                                 1.0f / _glPolygonOffsetMul);
+        return;
+    }
 #ifdef USE_SH4ZAM
     /* Both sides are 32-byte-aligned Vertex records in aligned_vector storage
        and the size is a multiple of 32: shz_memcpy32's exact contract. Cached
@@ -1528,6 +1615,311 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
     }
 
     _glEndFusedDraw();
+}
+
+/* Dynamic hologram lanes (2026-07-29).
+
+   Both keep normal polygon-list records, chronological list placement and the
+   ordinary SceneListSubmit near-plane clip path. This is deliberately NOT the
+   smaller TA-sprite sidecar: sprites cannot clip a near-crossing quad and would
+   make a facade/crown disappear as the camera passes it.
+
+   The first entry consumes independent planar parallelograms in GL_QUADS input
+   order. It rejects exactly collapsed placeholders before reserving list
+   space, transforms only A/B/C, and derives D=A+C-B in homogeneous clip space.
+   Four ordinary vertex records are still emitted, so rasterization is
+   unchanged.
+
+   The second entry consumes chains of adjacent quads (a faceted cylinder
+   half-ring). Shared endpoints become one triangle strip: N faces need
+   2*(N+1) records instead of 4*N. A UV discontinuity (the atlas wrap seam)
+   starts a new strip and duplicates only that endpoint, preserving the exact
+   per-face mapping. */
+
+GL_FORCE_INLINE GLboolean _glHoloLaneCompatible(void) {
+    const GLuint required = VERTEX_ENABLED_FLAG | UV_ENABLED_FLAG | DIFFUSE_ENABLED_FLAG;
+    return ATTRIB_LIST.fast_path &&
+           (ATTRIB_LIST.enabled & required) == required &&
+           (ATTRIB_LIST.enabled & (ST_ENABLED_FLAG | NORMAL_ENABLED_FLAG)) == 0 &&
+           ATTRIB_LIST.vertex.ptr && ATTRIB_LIST.uv.ptr && ATTRIB_LIST.colour.ptr &&
+           !_glTnlEffectsActive() && !IMMEDIATE_MODE_ACTIVE;
+}
+
+GL_FORCE_INLINE GLsizei _glHoloFallbackQuads(
+        const GLint* firsts, const GLsizei* counts, GLsizei n) {
+    GLsizei total = 0;
+    for(GLsizei s = 0; s < n; ++s) {
+        if(counts[s] <= 0) continue;
+        glDrawArrays(GL_QUADS, firsts[s], counts[s]);
+        total += counts[s];
+    }
+    return total;
+}
+
+GL_FORCE_INLINE GLboolean _glHoloQuadCollapsed(
+        const GLubyte* pp, GLuint pstride) {
+    const float* a = (const float*) pp;
+    const float* b = (const float*) (pp + pstride);
+    const float* c = (const float*) (pp + (pstride << 1));
+#define GLDC_HOLO_SAME(P, Q) \
+    ((P)[0] == (Q)[0] && (P)[1] == (Q)[1] && (P)[2] == (Q)[2])
+    /* Hidden slots collapse to one point. The inactive half of a non-wrapping
+       marquee collapses its vertical edge (B==C). Both are exact comparisons,
+       so no small-but-visible quad is culled by an epsilon heuristic. */
+    const GLboolean collapsed =
+        GLDC_HOLO_SAME(a, b) || GLDC_HOLO_SAME(b, c) || GLDC_HOLO_SAME(a, c);
+#undef GLDC_HOLO_SAME
+    return collapsed;
+}
+
+GL_FORCE_INLINE void _glHoloCopyUVColor(
+        Vertex* d, const GLubyte* up, const GLubyte* cp,
+        GLboolean aligned_color) {
+    d->uv[0] = ((const float*) up)[0];
+    d->uv[1] = ((const float*) up)[1];
+    if(aligned_color) {
+        *((uint32_t*) d->bgra) = *((const uint32_t*) cp);
+    } else {
+        d->bgra[0] = cp[0]; d->bgra[1] = cp[1];
+        d->bgra[2] = cp[2]; d->bgra[3] = cp[3];
+    }
+}
+
+GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
+        const GLint* firsts, const GLsizei* counts, GLsizei n) {
+    TRACE();
+
+    if(n <= 0 || !firsts || !counts) return 0;
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return 0;
+    if(ATTRIB_LIST.dirty) _glUpdateAttributes();
+
+    GLboolean valid_counts = GL_TRUE;
+    for(GLsizei s = 0; s < n; ++s) {
+        if(counts[s] < 0 || (counts[s] & 3)) {
+            valid_counts = GL_FALSE;
+            break;
+        }
+    }
+    if(!valid_counts || !_glHoloLaneCompatible())
+        return _glHoloFallbackQuads(firsts, counts, n);
+
+    const GLuint pstride = ATTRIB_LIST.vertex.stride;
+    const GLuint ustride = ATTRIB_LIST.uv.stride;
+    const GLuint cstride = ATTRIB_LIST.colour.stride;
+    const GLboolean aligned_color =
+        ((((uintptr_t) ATTRIB_LIST.colour.ptr) | cstride) & 3) == 0;
+
+    /* Exact prepass: collapsed marquee reservations must not consume list RAM,
+       TnL or TA bandwidth. This touches positions only and is cheaper than
+       transforming four records that cannot cover a pixel. */
+    GLsizei active_quads = 0;
+    for(GLsizei s = 0; s < n; ++s) {
+        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + firsts[s] * pstride;
+        for(GLsizei v = 0; v < counts[s]; v += 4, pp += pstride << 2) {
+            if(!_glHoloQuadCollapsed(pp, pstride)) ++active_quads;
+        }
+    }
+    if(active_quads == 0) return 0;
+
+    const GLsizei output_count = active_quads << 2;
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)(active_quads * 3));
+
+    Vertex* it = _glBeginFusedDraw((GLuint) output_count);
+    for(GLsizei s = 0; s < n; ++s) {
+        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + firsts[s] * pstride;
+        const GLubyte* up = ATTRIB_LIST.uv.ptr     + firsts[s] * ustride;
+        const GLubyte* cp = ATTRIB_LIST.colour.ptr + firsts[s] * cstride;
+
+        for(GLsizei v = 0; v < counts[s]; v += 4,
+                      pp += pstride << 2, up += ustride << 2, cp += cstride << 2) {
+            if(_glHoloQuadCollapsed(pp, pstride)) continue;
+
+            /* Output strip order is source 0,1,3,2. Transform A/B as one
+               dual-FTRV pair, transform C, and obtain D from linearity of the
+               complete homogeneous MVP transform. */
+            Vertex* d0 = it;
+            Vertex* d1 = it + 1;
+            Vertex* d3 = it + 2;  /* source 3 */
+            Vertex* d2 = it + 3;  /* source 2, EOL */
+            VERTEX_CACHE_ALLOC(d0);
+            VERTEX_CACHE_ALLOC(d1);
+            VERTEX_CACHE_ALLOC(d3);
+            VERTEX_CACHE_ALLOC(d2);
+
+            const float* a = (const float*) pp;
+            const float* b = (const float*) (pp + pstride);
+            const float* c = (const float*) (pp + (pstride << 1));
+            TransformVertex2(a[0], a[1], a[2], d0->xyz, &d0->w,
+                             b[0], b[1], b[2], d1->xyz, &d1->w);
+            TransformVertex(c[0], c[1], c[2], 1.0f, d2->xyz, &d2->w);
+            d3->xyz[0] = d0->xyz[0] + d2->xyz[0] - d1->xyz[0];
+            d3->xyz[1] = d0->xyz[1] + d2->xyz[1] - d1->xyz[1];
+            d3->xyz[2] = d0->xyz[2] + d2->xyz[2] - d1->xyz[2];
+            d3->w      = d0->w      + d2->w      - d1->w;
+
+            _glHoloCopyUVColor(d0, up, cp, aligned_color);
+            _glHoloCopyUVColor(d1, up + ustride, cp + cstride, aligned_color);
+            _glHoloCopyUVColor(d2, up + (ustride << 1),
+                               cp + (cstride << 1), aligned_color);
+            _glHoloCopyUVColor(d3, up + ustride * 3,
+                               cp + cstride * 3, aligned_color);
+            d0->flags = GPU_CMD_VERTEX;
+            d1->flags = GPU_CMD_VERTEX;
+            d3->flags = GPU_CMD_VERTEX;
+            d2->flags = GPU_CMD_VERTEX_EOL;
+            it += 4;
+        }
+    }
+
+    _glEndFusedDraw();
+    return output_count;
+}
+
+GL_FORCE_INLINE GLboolean _glHoloUVPairShared(
+        const GLubyte* prev_up, const GLubyte* next_up, GLuint ustride) {
+    const float* pb = (const float*) prev_up;                 /* previous src 0 */
+    const float* pt = (const float*) (prev_up + ustride * 3); /* previous src 3 */
+    const float* nb = (const float*) (next_up + ustride);     /* next src 1 */
+    const float* nt = (const float*) (next_up + (ustride << 1)); /* next src 2 */
+    return pb[0] == nb[0] && pb[1] == nb[1] &&
+           pt[0] == nt[0] && pt[1] == nt[1];
+}
+
+GL_FORCE_INLINE Vertex* _glHoloWriteEndpointPair(
+        Vertex* it,
+        const GLubyte* bottom_pp, const GLubyte* top_pp,
+        const GLubyte* bottom_up, const GLubyte* top_up,
+        const GLubyte* bottom_cp, const GLubyte* top_cp,
+        GLboolean aligned_color) {
+    VERTEX_CACHE_ALLOC(it);
+    VERTEX_CACHE_ALLOC(it + 1);
+    const float* b = (const float*) bottom_pp;
+    const float* t = (const float*) top_pp;
+    TransformVertex2(b[0], b[1], b[2], it->xyz, &it->w,
+                     t[0], t[1], t[2], (it + 1)->xyz, &(it + 1)->w);
+    _glHoloCopyUVColor(it, bottom_up, bottom_cp, aligned_color);
+    _glHoloCopyUVColor(it + 1, top_up, top_cp, aligned_color);
+    it->flags = GPU_CMD_VERTEX;
+    (it + 1)->flags = GPU_CMD_VERTEX;
+    return it + 2;
+}
+
+GL_FORCE_INLINE Vertex* _glHoloDuplicateEndpointPair(
+        Vertex* it,
+        const GLubyte* bottom_up, const GLubyte* top_up,
+        const GLubyte* bottom_cp, const GLubyte* top_cp,
+        GLboolean aligned_color) {
+    const Vertex* old_bottom = it - 2;
+    const Vertex* old_top = it - 1;
+    VERTEX_CACHE_ALLOC(it);
+    VERTEX_CACHE_ALLOC(it + 1);
+    it->xyz[0] = old_bottom->xyz[0];
+    it->xyz[1] = old_bottom->xyz[1];
+    it->xyz[2] = old_bottom->xyz[2];
+    it->w = old_bottom->w;
+    (it + 1)->xyz[0] = old_top->xyz[0];
+    (it + 1)->xyz[1] = old_top->xyz[1];
+    (it + 1)->xyz[2] = old_top->xyz[2];
+    (it + 1)->w = old_top->w;
+    _glHoloCopyUVColor(it, bottom_up, bottom_cp, aligned_color);
+    _glHoloCopyUVColor(it + 1, top_up, top_cp, aligned_color);
+    it->flags = GPU_CMD_VERTEX;
+    (it + 1)->flags = GPU_CMD_VERTEX;
+    return it + 2;
+}
+
+GLsizei APIENTRY glKosDrawQuadStripsArrays(
+        const GLint* firsts, const GLsizei* counts, GLsizei n) {
+    TRACE();
+
+    if(n <= 0 || !firsts || !counts) return 0;
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return 0;
+    if(ATTRIB_LIST.dirty) _glUpdateAttributes();
+
+    GLboolean valid_counts = GL_TRUE;
+    for(GLsizei s = 0; s < n; ++s) {
+        if(counts[s] < 4 || (counts[s] & 3)) {
+            valid_counts = GL_FALSE;
+            break;
+        }
+    }
+    if(!valid_counts || !_glHoloLaneCompatible())
+        return _glHoloFallbackQuads(firsts, counts, n);
+
+    const GLuint pstride = ATTRIB_LIST.vertex.stride;
+    const GLuint ustride = ATTRIB_LIST.uv.stride;
+    const GLuint cstride = ATTRIB_LIST.colour.stride;
+    const GLboolean aligned_color =
+        ((((uintptr_t) ATTRIB_LIST.colour.ptr) | cstride) & 3) == 0;
+
+    /* Two endpoints for the first edge, two for each face's far edge, and
+       another two whenever the atlas wrap makes that shared geometric edge
+       require distinct UVs. */
+    GLsizei output_count = 0;
+    GLsizei seam_count = 0;
+    for(GLsizei s = 0; s < n; ++s) {
+        const GLsizei faces = counts[s] >> 2;
+        output_count += 2 + faces * 2;
+        const GLubyte* up = ATTRIB_LIST.uv.ptr + firsts[s] * ustride;
+        for(GLsizei f = 1; f < faces; ++f) {
+            if(!_glHoloUVPairShared(up + (f - 1) * (ustride << 2),
+                                    up + f * (ustride << 2), ustride)) {
+                output_count += 2;
+                ++seam_count;
+            }
+        }
+    }
+    if(output_count <= 0) return 0;
+
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)(output_count - (seam_count << 1)));
+
+    Vertex* it = _glBeginFusedDraw((GLuint) output_count);
+    for(GLsizei s = 0; s < n; ++s) {
+        const GLsizei faces = counts[s] >> 2;
+        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + firsts[s] * pstride;
+        const GLubyte* up = ATTRIB_LIST.uv.ptr     + firsts[s] * ustride;
+        const GLubyte* cp = ATTRIB_LIST.colour.ptr + firsts[s] * cstride;
+
+        /* Current endpoint = source 1 bottom / source 2 top. */
+        it = _glHoloWriteEndpointPair(
+            it,
+            pp + pstride, pp + (pstride << 1),
+            up + ustride, up + (ustride << 1),
+            cp + cstride, cp + (cstride << 1),
+            aligned_color);
+
+        for(GLsizei f = 0; f < faces; ++f) {
+            const GLubyte* fp = pp + f * (pstride << 2);
+            const GLubyte* fu = up + f * (ustride << 2);
+            const GLubyte* fc = cp + f * (cstride << 2);
+            if(f > 0 && !_glHoloUVPairShared(
+                    up + (f - 1) * (ustride << 2), fu, ustride)) {
+                /* End the preceding strip and duplicate this geometric edge
+                   with the new face's post-wrap UVs. Its clip coordinates are
+                   already the previous endpoint, so copying them avoids a
+                   redundant transform. */
+                (it - 1)->flags = GPU_CMD_VERTEX_EOL;
+                it = _glHoloDuplicateEndpointPair(
+                    it,
+                    fu + ustride, fu + (ustride << 1),
+                    fc + cstride, fc + (cstride << 1),
+                    aligned_color);
+            }
+            /* Next endpoint = source 0 bottom / source 3 top. */
+            it = _glHoloWriteEndpointPair(
+                it,
+                fp, fp + pstride * 3,
+                fu, fu + ustride * 3,
+                fc, fc + cstride * 3,
+                aligned_color);
+        }
+        (it - 1)->flags = GPU_CMD_VERTEX_EOL;
+    }
+
+    _glEndFusedDraw();
+    return output_count;
 }
 
 /* Triangles sibling of glKosDrawMultiStrips (same contract, same fused writer):

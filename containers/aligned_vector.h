@@ -95,8 +95,11 @@ typedef struct {
 
 void aligned_vector_init(AlignedVector* vector, uint32_t element_size);
 
-/* Resizes the backing array if necessary so that element_count elements can fit in the array */
-/* (note that only capacity is potentially changed, size is never changed) */
+/* Resizes the backing array if necessary so that element_count elements can fit.
+ * Only capacity can change; logical size never changes. Returns the current
+ * logical-end address (data + size*element_size). When size == capacity this
+ * is a valid one-past pointer value, not writable storage until a later resize
+ * requests more capacity. */
 AV_NO_INLINE void* aligned_vector_reserve(AlignedVector* vector, uint32_t element_count);
 
 AV_FORCE_INLINE void* aligned_vector_at(const AlignedVector* vector, const uint32_t index) {
@@ -137,25 +140,20 @@ AV_FORCE_INLINE void* aligned_vector_resize(AlignedVector* vector, const uint32_
 
     AlignedVectorHeader* hdr = &vector->hdr;
     uint32_t previous_count = hdr->size;
-    if(hdr->capacity <= element_count) {
-        /* If we didn't have capacity, increase capacity (slow) */
-
-        aligned_vector_reserve(vector, element_count);
+    if(previous_count < element_count) {
+        if(hdr->capacity < element_count) {
+            /* If we didn't have capacity, increase capacity (slow). Exact
+               capacity is sufficient and must not force a same-size realloc. */
+            aligned_vector_reserve(vector, element_count);
+        }
+        ret = vector->data + previous_count * hdr->element_size;
         hdr->size = element_count;
-
-        ret = aligned_vector_at(vector, previous_count);
 
         av_assert(hdr->size == element_count);
         av_assert(hdr->size <= hdr->capacity);
-    } else if(previous_count < element_count) {
-        /* So we grew, but had the capacity, just get a pointer to
-         * where we were */
-        hdr->size = element_count;
-        av_assert(hdr->size < hdr->capacity);
-        ret = aligned_vector_at(vector, previous_count);
     } else if(hdr->size != element_count) {
         hdr->size = element_count;
-        av_assert(hdr->size < hdr->capacity);
+        av_assert(hdr->size <= hdr->capacity);
     }
 
     return ret;

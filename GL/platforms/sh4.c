@@ -1112,11 +1112,10 @@ void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
     pvr_scene_begin_txr((pvr_ptr_t) tex, &rx, &ry);
 }
 
-static pvr_dr_state_t dr_state;
 void SceneListBegin(GPUList list) {
     pvr_list_begin(list);
-    /* Direct rendering auto acquires/releases store queue */
-    pvr_dr_init(&dr_state);
+    /* pvr_list_begin acquires the store queues and programs QACR for TA input.
+       pvr_dr_init is a deprecated no-op in current KOS. */
 }
 
 void SceneListFinish() {

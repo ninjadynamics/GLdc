@@ -95,6 +95,26 @@ GLAPI void APIENTRY glKosCaptureArrays(GLuint slot);
    the general glDrawArrays path automatically. See draw.c. */
 GLAPI void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n);
 GLAPI void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count);
+/* Dynamic planar-quad batches. Both entries consume the currently enabled
+   P3F/T2F/BGRA client arrays and keep ordinary polygon-list clipping/order:
+
+   - glKosDrawPlanarQuadsArrays skips exactly collapsed quads and derives each
+     parallelogram's fourth clip-space corner from the first three. Input quads
+     must satisfy object-space D=A+C-B.
+   - glKosDrawQuadStripsArrays compacts a chain of adjacent input quads into one
+     triangle strip (2*(quads+1) output vertices), removing shared endpoints.
+     Face f vertices 0/3 and face f+1 vertices 1/2 must carry identical shared
+     endpoint positions and colors. UVs must match too, except that a UV
+     discontinuity is supported and starts a new strip at that endpoint.
+
+   They fall back to ordinary GL_QUADS when TnL effects or an incompatible
+   client layout is active. Counts are INPUT vertices and must be multiples of
+   four. The return value is the actual polygon-record count submitted.
+   Intended for dynamic holographic facade/cylinder streams. */
+GLAPI GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
+    const GLint* firsts, const GLsizei* counts, GLsizei n);
+GLAPI GLsizei APIENTRY glKosDrawQuadStripsArrays(
+    const GLint* firsts, const GLsizei* counts, GLsizei n);
 /* TA sprite quads: one 64-byte hardware sprite per planar single-color
    PARALLELOGRAM (D = A+C-B in object space)
    (vs four 32-byte vertices), color in a shared header emitted on change,
