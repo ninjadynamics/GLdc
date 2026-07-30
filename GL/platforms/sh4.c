@@ -591,6 +591,11 @@ static void _glDivideSubmitRun(Vertex* v, int n) {
     }
 }
 
+/* Keep the scan -> fused divide handoff inside the SH4's 16 KiB data cache.
+   128 records are 4 KiB, leaving room for the submitter's code/stack and the
+   rest of GLdc's hot state. Only cut after a complete strip. */
+#define GLDC_VISIBLE_RUN_CACHE_RECORDS 128
+
 /* ---- All-visible run finalizer (2026-07-15, HyperSolar investigation) ----
    [GLDC-T] proved the old submission loop IS the swap cost (wait=0.01ms, op+tr
    ~6.5ms at heavy city load): every vertex paid a 32-byte qv staging copy plus
@@ -652,6 +657,10 @@ void SceneListSubmit(Vertex* vertices, int n) {
             /* Divide is FUSED into the run flush (_glDivideSubmitRun) — the
                strip stays in clip space until submitted. */
             v = strip_end + 1;        /* strip stays in the run */
+            if(v - run_start >= GLDC_VISIBLE_RUN_CACHE_RECORDS) {
+                _glDivideSubmitRun(run_start, (int)(v - run_start));
+                run_start = v;
+            }
         } else {
             /* Flush everything accumulated before this strip, then let the
                exact old path do the clip work on the strip alone. */
@@ -876,6 +885,8 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     float tu[3], tv[3], uw, vw;
     TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
     TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
+    const float near_u_zw = tu[2] + uw;
+    const float near_v_zw = tv[2] + vw;
 
     uint32_t last_argb = 0;
     int have_hdr = 0;
@@ -903,7 +914,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             /* min over all four (clip-Z + W) corners, algebraically exact for
                the parallelogram and cheaper than materializing xyz[4]/w[4]. */
             const float near_extent =
-                fabsf((tu[2] + uw) * hs) + fabsf((tv[2] + vw) * hs);
+                fabsf(near_u_zw * hs) + fabsf(near_v_zw * hs);
             if(tc[k][2] + cw[k] < near_extent)
                 continue;
 
@@ -915,6 +926,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             uint32_t argb = colors[q + k];
             if(!have_hdr || argb != last_argb) {
                 uint32_t* h = batch + used_blocks * 8u;
+                VERTEX_CACHE_ALLOC(h);
                 _glWriteSpriteHeader(h, &shdr, argb);
                 used_blocks++;
                 last_argb = argb;
@@ -924,6 +936,8 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             pvr_sprite_txr_t* s =
                 (pvr_sprite_txr_t*) (batch + used_blocks * 8u);
             used_blocks += 2;
+            VERTEX_CACHE_ALLOC(s);
+            VERTEX_CACHE_ALLOC((uint8_t*)s + 32);
             const float fa = _glFastInvert(wa);
             const float fb = _glFastInvert(wb);
             const float fc = _glFastInvert(wc);
@@ -980,23 +994,31 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     float tu[3], tv[3], uw, vw;
     TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
     TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
+    const float near_u_zw = tu[2] + uw;
+    const float near_v_zw = tv[2] + vw;
 
-    uint32_t cell_uv[16][3];
+    static uint32_t cell_uv[16][3];
+    static int cell_uv_grid_log2 = -1;
+    static float cell_uv_inset = 0.0f;
     int cell_mask = 0;
     if(cells) {
         const int grid = 1 << grid_log2;
         const float step = 1.0f / (float)grid;
         cell_mask = grid * grid - 1;
-        for(int cell = 0; cell <= cell_mask; ++cell) {
-            const int col = cell & (grid - 1);
-            const int row = cell >> grid_log2;
-            const float u0 = (float)col * step + inset;
-            const float v0 = (float)row * step + inset;
-            const float u1 = (float)(col + 1) * step - inset;
-            const float v1 = (float)(row + 1) * step - inset;
-            cell_uv[cell][0] = _glSpriteUV16(u0, v0);
-            cell_uv[cell][1] = _glSpriteUV16(u1, v0);
-            cell_uv[cell][2] = _glSpriteUV16(u1, v1);
+        if(grid_log2 != cell_uv_grid_log2 || inset != cell_uv_inset) {
+            for(int cell = 0; cell <= cell_mask; ++cell) {
+                const int col = cell & (grid - 1);
+                const int row = cell >> grid_log2;
+                const float u0 = (float)col * step + inset;
+                const float v0 = (float)row * step + inset;
+                const float u1 = (float)(col + 1) * step - inset;
+                const float v1 = (float)(row + 1) * step - inset;
+                cell_uv[cell][0] = _glSpriteUV16(u0, v0);
+                cell_uv[cell][1] = _glSpriteUV16(u1, v0);
+                cell_uv[cell][2] = _glSpriteUV16(u1, v1);
+            }
+            cell_uv_grid_log2 = grid_log2;
+            cell_uv_inset = inset;
         }
     }
 
@@ -1022,13 +1044,15 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
             const int i = q + k;
             const float hs = half_sizes ? half_sizes[i] : 1.0f;
             const float near_extent =
-                fabsf((tu[2] + uw) * hs) + fabsf((tv[2] + vw) * hs);
+                fabsf(near_u_zw * hs) + fabsf(near_v_zw * hs);
             if(tc[k][2] + cw[k] < near_extent)
                 continue;
 
             const uint32_t argb = colors[i];
             if(!have_hdr || argb != last_argb) {
-                _glWriteSpriteHeader(batch + used_blocks * 8u, &shdr, argb);
+                uint32_t* h = batch + used_blocks * 8u;
+                VERTEX_CACHE_ALLOC(h);
+                _glWriteSpriteHeader(h, &shdr, argb);
                 used_blocks++;
                 last_argb = argb;
                 have_hdr = 1;
@@ -1037,6 +1061,8 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
             pvr_sprite_txr_t* s =
                 (pvr_sprite_txr_t*) (batch + used_blocks * 8u);
             used_blocks += 2;
+            VERTEX_CACHE_ALLOC(s);
+            VERTEX_CACHE_ALLOC((uint8_t*)s + 32);
 
             const float sux = tu[0] * hs;
             const float suy = tu[1] * hs;

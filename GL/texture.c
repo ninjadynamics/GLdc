@@ -783,6 +783,14 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
         return;
     }
 
+    gl_assert(ACTIVE_TEXTURE < MAX_GLDC_TEXTURE_UNITS);
+    /* Defensive rebinds are common in immediate-mode callers. If this unit
+       already names the object there is no lookup or header rebuild to do. */
+    if(TEXTURE_UNITS[ACTIVE_TEXTURE] &&
+       TEXTURE_UNITS[ACTIVE_TEXTURE]->index == texture) {
+        return;
+    }
+
     TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texture);
 
     /* If this didn't come from glGenTextures, then we should initialize the
@@ -792,7 +800,6 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
         _glInitializeTextureObject(txr, texture);
     }
 
-    gl_assert(ACTIVE_TEXTURE < MAX_GLDC_TEXTURE_UNITS);
     TEXTURE_UNITS[ACTIVE_TEXTURE] = txr;
     gl_assert(TEXTURE_UNITS[ACTIVE_TEXTURE]->index == texture);
 
@@ -1859,11 +1866,19 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             return;
         }
 
-        GLubyte* conversionBuffer = (GLubyte*) memalign(32, srcBytes);
+        /* Conversion/twiddle writes the destination representation, which is
+           commonly half the source size (RGBA8888 -> ARGB4444).  Allocating
+           srcBytes here made a 512x512 texture require a redundant 1 MiB heap
+           block even though only 512 KiB were ever copied to VRAM.  Palette
+           packing is the sole in-place path that first copies the source, so
+           only that path needs source-sized scratch. */
+        const size_t conversionBytes =
+            (needs_conversion & CONVERSION_TYPE_PACK) ? srcBytes : destBytes;
+        GLubyte* conversionBuffer =
+            (GLubyte*) memalign(32, conversionBytes);
 
-        /* Heap may be exhausted (srcBytes is up to 1MB for a 512x512 RGBA8888
-           source). Bail like the PVR out-of-memory path above instead of
-           writing the conversion through a NULL pointer and faulting. */
+        /* Bail like the PVR out-of-memory path above instead of writing the
+           conversion through a NULL pointer and faulting. */
         if(!conversionBuffer) {
             _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
             return;
