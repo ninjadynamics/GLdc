@@ -887,6 +887,12 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
     const float near_u_zw = tu[2] + uw;
     const float near_v_zw = tv[2] + vw;
+    /* half_sizes are non-negative by contract. Hoist the absolute transformed
+       camera-plane extent once: |u*h|+|v*h| == (|u|+|v|)*h. Dense city-light
+       batches now pay one multiply per sprite instead of two multiplies, two
+       fabs calls and an add. */
+    const float near_extent_scale =
+        fabsf(near_u_zw) + fabsf(near_v_zw);
 
     uint32_t last_argb = 0;
     int have_hdr = 0;
@@ -913,8 +919,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             const float svz = tv[2] * hs, svw = vw * hs;
             /* min over all four (clip-Z + W) corners, algebraically exact for
                the parallelogram and cheaper than materializing xyz[4]/w[4]. */
-            const float near_extent =
-                fabsf(near_u_zw * hs) + fabsf(near_v_zw * hs);
+            const float near_extent = near_extent_scale * hs;
             if(tc[k][2] + cw[k] < near_extent)
                 continue;
 
@@ -996,6 +1001,8 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
     const float near_u_zw = tu[2] + uw;
     const float near_v_zw = tv[2] + vw;
+    const float near_extent_scale =
+        fabsf(near_u_zw) + fabsf(near_v_zw);
 
     static uint32_t cell_uv[16][3];
     static int cell_uv_grid_log2 = -1;
@@ -1043,8 +1050,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
         for(int k = 0; k < n; ++k) {
             const int i = q + k;
             const float hs = half_sizes ? half_sizes[i] : 1.0f;
-            const float near_extent =
-                fabsf(near_u_zw * hs) + fabsf(near_v_zw * hs);
+            const float near_extent = near_extent_scale * hs;
             if(tc[k][2] + cw[k] < near_extent)
                 continue;
 
