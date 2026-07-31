@@ -74,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.30 11:27]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.31 12:21]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -156,7 +156,13 @@ extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM rel
 /* Swap-time decomposition (2026-07-15 investigation): the game's `swap=` telemetry lumps
    pvr_wait_ready (previous-frame PVR wait) together with the three SceneListSubmit walks
    and scene finish — a submission win is invisible until these are split. Rate-limited
-   aggregate print every 600 swaps; near-zero cost otherwise. */
+   aggregate print every 600 swaps; near-zero cost otherwise.
+   GLDC_SWAP_TELEMETRY 0 (default) compiles the sampling AND the [GLDC-T] print out
+   entirely — flip to 1 when the swap split is being investigated. */
+#ifndef GLDC_SWAP_TELEMETRY
+#define GLDC_SWAP_TELEMETRY 0
+#endif
+#if GLDC_SWAP_TELEMETRY
 #include <arch/timer.h>
 #include <stdio.h>
 static uint64_t _gt_wait_us, _gt_op_us, _gt_pt_us, _gt_tr_us, _gt_fin_us;
@@ -166,6 +172,9 @@ static int _gt_frames;
         expr; \
         var += timer_us_gettime64() - _t0; \
     } while(0)
+#else
+#define GT_MARK(var, expr) expr
+#endif
 
 /* One list's full submission: vertex stream then the sprite sidecar. Sprites
    are ADDITIVE-only by contract: tail placement reorders them against any
@@ -253,6 +262,7 @@ void APIENTRY glKosSwapBuffers() {
 
     GT_MARK(_gt_fin_us, SceneFinish());
 
+#if GLDC_SWAP_TELEMETRY
     if(++_gt_frames >= 600) {
         const float inv = 1.0f / (1000.0f * (float)_gt_frames);
 #if GLDC_S3_SEGMENTED_OP
@@ -270,6 +280,7 @@ void APIENTRY glKosSwapBuffers() {
         _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
         _gt_frames = 0;
     }
+#endif  /* GLDC_SWAP_TELEMETRY */
 
     clear_lists();
 #if GLDC_S3_SEGMENTED_OP
