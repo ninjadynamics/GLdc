@@ -1138,10 +1138,10 @@ void SceneBegin() {
    that texture + the HUD to the screen so the HUD composites on top of
    everything. w/h are the (power-of-two) target dimensions. */
 void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
-    uint32_t rx = w, ry = h;
     pvr_wait_ready();
     ApplyDeferredFogTable();
-    pvr_scene_begin_txr((pvr_ptr_t) tex, &rx, &ry);
+    /* stride == w: the target is a tightly-packed power-of-two texture */
+    pvr_scene_begin_rtt((pvr_ptr_t) tex, w, h, w);
 }
 
 void SceneListBegin(GPUList list) {
