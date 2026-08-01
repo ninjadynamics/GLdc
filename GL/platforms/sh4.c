@@ -984,6 +984,12 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
    transformed axis Z/W extents remain in the conservative near test so tiny
    floating-point camera-basis residue can only drop a boundary sprite, never
    leak a corner through the near plane. */
+/* H1 (HyperSolar PERFAUDIT): headers-vs-records truth for the sprite lanes.
+   If hdr ~= rec the caller's colors are unsorted and bucket-driven emission
+   is the win; if hdr << rec the cost is the 64-byte record writes and color
+   sorting would buy nothing. Read by flush.c's [GLDC-T] print. */
+uint32_t _glSpriteHdrCount = 0, _glSpriteRecCount = 0;
+
 void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                              const float* half_sizes, const float* uv_rects,
                              const uint8_t* cells, int sprites,
@@ -1034,6 +1040,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
         sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
     uint32_t used_blocks = 0;
     uint32_t last_argb = 0;
+    uint32_t hdrs = 0;
     int have_hdr = 0;
 
     for(int q = 0; q < sprites; q += 2) {
@@ -1060,6 +1067,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                 VERTEX_CACHE_ALLOC(h);
                 _glWriteSpriteHeader(h, &shdr, argb);
                 used_blocks++;
+                hdrs++;
                 last_argb = argb;
                 have_hdr = 1;
             }
@@ -1110,6 +1118,8 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     }
 
     aligned_vector_resize(sv, base_blocks + used_blocks);
+    _glSpriteHdrCount += hdrs;
+    _glSpriteRecCount += (used_blocks - hdrs) >> 1;
 }
 
 /* SQ a finished sprite sidecar verbatim (records are pre-divided, pre-compiled).

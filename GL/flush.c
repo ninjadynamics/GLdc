@@ -74,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.07.31 18:48]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.01 20:14]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -167,6 +167,7 @@ extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM rel
 #include <stdio.h>
 static uint64_t _gt_wait_us, _gt_op_us, _gt_pt_us, _gt_tr_us, _gt_fin_us;
 static uint64_t _gt_op_verts, _gt_tr_verts;   /* walked records: op= scales with these alone */
+extern uint32_t _glSpriteHdrCount, _glSpriteRecCount;   /* sprite-lane split (sh4.c) */
 static int _gt_frames;
 #define GT_MARK(var, expr) do { \
         uint64_t _t0 = timer_us_gettime64(); \
@@ -280,15 +281,18 @@ void APIENTRY glKosSwapBuffers() {
         _glS3DrainUs = 0;
 #else
         fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f"
-                " | op %luv %.0fns/v tr %luv (%d swaps)\n",
+                " | op %luv %.0fns/v tr %luv | sp %luh/%lur (%d swaps)\n",
                 (float)_gt_wait_us * inv, (float)_gt_op_us * inv, (float)_gt_pt_us * inv,
                 (float)_gt_tr_us * inv, (float)_gt_fin_us * inv,
                 (unsigned long)(_gt_op_verts / (uint64_t)_gt_frames),
                 _gt_op_verts ? (float)_gt_op_us * 1000.0f / (float)_gt_op_verts : 0.0f,
-                (unsigned long)(_gt_tr_verts / (uint64_t)_gt_frames), _gt_frames);
+                (unsigned long)(_gt_tr_verts / (uint64_t)_gt_frames),
+                (unsigned long)(_glSpriteHdrCount / (uint32_t)_gt_frames),
+                (unsigned long)(_glSpriteRecCount / (uint32_t)_gt_frames), _gt_frames);
 #endif
         _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
         _gt_op_verts = _gt_tr_verts = 0;
+        _glSpriteHdrCount = _glSpriteRecCount = 0;
         _gt_frames = 0;
     }
 #endif  /* GLDC_SWAP_TELEMETRY */
