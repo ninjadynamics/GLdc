@@ -873,9 +873,19 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 /* Homogeneous sprite family. The two object-space half axes are common to the
    whole call, so transform them once with w=0; every sprite then needs only
    one center FTRV. This is the road/roof glow lane. */
+/* Lamp-budget dissection (Bruno 2026-08-04): total us spent INSIDE the two
+   sprite-lane builders (pools use SceneSpriteCenters, glare/traffic/signals
+   use SceneSpriteCentersPlane) and mid-frame sprite-lane capacity growths
+   (each growth memcpys the whole accumulated lane — the multi-ms submit
+   spike suspect). Read + reset by the [GLDC-T] print. The delta between the
+   game's submit brackets and this number is bind/state preamble outside the
+   sprite path. */
+uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
+
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
+    const uint64_t spr_t0 = timer_us_gettime64();
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
 
@@ -902,8 +912,10 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     uint32_t last_argb = 0;
     int have_hdr = 0;
     const uint32_t base_blocks = aligned_vector_size(sv);
+    const uint32_t cap_before = aligned_vector_capacity(sv);
     uint32_t* const batch = (uint32_t*) aligned_vector_extend(
         sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+    if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
     uint32_t used_blocks = 0;
     for(int q = 0; q < sprites; q += 2) {
         const int n = (q + 1 < sprites) ? 2 : 1;
@@ -981,6 +993,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
         }
     }
     aligned_vector_resize(sv, base_blocks + used_blocks);
+    _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
 }
 
 /* Camera-plane center lane. A view-plane billboard has equal homogeneous W
@@ -1001,6 +1014,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                              int grid_log2, float inset,
                              float ux, float uy, float uz,
                              float vx, float vy, float vz) {
+    const uint64_t spr_t0 = timer_us_gettime64();
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
 
@@ -1015,15 +1029,28 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     const float near_extent_scale =
         fabsf(near_u_zw) + fabsf(near_v_zw);
 
-    static uint32_t cell_uv[64][3];
-    static int cell_uv_grid_log2 = -1;
-    static float cell_uv_inset = 0.0f;
+    /* Keep one compact bank per supported grid. HyperSolar alternates its 8x8
+       glare atlas and 2x2 signal atlas every frame; a single last-used table
+       regenerated both layouts forever. Heterogeneous banks cover all public
+       grid sizes in 84 entries (only 20 more than the old 64-entry table). */
+    static uint32_t cell_uv_2x2[4][3];
+    static uint32_t cell_uv_4x4[16][3];
+    static uint32_t cell_uv_8x8[64][3];
+    static float cell_uv_inset[4];
+    static uint8_t cell_uv_valid = 0;
+    uint32_t (*cell_uv)[3] = NULL;
     int cell_mask = 0;
     if(cells) {
         const int grid = 1 << grid_log2;
         const float step = 1.0f / (float)grid;
+        const uint8_t cache_bit = (uint8_t)(1u << grid_log2);
+        switch(grid_log2) {
+            case 1: cell_uv = cell_uv_2x2; break;
+            case 2: cell_uv = cell_uv_4x4; break;
+            default: cell_uv = cell_uv_8x8; break;
+        }
         cell_mask = grid * grid - 1;
-        if(grid_log2 != cell_uv_grid_log2 || inset != cell_uv_inset) {
+        if(!(cell_uv_valid & cache_bit) || inset != cell_uv_inset[grid_log2]) {
             for(int cell = 0; cell <= cell_mask; ++cell) {
                 const int col = cell & (grid - 1);
                 const int row = cell >> grid_log2;
@@ -1035,14 +1062,16 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                 cell_uv[cell][1] = _glSpriteUV16(u1, v0);
                 cell_uv[cell][2] = _glSpriteUV16(u1, v1);
             }
-            cell_uv_grid_log2 = grid_log2;
-            cell_uv_inset = inset;
+            cell_uv_inset[grid_log2] = inset;
+            cell_uv_valid |= cache_bit;
         }
     }
 
     const uint32_t base_blocks = aligned_vector_size(sv);
+    const uint32_t cap_before = aligned_vector_capacity(sv);
     uint32_t* const batch = (uint32_t*) aligned_vector_extend(
         sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+    if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
     uint32_t used_blocks = 0;
     uint32_t last_argb = 0;
     uint32_t hdrs = 0;
@@ -1125,6 +1154,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     aligned_vector_resize(sv, base_blocks + used_blocks);
     _glSpriteHdrCount += hdrs;
     _glSpriteRecCount += (used_blocks - hdrs) >> 1;
+    _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
 }
 
 /* SQ a finished sprite sidecar verbatim (records are pre-divided, pre-compiled).

@@ -74,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.04 13:00]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.04 22:45]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -124,7 +124,13 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
     aligned_vector_init(&OP_LIST.sprites, 32);
     aligned_vector_init(&PT_LIST.sprites, 32);
     aligned_vector_init(&TR_LIST.sprites, 32);
-    aligned_vector_reserve(&TR_LIST.sprites, 512);   /* the glow lane lives on TR */
+    /* 3072, not 512: HyperSolar's busy city frames legitimately reach ~3k
+       blocks (pools + glare orbs + traffic + signals, GLOW_FACE_CAP 1024 per
+       batch). A mid-frame aligned_vector growth memcpys the whole accumulated
+       lane — measured as multi-ms submit spikes. The vector keeps its peak
+       capacity anyway, so reserving it up front costs the same RAM and never
+       copies. (Bruno 2026-08-04 lamp-budget dissection.) */
+    aligned_vector_reserve(&TR_LIST.sprites, 3072);  /* the glow lane lives on TR */
 }
 
 extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
@@ -168,6 +174,7 @@ extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM rel
 static uint64_t _gt_wait_us, _gt_op_us, _gt_pt_us, _gt_tr_us, _gt_fin_us;
 static uint64_t _gt_op_verts, _gt_tr_verts;   /* walked records: op= scales with these alone */
 extern uint32_t _glSpriteHdrCount, _glSpriteRecCount;   /* sprite-lane split (sh4.c) */
+extern uint32_t _glSpriteCallUs, _glSpriteGrowCount;    /* lamp-budget dissection (sh4.c) */
 static int _gt_frames;
 #define GT_MARK(var, expr) do { \
         uint64_t _t0 = timer_us_gettime64(); \
@@ -281,18 +288,22 @@ void APIENTRY glKosSwapBuffers() {
         _glS3DrainUs = 0;
 #else
         fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f"
-                " | op %luv %.0fns/v tr %luv | sp %luh/%lur (%d swaps)\n",
+                " | op %luv %.0fns/v tr %luv | sp %luh/%lur"
+                " sprcall=%.3fms grow=%lu (%d swaps)\n",
                 (float)_gt_wait_us * inv, (float)_gt_op_us * inv, (float)_gt_pt_us * inv,
                 (float)_gt_tr_us * inv, (float)_gt_fin_us * inv,
                 (unsigned long)(_gt_op_verts / (uint64_t)_gt_frames),
                 _gt_op_verts ? (float)_gt_op_us * 1000.0f / (float)_gt_op_verts : 0.0f,
                 (unsigned long)(_gt_tr_verts / (uint64_t)_gt_frames),
                 (unsigned long)(_glSpriteHdrCount / (uint32_t)_gt_frames),
-                (unsigned long)(_glSpriteRecCount / (uint32_t)_gt_frames), _gt_frames);
+                (unsigned long)(_glSpriteRecCount / (uint32_t)_gt_frames),
+                (float)_glSpriteCallUs * inv,
+                (unsigned long)_glSpriteGrowCount, _gt_frames);
 #endif
         _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
         _gt_op_verts = _gt_tr_verts = 0;
         _glSpriteHdrCount = _glSpriteRecCount = 0;
+        _glSpriteCallUs = _glSpriteGrowCount = 0;
         _gt_frames = 0;
     }
 #endif  /* GLDC_SWAP_TELEMETRY */
