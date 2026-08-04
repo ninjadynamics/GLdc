@@ -881,6 +881,11 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
 
     pvr_sprite_hdr_t shdr;
     _glCompileCurrentSpriteHeader(out, &shdr);
+    /* The ordinary vertex finalizer applies polygon offset to PVR inverse-W,
+       but this direct TA-sprite lane bypasses that finalizer.  Preserve the
+       same GL state contract for coplanar sprite decals (HyperSolar's light
+       pools) without moving their world-space geometry. */
+    const float depth_mul = _glPolygonOffsetMul;
 
     float tu[3], tv[3], uw, vw;
     TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
@@ -950,16 +955,16 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
             s->flags = GPU_CMD_VERTEX_EOL;
             s->ax = (tc[k][0] - sux - svx) * fa;
             s->ay = (tc[k][1] - suy - svy) * fa;
-            s->az = (wa == 1.0f)
-                ? _glFastInvert(1.0001f + tc[k][2] - suz - svz) : fa;
+            s->az = ((wa == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] - suz - svz) : fa) * depth_mul;
             s->bx = (tc[k][0] + sux - svx) * fb;
             s->by = (tc[k][1] + suy - svy) * fb;
-            s->bz = (wb == 1.0f)
-                ? _glFastInvert(1.0001f + tc[k][2] + suz - svz) : fb;
+            s->bz = ((wb == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] + suz - svz) : fb) * depth_mul;
             s->cx = (tc[k][0] + sux + svx) * fc;
             s->cy = (tc[k][1] + suy + svy) * fc;
-            s->cz = (wc == 1.0f)
-                ? _glFastInvert(1.0001f + tc[k][2] + suz + svz) : fc;
+            s->cz = ((wc == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2] + suz + svz) : fc) * depth_mul;
             s->dx = (tc[k][0] - sux + svx) * fd;
             s->dy = (tc[k][1] - suy + svy) * fd;
             s->dummy = 0;
