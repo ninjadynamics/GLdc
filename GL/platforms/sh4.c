@@ -1015,7 +1015,7 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     const float near_extent_scale =
         fabsf(near_u_zw) + fabsf(near_v_zw);
 
-    static uint32_t cell_uv[16][3];
+    static uint32_t cell_uv[64][3];
     static int cell_uv_grid_log2 = -1;
     static float cell_uv_inset = 0.0f;
     int cell_mask = 0;

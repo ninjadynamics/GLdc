@@ -2014,7 +2014,7 @@ void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
     TRACE();
 
     if(sprites <= 0 || !cells) return;
-    if(grid_log2 < 1 || grid_log2 > 2) return;
+    if(grid_log2 < 1 || grid_log2 > 3) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
 
     _glTnlLoadMatrix();

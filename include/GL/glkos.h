@@ -146,7 +146,8 @@ GLAPI void APIENTRY glKosDrawSpriteCentersUVRectScalePlane(
     const GLfloat* centers, const GLuint* colors,
     const GLfloat* half_sizes, const GLfloat* uv_rects, GLsizei sprites,
     GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
-/* Compact square-atlas sibling (grid_log2=1 for 2x2, 2 for 4x4). `cells`
+#define GL_KOS_UV_CELL_MAX_GRID_LOG2 3
+/* Compact square-atlas sibling (grid_log2=1/2/3 for 2x2/4x4/8x8). `cells`
    replaces four UV floats per sprite; inset is normalized texture space and
    is applied at every cell edge. */
 GLAPI void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(
