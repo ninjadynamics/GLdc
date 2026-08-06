@@ -271,7 +271,7 @@ GLenum _glGetGpuBlendDstFactor() {
 }
 
 
-GLboolean _glCheckValidEnum(GLint param, GLint* values, const char* func) {
+GLboolean _glCheckValidEnum(GLint param, const GLint* values, const char* func) {
     GLubyte found = 0;
     while(*values != 0) {
         if(*values == param) {
@@ -321,9 +321,13 @@ void _glUpdatePVRTextureContext(PolyContext *context, GLshort textureUnit) {
         break;
     }
 
+    /* One walk of the mipmap bitmask per header build, not two
+       (AUD-001-OPB-31). */
+    const GLboolean mipmapComplete = _glIsMipmapComplete(tx1);
+
     /* FIXME: If you disable mipmaps on a compressed mipmapped texture
      * you get corruption and I don't know why, so we force mipmapping for now */
-    if(tx1->isCompressed && _glIsMipmapComplete(tx1)) {
+    if(tx1->isCompressed && mipmapComplete) {
         enableMipmaps = GL_TRUE;
     }
 
@@ -352,7 +356,7 @@ void _glUpdatePVRTextureContext(PolyContext *context, GLshort textureUnit) {
     /* If we don't have complete mipmaps, and yet mipmapping was enabled, we disable texturing.
      * This is effectively what standard GL does (it renders a white texture)
      */
-    if(!_glIsMipmapComplete(tx1) && enableMipmaps) {
+    if(!mipmapComplete && enableMipmaps) {
         return;
     }
 
@@ -373,21 +377,35 @@ void _glUpdatePVRTextureContext(PolyContext *context, GLshort textureUnit) {
         context->txr.format = tx1->color;
 
         if(tx1->isPaletted) {
+            /* The 4/8bpp palette-select is keyed on the TEXTURE's pixel
+               format, not the color table's entry count: a 4bpp texture fed
+               a >16-entry table must still address the 4bpp palette region
+               (AUD-001-OPB-21). isPaletted implies tx1->palette exists — the
+               old half-guard read palette->size before checking it anyway
+               (AUD-001-OPB-16). */
+            const GLboolean is4bpp =
+                (tx1->color & (7 << 27)) == GPU_TXRFMT_PAL4BPP;
             if(_glIsSharedTexturePaletteEnabled()) {
+                /* Shared-palette textures deliberately have NO per-texture
+                   palette — the table lives in the shared bank. */
                 TexturePalette* palette = _glGetSharedPalette(tx1->shared_bank);
-                if (palette->size  != 16){
-                    context->txr.format |= GPUPaletteSelect8BPP(palette->bank);
-                }
-                else{
+                gl_assert(palette);
+                if(is4bpp) {
                     context->txr.format |= GPUPaletteSelect4BPP(palette->bank);
+                }
+                else {
+                    context->txr.format |= GPUPaletteSelect8BPP(palette->bank);
                 }
             }
             else {
-                if (tx1->palette->size != 16){
-                    context->txr.format |= GPUPaletteSelect8BPP((tx1->palette) ? tx1->palette->bank : 0);
+                /* Non-shared paletted spec without a color table is the
+                   caller bug this asserts on. */
+                gl_assert(tx1->palette);
+                if(is4bpp) {
+                    context->txr.format |= GPUPaletteSelect4BPP(tx1->palette->bank);
                 }
-                else{
-                    context->txr.format |= GPUPaletteSelect4BPP((tx1->palette) ? tx1->palette->bank : 0);
+                else {
+                    context->txr.format |= GPUPaletteSelect8BPP(tx1->palette->bank);
                 }
             }
         }
@@ -624,9 +642,12 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
         case GL_LIGHT5:
         case GL_LIGHT6:
         case GL_LIGHT7:
+            /* No dirty mark: lighting is a CPU vertex-color effect, not a
+               poly-header field — the enable side already had this right;
+               the disable side forced a spurious header rebuild
+               (AUD-001-OPB-25). */
             if(GPUState.lights[cap & 0xF].isEnabled) {
                 _glEnableLight(cap & 0xF, GL_FALSE);
-                GPUState.is_dirty = GL_TRUE;
             }
         break;
         case GL_NEARZ_CLIPPING_KOS:

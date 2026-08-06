@@ -86,7 +86,7 @@ void glKosPrintStats(void) {
 
 /* Stubs when stats are disabled */
 void glKosResetStats(void) {}
-const void* glKosGetStats(void) { return (const void*)0; }
+const GLdcStats* glKosGetStats(void) { return (const GLdcStats*)0; }
 void glKosPrintStats(void) {}
 
 #endif /* GLDC_ENABLE_STATS */

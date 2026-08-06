@@ -74,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.06 08:25]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.06 11:08]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -135,17 +135,34 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
 extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
 extern void _glResetDeferredFrees(void);        /* texture.c: drop queued records, no frees */
+extern void _glShutdownTextures(void);          /* texture.c: palettes + object array + pool bookkeeping */
+extern void _glShutdownFramebuffers(void);      /* framebuffer.c: object array */
+extern void _glShutdownImmediateMode(void);     /* immediate.c: vertex staging vector */
 
 void APIENTRY glKosShutdown() {
-    aligned_vector_clear(&OP_LIST.vector);
-    aligned_vector_clear(&PT_LIST.vector);
-    aligned_vector_clear(&TR_LIST.vector);
-    aligned_vector_clear(&OP_LIST.sprites);
-    aligned_vector_clear(&PT_LIST.sprites);
-    aligned_vector_clear(&TR_LIST.sprites);
+    /* cleanup, not clear: glKosInitEx re-runs aligned_vector_init, which
+       would orphan the old buffers (~420 KB per shutdown/init cycle). The
+       header flags must drop with them or the first draw after re-init
+       would skip its poly header (review F2/F3). */
+    aligned_vector_cleanup(&OP_LIST.vector);
+    aligned_vector_cleanup(&PT_LIST.vector);
+    aligned_vector_cleanup(&TR_LIST.vector);
+    aligned_vector_cleanup(&OP_LIST.sprites);
+    aligned_vector_cleanup(&PT_LIST.sprites);
+    aligned_vector_cleanup(&TR_LIST.sprites);
+    OP_LIST.header_emitted = GL_FALSE;
+    PT_LIST.header_emitted = GL_FALSE;
+    TR_LIST.header_emitted = GL_FALSE;
+
+    _glShutdownImmediateMode();
 
     _glInvalidateCapturedArrays();
     _glResetDeferredFrees();   /* ShutdownGPU tears the whole VRAM heap down anyway */
+
+    /* A shutdown/init cycle used to leak the texture/framebuffer object
+       arrays, every palette, and the allocator bookkeeping (AUD-001-OPB-27). */
+    _glShutdownTextures();
+    _glShutdownFramebuffers();
 
     ShutdownGPU();
     _initialized = false;
@@ -208,6 +225,9 @@ static void clear_lists(void) {
     aligned_vector_clear(&OP_LIST.sprites);
     aligned_vector_clear(&PT_LIST.sprites);
     aligned_vector_clear(&TR_LIST.sprites);
+    OP_LIST.header_emitted = GL_FALSE;
+    PT_LIST.header_emitted = GL_FALSE;
+    TR_LIST.header_emitted = GL_FALSE;
 }
 
 #if GLDC_S3_SEGMENTED_OP

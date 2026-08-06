@@ -12,14 +12,22 @@ typedef struct {
 } FrameBuffer;
 
 static FrameBuffer* ACTIVE_FRAMEBUFFER = NULL;
+#define MAX_FRAMEBUFFER_COUNT 32
+
 static NamedArray FRAMEBUFFERS;
 
 
 void _glInitFramebuffers() {
-    named_array_init(&FRAMEBUFFERS, sizeof(FrameBuffer), 32);
+    named_array_init(&FRAMEBUFFERS, sizeof(FrameBuffer), MAX_FRAMEBUFFER_COUNT);
 
     // Reserve zero so that it is never given to anyone as an ID!
     named_array_reserve(&FRAMEBUFFERS, 0);
+}
+
+/* Shutdown counterpart of _glInitFramebuffers (AUD-001-OPB-27). */
+void _glShutdownFramebuffers(void) {
+    named_array_cleanup(&FRAMEBUFFERS);
+    ACTIVE_FRAMEBUFFER = NULL;
 }
 
 void _glWipeTextureOnFramebuffers(GLuint texture) {
@@ -36,6 +44,13 @@ void APIENTRY glGenFramebuffersEXT(GLsizei n, GLuint* framebuffers) {
     while(n--) {
         GLuint id = 0;
         FrameBuffer* fb = (FrameBuffer*) named_array_alloc(&FRAMEBUFFERS, &id);
+        /* Id space exhausted: report, don't write through NULL
+           (AUD-001-OPB-18). */
+        if(!fb) {
+            _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+            while(n-- >= 0) *framebuffers++ = 0;
+            return;
+        }
         fb->index = id;
         fb->is_complete = GL_FALSE;
         fb->texture_id = 0;
@@ -49,6 +64,11 @@ void APIENTRY glDeleteFramebuffersEXT(GLsizei n, const GLuint* framebuffers) {
     TRACE();
 
     while(n--) {
+        if(*framebuffers == 0 || *framebuffers >= MAX_FRAMEBUFFER_COUNT) {
+            /* Out-of-range ids never name an object (AUD-001-OPB-19 class). */
+            framebuffers++;
+            continue;
+        }
         FrameBuffer* fb = (FrameBuffer*) named_array_get(&FRAMEBUFFERS, *framebuffers);
 
         if(fb == ACTIVE_FRAMEBUFFER) {
@@ -64,6 +84,10 @@ void APIENTRY glBindFramebufferEXT(GLenum target, GLuint framebuffer) {
     TRACE();
 
     if(framebuffer) {
+        if(framebuffer >= MAX_FRAMEBUFFER_COUNT) {
+            _glKosThrowError(GL_INVALID_VALUE, __func__);
+            return;
+        }
         ACTIVE_FRAMEBUFFER = (FrameBuffer*) named_array_get(&FRAMEBUFFERS, framebuffer);
     } else {
         ACTIVE_FRAMEBUFFER = NULL;
@@ -149,13 +173,20 @@ GL_FORCE_INLINE GLuint B565(GLuint v) {
 static GL_NO_INSTRUMENT GLboolean _glCalculateAverageTexel(GLuint pvrFormat, const GLubyte* src1, const GLubyte* src2, const GLubyte* src3, const GLubyte* src4, GLubyte* t) {
     GLuint a, r, g, b;
 
-    GLubyte format = ((pvrFormat & (1 << 27)) | (pvrFormat & (1 << 26))) >> 26;
+    /* The PVR pixel-format field is 3 bits at 27-29; the old expression
+       sampled bits 27 and 26 (26 is NONTWIDDLED, not format), decoding
+       ARGB4444 as ARGB1555 and averaging every generated mip level with the
+       wrong field masks (AUD-001-OPB-10). Decode the real field, with the
+       real GPUTextureFormat values. */
+    GLubyte format = (pvrFormat >> 27) & 0x7;
 
-    const GLubyte ARGB1555 = 0;
-    const GLubyte ARGB4444 = 1;
-    const GLubyte RGB565 = 2;
+    const GLubyte ARGB1555 = GPU_TXRFMT_ARGB1555 >> 27;
+    const GLubyte RGB565 = GPU_TXRFMT_RGB565 >> 27;
+    const GLubyte ARGB4444 = GPU_TXRFMT_ARGB4444 >> 27;
+    const GLubyte PAL4BPP = GPU_TXRFMT_PAL4BPP >> 27;
+    const GLubyte PAL8BPP = GPU_TXRFMT_PAL8BPP >> 27;
 
-    if((pvrFormat & GPU_TXRFMT_PAL8BPP) == GPU_TXRFMT_PAL8BPP) {
+    if(format == PAL4BPP || format == PAL8BPP) {
         /* Paletted... all we can do really is just pick one of the
          * 4 texels.. unless we want to change the palette (bad) or
          * pick the closest available colour (slow, and probably bad)
@@ -305,7 +336,9 @@ void APIENTRY glGenerateMipmap(GLenum target) {
     GLuint prevHeight = tex->height;
 
     /* Make sure there is room for the mipmap data on the texture object */
-    _glAllocateSpaceForMipmaps(tex);
+    if(!_glAllocateSpaceForMipmaps(tex)) {
+        return;
+    }
 
     for(i = 1; i < _glGetMipmapLevelCount(tex); ++i) {
         GLubyte* prevData = _glGetMipmapLocation(tex, i - 1);

@@ -43,6 +43,10 @@ typedef struct __attribute__((aligned(32))) {
 void _glInitImmediateMode(GLuint initial_size) {
     aligned_vector_init(&VERTICES, sizeof(IMVertex));
     aligned_vector_reserve(&VERTICES, initial_size);
+    /* LOAD-BEARING INVARIANT: fast_path stays GL_TRUE forever and IM_ATTRIBS
+       never gets read-function pointers assigned — safe only because the
+       fixed IMVertex layout always satisfies the fast path, so
+       _glUpdateAttributes never runs on this list (Audit #001 note). */
     IM_ATTRIBS.fast_path = GL_TRUE;
 
     IM_ATTRIBS.vertex.ptr = aligned_vector_front(&VERTICES);
@@ -71,6 +75,11 @@ void _glInitImmediateMode(GLuint initial_size) {
     IM_ATTRIBS.normal.size = 3;
 }
 
+/* Shutdown counterpart of _glInitImmediateMode (review F3). */
+void _glShutdownImmediateMode(void) {
+    aligned_vector_cleanup(&VERTICES);
+}
+
 void APIENTRY glBegin(GLenum mode) {
     GLDC_STAT_INC(immediate_begin_calls);
     if(IMMEDIATE_MODE_ACTIVE) {
@@ -82,13 +91,19 @@ void APIENTRY glBegin(GLenum mode) {
     ACTIVE_POLYGON_MODE = mode;
 }
 
+/* Out-of-range float -> GLubyte is UB; the array path (attributes.c) clamps,
+   the immediate path did not (AUD-001-OPB-23). */
+GL_FORCE_INLINE GLubyte _glColorFloatToUByte(GLfloat v) {
+    return (GLubyte) clamp(v * 255.0f, 0, 255);
+}
+
 void APIENTRY glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
 
-    COLOR[A8IDX] = (GLubyte)(a * 255.0f);
-    COLOR[R8IDX] = (GLubyte)(r * 255.0f);
-    COLOR[G8IDX] = (GLubyte)(g * 255.0f);
-    COLOR[B8IDX] = (GLubyte)(b * 255.0f);
+    COLOR[A8IDX] = _glColorFloatToUByte(a);
+    COLOR[R8IDX] = _glColorFloatToUByte(r);
+    COLOR[G8IDX] = _glColorFloatToUByte(g);
+    COLOR[B8IDX] = _glColorFloatToUByte(b);
 }
 
 void APIENTRY glColor4ub(GLubyte r, GLubyte  g, GLubyte b, GLubyte a) {
@@ -112,18 +127,18 @@ void APIENTRY glColor4ubv(const GLubyte *v) {
 void APIENTRY glColor4fv(const GLfloat* v) {
     IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
 
-    COLOR[B8IDX] = (GLubyte)(v[2] * 255);
-    COLOR[G8IDX] = (GLubyte)(v[1] * 255);
-    COLOR[R8IDX] = (GLubyte)(v[0] * 255);
-    COLOR[A8IDX] = (GLubyte)(v[3] * 255);
+    COLOR[B8IDX] = _glColorFloatToUByte(v[2]);
+    COLOR[G8IDX] = _glColorFloatToUByte(v[1]);
+    COLOR[R8IDX] = _glColorFloatToUByte(v[0]);
+    COLOR[A8IDX] = _glColorFloatToUByte(v[3]);
 }
 
 void APIENTRY glColor3f(GLfloat r, GLfloat g, GLfloat b) {
     IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
 
-    COLOR[B8IDX] = (GLubyte)(b * 255.0f);
-    COLOR[G8IDX] = (GLubyte)(g * 255.0f);
-    COLOR[R8IDX] = (GLubyte)(r * 255.0f);
+    COLOR[B8IDX] = _glColorFloatToUByte(b);
+    COLOR[G8IDX] = _glColorFloatToUByte(g);
+    COLOR[R8IDX] = _glColorFloatToUByte(r);
     COLOR[A8IDX] = 255;
 }
 
@@ -149,9 +164,9 @@ void APIENTRY glColor3fv(const GLfloat* v) {
     IM_ATTRIBS.enabled |= DIFFUSE_ENABLED_FLAG;
 
     COLOR[A8IDX] = 255;
-    COLOR[R8IDX] = (GLubyte)(v[0] * 255);
-    COLOR[G8IDX] = (GLubyte)(v[1] * 255);
-    COLOR[B8IDX] = (GLubyte)(v[2] * 255);
+    COLOR[R8IDX] = _glColorFloatToUByte(v[0]);
+    COLOR[G8IDX] = _glColorFloatToUByte(v[1]);
+    COLOR[B8IDX] = _glColorFloatToUByte(v[2]);
 }
 
 typedef union punned {

@@ -660,16 +660,22 @@ void APIENTRY glNormalPointer(GLenum type,  GLsizei stride,  const GLvoid * poin
         0
     };
 
-    stride = (stride) ? stride : ATTRIB_LIST.normal.size * byte_size(type);
+    /* Size is a function of the NEW type and must be known before the
+       auto-stride derives from it — the old order used the previous binding's
+       size, giving packed normals a stride of 12 instead of 4, and compared
+       _glStateUnchanged against a hardcoded 3 so the packed early-out never
+       fired (AUD-001-OPB-12). */
+    const GLint size = (type == GL_UNSIGNED_INT_2_10_10_10_REV) ? 1 : 3;
+    stride = (stride) ? stride : size * byte_size(type);
     ATTRIB_LIST.normal.ptr = pointer;
 
-    if(_glStateUnchanged(&ATTRIB_LIST.normal, 3, type, stride)) return;
+    if(_glStateUnchanged(&ATTRIB_LIST.normal, size, type, stride)) return;
 
     if(_glCheckValidEnum(type, validTypes, __func__) != 0) {
         return;
     }
 
-    ATTRIB_LIST.normal.size = (type == GL_UNSIGNED_INT_2_10_10_10_REV) ? 1 : 3;
+    ATTRIB_LIST.normal.size = size;
     ATTRIB_LIST.normal.stride = stride;
     ATTRIB_LIST.normal.type = type;
 

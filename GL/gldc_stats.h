@@ -7,10 +7,9 @@
  *   - Strip submission (Phase 0 new, for Phase 2)
  *   - Patch E fast-path (Phase 0 new, for Phase 3)
  *
- * Usage in game code:
- *   extern void glKosResetStats(void);
- *   extern const GLdcStats* glKosGetStats(void);
- *   extern void glKosPrintStats(void);
+ * Usage in game code (include this header — the entry points are declared
+ * below with ONE signature in both configurations; hand-written externs were
+ * how a type mismatch could slip past the compiler, AUD-001-OPB-26):
  *
  *   // Each frame, after EndDrawing():
  *   glKosPrintStats();
@@ -67,6 +66,12 @@ typedef struct {
     /* avg_strip_length = strip_vertices_total / max(strip_count, 1) */
     /* clip_rate = clip_partial / max(clip_triangles_tested, 1) */
 } GLdcStats;
+
+/* One signature for both configurations: with stats disabled the stubs
+   return NULL / no-op (AUD-001-OPB-26). */
+void glKosResetStats(void);
+const GLdcStats* glKosGetStats(void);
+void glKosPrintStats(void);
 
 #ifdef GLDC_ENABLE_STATS
 

@@ -370,7 +370,10 @@ void _glUpdateColourMaterialA(const GLubyte* argb) {
     float colour[4];
     bgra_to_float(argb, colour);
     vec4cpy(material->ambient, colour);
-    GLenum mask = _glColorMaterialMode();
+    /* The precalc expects the AMBIENT/DIFFUSE/... BITMASK, not the GL mode
+       enum — passing the mode recalculated the wrong (or no) components
+       (AUD-001-OPB-09). */
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -381,7 +384,10 @@ void _glUpdateColourMaterialD(const GLubyte* argb) {
     bgra_to_float(argb, colour);
     vec4cpy(material->diffuse, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    /* The precalc expects the AMBIENT/DIFFUSE/... BITMASK, not the GL mode
+       enum — passing the mode recalculated the wrong (or no) components
+       (AUD-001-OPB-09). */
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -392,7 +398,10 @@ void _glUpdateColourMaterialE(const GLubyte* argb) {
     bgra_to_float(argb, colour);
     vec4cpy(material->emissive, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    /* The precalc expects the AMBIENT/DIFFUSE/... BITMASK, not the GL mode
+       enum — passing the mode recalculated the wrong (or no) components
+       (AUD-001-OPB-09). */
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -404,7 +413,10 @@ void _glUpdateColourMaterialAD(const GLubyte* argb) {
     vec4cpy(material->ambient, colour);
     vec4cpy(material->diffuse, colour);
 
-    GLenum mask = _glColorMaterialMode();
+    /* The precalc expects the AMBIENT/DIFFUSE/... BITMASK, not the GL mode
+       enum — passing the mode recalculated the wrong (or no) components
+       (AUD-001-OPB-09). */
+    GLenum mask = _glColorMaterialMask();
     _glPrecalcLightingValues(mask);
 }
 
@@ -533,10 +545,22 @@ void _glPerformLighting(Vertex* vertices, VertexExtra* extra, const uint32_t cou
         return;
     }
 
+    /* Recompute the material products only when the vertex color actually
+       changes: consecutive vertices overwhelmingly share one color, and each
+       recompute walks all 8 lights x 4 components of GLOBAL state
+       (AUD-001-OPB-33). */
+    uint32_t last_bgra = 0;
+    GLboolean material_valid = GL_FALSE;
+
     for(j = 0; j < count; ++j, ++vertex, ++data) {
         /* Calculate the ambient lighting and set up colour material */
         if(updateColourMaterial) {
-            updateColourMaterial(vertex->bgra);
+            const uint32_t bgra = *((const uint32_t*) vertex->bgra);
+            if(!material_valid || bgra != last_bgra) {
+                material_valid = GL_TRUE;
+                last_bgra = bgra;
+                updateColourMaterial(vertex->bgra);
+            }
         }
 
         /* Copy the base colour across */

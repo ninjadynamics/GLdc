@@ -92,7 +92,9 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
   uint32_t diff = (uint32_t)d - (uint32_t)(s + 1); // extra offset because input gets incremented before output is calculated
   // Underflow would be like adding a negative offset
 
-  // Can use 'd' as a scratch reg now
+  // Asm operands must be lvalues (AUD-001-OPA-18)
+  uint32_t in_ = (uint32_t) s;
+  uint32_t scratch_;
   asm volatile (
     "clrs\n" // Align for parallelism (CO) - SH4a use "stc SR, Rn" instead with a dummy Rn
   ".align 2\n"
@@ -101,7 +103,7 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
     "mov.b @%[in]+, %[scratch]\n\t" // scratch = *(s++) (LS 1/2)
     "bf.s 0b\n\t" // while(s != nexts) aka while(!T) (BR 1/2)
     " mov.b %[scratch], @(%[offset], %[in])\n" // *(datatype_of_s*) ((char*)s + diff) = scratch, where src + diff = dest (LS 1)
-    : [in] "+&r" ((uint32_t)s), [scratch] "=&r" ((uint32_t)d), [size] "+&r" (len) // outputs
+    : [in] "+&r" (in_), [scratch] "=&r" (scratch_), [size] "+&r" (len) // outputs
     : [offset] "z" (diff) // inputs
     : "t", "memory" // clobbers
   );
@@ -116,11 +118,16 @@ GL_FORCE_INLINE void* memcpy_fast(void *dest, const void *src, size_t len) {
  * asserting or feeding an invalid SQ destination. */
 #define FASTCPY(dst, src, bytes) \
     do { \
-        if(bytes % 32 == 0 && ((uintptr_t) src % 4) == 0 && \
-           ((uintptr_t) dst % 32) == 0) { \
-            sq_cpy(dst, src, bytes); \
+        /* Single-eval + parenthesized: FASTCPY(p, q, n++) must not \
+           misbehave (AUD-001-OPB-35). */ \
+        void* _fc_dst = (dst); \
+        const void* _fc_src = (src); \
+        size_t _fc_bytes = (bytes); \
+        if(_fc_bytes % 32 == 0 && ((uintptr_t) _fc_src % 4) == 0 && \
+           ((uintptr_t) _fc_dst % 32) == 0) { \
+            sq_cpy(_fc_dst, _fc_src, _fc_bytes); \
         } else { \
-            memcpy_fast(dst, src, bytes); \
+            memcpy_fast(_fc_dst, _fc_src, _fc_bytes); \
         } \
     } while(0)
 
@@ -177,11 +184,6 @@ GL_FORCE_INLINE void TransformVec3NoMod(const float* xIn, float* xOut) {
 /* Transform a 3-element normal using the stored matrix (w == 0)*/
 GL_FORCE_INLINE void TransformNormalNoMod(const float* in, float* out) {
     mat_trans_normal3_nomod(in[0], in[1], in[2], out[0], out[1], out[2]);
-}
-
-/* Transform a 4-element vector in-place by the stored matrix */
-inline void TransformVec4(float* x) {
-
 }
 
 GL_FORCE_INLINE void TransformVertex(float x, float y, float z, float w, float* oxyz, float* ow) {

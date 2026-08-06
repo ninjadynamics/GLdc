@@ -43,12 +43,6 @@ static GLboolean TEXTURE_TWIDDLE_ENABLED = GL_FALSE;
 static void* ALLOC_BASE = NULL;
 static size_t ALLOC_SIZE = 0;
 
-static struct TwiddleTable {
-    int32_t width;
-    int32_t height;
-    int32_t* table;
-} TWIDDLE_TABLE = {0, 0, NULL};
-
 static void calc_twiddle_factors(uint32_t w, uint32_t h, uint32_t* maskX, uint32_t* maskY) {
     *maskX = 0;
     *maskY = 0;
@@ -72,51 +66,25 @@ static void calc_twiddle_factors(uint32_t w, uint32_t h, uint32_t* maskX, uint32
     }
 }
 
-GLboolean build_twiddle_table(int32_t w, int32_t h) {
-    free(TWIDDLE_TABLE.table);
-    TWIDDLE_TABLE.table = (int32_t*) malloc(w * h * sizeof(int32_t));
+/* Table-free twiddling (AUD-001-OPB-29): the old per-size lookup table cost
+   4 B/texel of main RAM (1 MiB resident for a 512x512 upload), was rebuilt on
+   every dimension change, and its allocation could fail mid-upload. The
+   twiddled index is a pure function of (x, y, maskX, maskY): walk it
+   incrementally with the same masked-increment the table builder used —
+   `t = (t - mask) & mask` steps to the next texel's interleaved bits — one
+   subtract+and per texel instead of a cache-missing table read. */
 
-    /* 4 B/texel from the main-RAM heap (a 512x512 upload needs a contiguous
-       1 MiB block) — a realistic failure on a 16 MiB console. Leave a
-       consistent empty table so a later upload retries cleanly; the caller
-       must NOT touch twid_location (AUD-001-OPB-05). */
-    if(!TWIDDLE_TABLE.table) {
-        TWIDDLE_TABLE.width = 0;
-        TWIDDLE_TABLE.height = 0;
-        return GL_FALSE;
+/* Scatter the bits of v into the set-bit positions of mask (lowest first):
+   the twiddled index of coordinate v on that axis. O(set bits), used only to
+   seed sub-rect walks at (xoffset, yoffset). */
+static uint32_t twid_scatter(uint32_t v, uint32_t mask) {
+    uint32_t r = 0;
+    for(uint32_t bit = 1; mask; bit <<= 1) {
+        uint32_t low = mask & (~mask + 1);
+        if(v & bit) r |= low;
+        mask &= ~low;
     }
-
-    TWIDDLE_TABLE.width = w;
-    TWIDDLE_TABLE.height = h;
-
-    int32_t idx = 0;
-    uint32_t idxX = 0, idxY = 0, maskX, maskY;
-    calc_twiddle_factors(w, h, &maskX, &maskY);
-
-    for (int32_t y = 0; y < h; y++) {
-        idxX = 0;
-        for (int32_t x = 0; x < w; x++) {
-            TWIDDLE_TABLE.table[idx++] = idxX | idxY;
-            idxX = (idxX - maskX) & maskX;
-        }
-        idxY = (idxY - maskY) & maskY;
-    }
-    return GL_TRUE;
-}
-
-/* GL_FALSE means the table is unavailable — the caller must bail (throwing
-   GL_OUT_OF_MEMORY) before any twid_location access. */
-static GLboolean twid_prepare_table(uint32_t w, uint32_t h) {
-    if(TWIDDLE_TABLE.width != w || TWIDDLE_TABLE.height != h || !TWIDDLE_TABLE.table) {
-        return build_twiddle_table(w, h);
-    }
-    return GL_TRUE;
-}
-
-/* Given a 0-based texel location, returns new 0-based texel location */
-/* NOTE: twid_prepare_table must have been called beforehand for correct behaviour */
-GL_FORCE_INLINE uint32_t twid_location(uint32_t i) {
-    return TWIDDLE_TABLE.table[i];
+    return r;
 }
 
 
@@ -420,6 +388,9 @@ static GLuint _glGetMipmapDataOffset(const TextureObject* obj, GLuint level) {
             case 1:
             offset = 0x00003;
             break;
+            default:
+            gl_assert(0 && "mipmap offset requested off-table");
+            break;
         }
     } else if(obj->isCompressed) {
         switch(size >> level){
@@ -456,6 +427,9 @@ static GLuint _glGetMipmapDataOffset(const TextureObject* obj, GLuint level) {
             case 1:
             offset = 0x00000;
             break;
+            default:
+            gl_assert(0 && "mipmap offset requested off-table");
+            break;
         }
     }else {
         switch(size >> level){
@@ -491,6 +465,9 @@ static GLuint _glGetMipmapDataOffset(const TextureObject* obj, GLuint level) {
             break;
             case 1:
             offset = 0x00006;
+            break;
+            default:
+            gl_assert(0 && "mipmap offset requested off-table");
             break;
         }
     }
@@ -590,6 +567,42 @@ GLubyte _glInitTextures() {
     return 1;
 }
 
+/* Shutdown counterpart of _glInitTextures (AUD-001-OPB-27): release every
+   CPU-side allocation the texture system owns — per-texture palettes, the
+   shared palette structs, the object array, and the VRAM pool bookkeeping.
+   The VRAM contents are not walked: ShutdownGPU tears the whole heap down.
+   glKosInit -> _glInitTextures rebuilds all of it. */
+void _glShutdownTextures(void) {
+    for(GLuint id = 0; id < MAX_TEXTURE_COUNT; ++id) {
+        if(!named_array_used(&TEXTURE_OBJECTS, id)) {
+            continue;
+        }
+        TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, id);
+        if(txr->palette) {
+            free(txr->palette->data);
+            free(txr->palette);
+            txr->palette = NULL;
+        }
+    }
+    named_array_cleanup(&TEXTURE_OBJECTS);
+
+    for(int i = 0; i < MAX_GLDC_SHARED_PALETTES; ++i) {
+        if(SHARED_PALETTES[i]) {
+            free(SHARED_PALETTES[i]->data);
+            free(SHARED_PALETTES[i]);
+            SHARED_PALETTES[i] = NULL;
+        }
+    }
+
+    for(GLuint i = 0; i < MAX_GLDC_TEXTURE_UNITS; ++i) {
+        TEXTURE_UNITS[i] = NULL;
+    }
+
+    alloc_shutdown(ALLOC_BASE);
+    ALLOC_BASE = NULL;
+    ALLOC_SIZE = 0;
+}
+
 TextureObject* _glGetTexture0() {
     return TEXTURE_UNITS[0];
 }
@@ -628,6 +641,11 @@ void APIENTRY glActiveTextureARB(GLenum texture) {
 }
 
 GLboolean APIENTRY glIsTexture(GLuint texture) {
+    /* named_array_used indexes its marker bytes unbounded — GL permits ANY
+       id here, so the bound is ours to enforce (AUD-001-OPB-19). */
+    if(texture >= MAX_TEXTURE_COUNT) {
+        return GL_FALSE;
+    }
     return (named_array_used(&TEXTURE_OBJECTS, texture)) ? GL_TRUE : GL_FALSE;
 }
 
@@ -639,7 +657,13 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
     for(GLsizei i = 0; i < n; ++i) {
         GLuint id = 0;
         TextureObject* txr = (TextureObject*) named_array_alloc(&TEXTURE_OBJECTS, &id);
-        gl_assert(txr);
+        /* Id space exhausted (MAX_TEXTURE_COUNT live objects): report it the
+           GL way instead of writing through NULL (AUD-001-OPB-18). */
+        if(!txr) {
+            _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+            for(; i < n; ++i) textures[i] = 0;
+            return;
+        }
         gl_assert(id);  // Generated IDs must never be zero
 
         _glInitializeTextureObject(txr, id);
@@ -744,8 +768,9 @@ void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
 
     for(GLsizei i = 0; i < n; ++i) {
         GLuint id = textures[i];
-        if(id == 0) {
-            /* Zero is the "default texture" and we never allow deletion of it */
+        if(id == 0 || id >= MAX_TEXTURE_COUNT) {
+            /* Zero is the "default texture" and we never allow deletion of it;
+               out-of-range ids never name an object (AUD-001-OPB-19). */
             continue;
         }
 
@@ -802,17 +827,27 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
     TRACE();
     GLDC_STAT_INC(texture_binds);
 
-    GLint target_values [] = {GL_TEXTURE_2D, 0};
+    gl_assert(ACTIVE_TEXTURE < MAX_GLDC_TEXTURE_UNITS);
+    /* Defensive rebinds are common in immediate-mode callers. If this unit
+       already names the object there is no lookup or header rebuild to do —
+       and no validation loop to pay for either (AUD-001-OPB-30). The target
+       gate keeps GL_INVALID_ENUM semantics for bad targets (codex review):
+       one immediate compare, still cheaper than the old enum scan. */
+    if(target == GL_TEXTURE_2D &&
+       TEXTURE_UNITS[ACTIVE_TEXTURE] &&
+       TEXTURE_UNITS[ACTIVE_TEXTURE]->index == texture) {
+        return;
+    }
+
+    static const GLint target_values [] = {GL_TEXTURE_2D, 0};
 
     if(_glCheckValidEnum(target, target_values, __func__) != 0) {
         return;
     }
 
-    gl_assert(ACTIVE_TEXTURE < MAX_GLDC_TEXTURE_UNITS);
-    /* Defensive rebinds are common in immediate-mode callers. If this unit
-       already names the object there is no lookup or header rebuild to do. */
-    if(TEXTURE_UNITS[ACTIVE_TEXTURE] &&
-       TEXTURE_UNITS[ACTIVE_TEXTURE]->index == texture) {
+    /* GL permits binding ANY id; the marker array does not (AUD-001-OPB-19). */
+    if(texture >= MAX_TEXTURE_COUNT) {
+        _glKosThrowError(GL_INVALID_VALUE, __func__);
         return;
     }
 
@@ -838,6 +873,9 @@ void APIENTRY glBindTexture(GLenum  target, GLuint texture) {
    data. The texture must be a NONTWIDDLED 16-bit format for the RTT output to
    sample correctly. */
 GLvoid* APIENTRY glKosTextureData(GLuint texId) {
+    if(texId >= MAX_TEXTURE_COUNT) {
+        return NULL;
+    }
     TextureObject* txr = (TextureObject*) named_array_get(&TEXTURE_OBJECTS, texId);
     return (txr) ? txr->data : NULL;
 }
@@ -861,6 +899,11 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
     if(failures) {
         return;
     }
+
+    /* Dirty only on a real change (AUD-001-OPB-32). */
+    const GLubyte old_env = active->env;
+    const GLubyte old_bias = active->mipmap_bias;
+
     switch(target){
         case GL_TEXTURE_ENV:
             {
@@ -904,7 +947,9 @@ void APIENTRY glTexEnvi(GLenum target, GLenum pname, GLint param) {
            break;
     }
 
-    _glGPUStateMarkDirty();
+    if(active->env != old_env || active->mipmap_bias != old_bias) {
+        _glGPUStateMarkDirty();
+    }
 }
 
 void APIENTRY glTexEnvf(GLenum target, GLenum pname, GLfloat param) {
@@ -1019,11 +1064,6 @@ void APIENTRY glCompressedTexImage2DARB(GLenum target,
     TextureObject* active = TEXTURE_UNITS[ACTIVE_TEXTURE];
     GLuint original_id = active->index;
 
-    if(!active) {
-        _glKosThrowError(GL_INVALID_OPERATION, __func__);
-        return;
-    }
-
     /* Set the required mipmap count */
     active->width   = width;
     active->height  = height;
@@ -1032,6 +1072,26 @@ void APIENTRY glCompressedTexImage2DARB(GLenum target,
     active->mipmapCount = _glGetMipmapLevelCount(active);
     active->mipmap = (mipmapped) ? ~0 : (1 << level);  /* Set only a single bit if this wasn't mipmapped otherwise set all */
     active->isCompressed = GL_TRUE;
+
+    /* A re-spec of an id that previously held an uncompressed (possibly
+       mipmapped or paletted) texture must not inherit its layout fields: a
+       stale baseDataOffset makes _glUpdatePVRTextureContext point past the
+       (4x smaller) VQ allocation (AUD-001-OPB-28). */
+    active->isPaletted = GL_FALSE;
+    active->baseDataOffset = 0;
+    active->baseDataSize = imageSize;
+    active->dataStride = 0;
+    if(active->palette) {
+        GLshort stale_bank = active->palette->bank;
+        GLushort stale_size = active->palette->size;
+        free(active->palette->data);
+        free(active->palette);
+        active->palette = NULL;
+        if(stale_bank > -1) {
+            /* Palette RAM is as live to the in-flight frame as VRAM. */
+            _glDeferFree(NULL, stale_bank, stale_size);
+        }
+    }
 
     /* Odds are slim new data is same size as old, so release always — deferred:
        re-speccing a LIVE id is the same in-flight-render hazard as deletion
@@ -1068,40 +1128,32 @@ void APIENTRY glCompressedTexSubImage2DARB(GLenum target,
                                            GLsizei imageSize,
                                            const GLvoid *data) {
     TRACE();
+    _GL_UNUSED(format);
 
     if (target != GL_TEXTURE_2D) {
         _glKosThrowError(GL_INVALID_ENUM, __func__);
         return;
     }
 
-    if (xoffset < 0 || yoffset < 0 || width <= 0 || height <= 0) {
-        _glKosThrowError(GL_INVALID_VALUE, __func__);
-        return;
-    }
-
     gl_assert(ACTIVE_TEXTURE < MAX_GLDC_TEXTURE_UNITS);
     TextureObject* active = TEXTURE_UNITS[ACTIVE_TEXTURE];
 
-    if (!active) {
+    /* Exactly ONE shape was ever implemented — and it IS live: HyperSolar's
+       VQ loader reserves VRAM with glCompressedTexImage2DARB(data = NULL) and
+       then copies the whole level-0 image through here. Everything else
+       (sub-rects, mip levels) used a TEXEL-indexed destination offset that is
+       meaningless for VQ block layouts, with imageSize unbounded against the
+       allocation (AUD-001-OPB-03/04/15) — reject those loudly, bound the one
+       real shape. */
+    if (!active->isCompressed || level != 0 || xoffset != 0 || yoffset != 0 ||
+        width != (GLsizei) active->width || height != (GLsizei) active->height ||
+        imageSize <= 0 || (GLuint) imageSize > active->baseDataSize) {
         _glKosThrowError(GL_INVALID_OPERATION, __func__);
         return;
     }
 
-    GLuint original_id = active->index;
-
-    // Ensure that we're modifying the correct texture
-    if (active->index != original_id) {
-        _glKosThrowError(GL_INVALID_OPERATION, __func__);
-        return;
-    }
-
-    // Copy raw compressed texture data into the texture buffer.
-    GLubyte* targetData = active->data;
-    GLubyte* src = (GLubyte*)data;
-
-    // Copy the compressed data directly to the texture
     if (data) {
-        FASTCPY(targetData + (yoffset * active->width + xoffset), src, imageSize);
+        FASTCPY(active->data, data, imageSize);
     }
 
     _glGPUStateMarkDirty();
@@ -1539,10 +1591,10 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
     return GL_TRUE;
 }
 
-void _glAllocateSpaceForMipmaps(TextureObject* active) {
+GLboolean _glAllocateSpaceForMipmaps(TextureObject* active) {
     if(active->data && active->baseDataOffset > 0) {
         /* Already done - mipmaps have a dataOffset */
-        return;
+        return GL_TRUE;
     }
 
     /* We've allocated level 0 before, but now we're allocating
@@ -1556,10 +1608,19 @@ void _glAllocateSpaceForMipmaps(TextureObject* active) {
     GLubyte* temp = NULL;
     if(active->data) {
         temp = (GLubyte*) malloc(size);
-        memcpy(temp, active->data, size);
+        /* Bail BEFORE the original is released: on failure the texture is
+           left exactly as it was (AUD-001-OPB-06). */
+        if(!temp) {
+            _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+            return GL_FALSE;
+        }
+        FASTCPY(temp, active->data, size);
 
-        /* Free the PVR data */
-        alloc_free(ALLOC_BASE, active->data);
+        /* Defer the free: the in-flight render may still sample this block —
+           same hazard as deletion. Under pressure alloc_malloc_and_defrag's
+           drain reclaims it immediately, so the allocation below cannot be
+           starved by the deferral (AUD-001-OPB-06). */
+        _glDeferFree(active->data, -1, 0);
         active->data = NULL;
     }
 
@@ -1572,7 +1633,7 @@ void _glAllocateSpaceForMipmaps(TextureObject* active) {
 
     if(temp) {
         /* If there was existing data, then copy it where it should go */
-        memcpy(_glGetMipmapLocation(active, 0), temp, size);
+        FASTCPY(_glGetMipmapLocation(active, 0), temp, size);
 
         /* We no longer need this */
         free(temp);
@@ -1581,6 +1642,7 @@ void _glAllocateSpaceForMipmaps(TextureObject* active) {
     /* Set the data offset depending on whether or not this is a
      * paletted texure */
     active->baseDataOffset = _glGetMipmapDataOffset(active, 0);
+    return GL_TRUE;
 }
 
 static bool _glTexImage2DValidate(GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type) {
@@ -1632,6 +1694,23 @@ static bool _glTexImage2DValidate(GLenum target, GLint level, GLint internalForm
         return false;
     }
 
+    /* Reject a negative level BEFORE the mipmap branch below evaluates
+       `1 << level` with a negative shift count (AUD-001-OPB-17). */
+    if(level < 0) {
+        INFO_MSG("Level must be >= 0");
+        _glKosThrowError(GL_INVALID_VALUE, __func__);
+        return false;
+    }
+
+    /* No 4bpp mipmap offset table exists (_glGetMipmapDataOffset serves the
+       8bpp layout for all paletted formats) — reject the combination like
+       glGenerateMipmap already does (AUD-001-OPB-20). */
+    if(level > 0 && (format == GL_COLOR_INDEX4_EXT || format == GL_COLOR_INDEX4_TWID_KOS)) {
+        INFO_MSG("4bpp paletted textures cannot be mipmapped");
+        _glKosThrowError(GL_INVALID_OPERATION, __func__);
+        return false;
+    }
+
     GLuint w = width;
     GLuint h = height;
     if(level == 0){
@@ -1657,12 +1736,6 @@ static bool _glTexImage2DValidate(GLenum target, GLint level, GLint internalForm
             TEXTURE_UNITS[ACTIVE_TEXTURE]->mipmap |= (1 << level);
             return false;
         }
-    }
-
-    if(level < 0) {
-        INFO_MSG("Level must be >= 0");
-        _glKosThrowError(GL_INVALID_VALUE, __func__);
-        return false;
     }
 
     if(level > 0 && width != height) {
@@ -1815,6 +1888,16 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     TextureConversionFunc conversion = NULL;
     int needs_conversion = _determineConversion(cleanInternalFormat, format, type, &conversion);
 
+    /* Reject an unsupported combination BEFORE the size math and the VRAM
+       allocation below: CONVERSION_TYPE_INVALID is -1, and -1 & PACK tested
+       true, halving destBytes and committing a half-sized "valid" texture on
+       the error path (AUD-001-OPB-08). */
+    if(needs_conversion < 0) {
+        _glKosThrowError(GL_INVALID_VALUE, __func__);
+        INFO_MSG("Couldn't find necessary texture conversion\n");
+        return;
+    }
+
     // Hack: If we're doing a 4bpp source (via glCompressedTexture...)
     // halve the srcBytes
     if(format == GL_COLOR_INDEX4_EXT || format == GL_COLOR_INDEX4_TWID_KOS) {
@@ -1849,7 +1932,9 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
         if(level > 0) {
             /* If we're uploading a mipmap level, we need to allocate the full amount of space */
-            _glAllocateSpaceForMipmaps(active);
+            if(!_glAllocateSpaceForMipmaps(active)) {
+                return;
+            }
         } else {
             active->data = alloc_malloc_and_defrag(active->baseDataSize);
         }
@@ -1861,7 +1946,9 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     /* We're supplying a mipmap level, but previously we only had
      * data for the first level (level 0) */
     if(level > 0 && active->baseDataOffset == 0) {
-        _glAllocateSpaceForMipmaps(active);
+        if(!_glAllocateSpaceForMipmaps(active)) {
+            return;
+        }
     }
 
     gl_assert(active->data);
@@ -1879,11 +1966,7 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     GLubyte* targetData = (active->baseDataOffset == 0) ? active->data : _glGetMipmapLocation(active, level);
     gl_assert(targetData);
 
-    if(needs_conversion < 0) {
-        _glKosThrowError(GL_INVALID_VALUE, __func__);
-        INFO_MSG("Couldn't find necessary texture conversion\n");
-        return;
-    } else if(needs_conversion > 0) {
+    if(needs_conversion > 0) {
         /* Convert the data */
         if(sourceStride == -1) {
             INFO_MSG("Stride was not detected\n");
@@ -1927,14 +2010,18 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             if(is4BPPFormat(internalFormat) && is4BPPFormat(format)) {
                 // Special case twiddling. We have to unpack each src value
                 // and repack into the right place
-                if(!twid_prepare_table(width, height)) {
-                    free(conversionBuffer);
-                    _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
-                    return;
-                }
+                uint32_t maskX, maskY;
+                calc_twiddle_factors(width, height, &maskX, &maskY);
+                uint32_t tx = 0, ty = 0, col = 0;
 
                 for(uint32_t i = 0; i < (width * height); ++i) {
-                    uint32_t newLocation = twid_location(i);
+                    uint32_t newLocation = tx | ty;
+                    tx = (tx - maskX) & maskX;
+                    if(++col == (uint32_t) width) {
+                        col = 0;
+                        tx = 0;
+                        ty = (ty - maskY) & maskY;
+                    }
 
                     assert(newLocation < (width * height));
                     assert((newLocation / 2) < destBytes);
@@ -1954,15 +2041,18 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                     }
                 }
             } else {
-                if(!twid_prepare_table(width, height)) {
-                    free(conversionBuffer);
-                    _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
-                    return;
-                }
+                uint32_t maskX, maskY;
+                calc_twiddle_factors(width, height, &maskX, &maskY);
+                uint32_t tx = 0, ty = 0, col = 0;
 
                 for(uint32_t i = 0; i < (width * height); ++i) {
-                    uint32_t newLocation = twid_location(i);
-                    dst = conversionBuffer + (destStride * newLocation);
+                    dst = conversionBuffer + (destStride * (tx | ty));
+                    tx = (tx - maskX) & maskX;
+                    if(++col == (uint32_t) width) {
+                        col = 0;
+                        tx = 0;
+                        ty = (ty - maskY) & maskY;
+                    }
 
                     for(int j = 0; j < destStride; ++j)
                         *dst++ = *(src + j);
@@ -1972,15 +2062,18 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             }
         } else if(needs_conversion == 3) {
             // Convert + twiddle
-            if(!twid_prepare_table(width, height)) {
-                free(conversionBuffer);
-                _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
-                return;
-            }
+            uint32_t maskX, maskY;
+            calc_twiddle_factors(width, height, &maskX, &maskY);
+            uint32_t tx = 0, ty = 0, col = 0;
 
             for(uint32_t i = 0; i < (width * height); ++i) {
-                uint32_t newLocation = twid_location(i);
-                dst = conversionBuffer + (destStride * newLocation);
+                dst = conversionBuffer + (destStride * (tx | ty));
+                tx = (tx - maskX) & maskX;
+                if(++col == (uint32_t) width) {
+                    col = 0;
+                    tx = 0;
+                    ty = (ty - maskY) & maskY;
+                }
                 src = data + (sourceStride * i);
                 conversion(src, dst);
             }
@@ -1990,17 +2083,17 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
         if(pack) {
             assert(isPaletted);
+            /* Two source index bytes pack into one nibble pair. The old loop
+               tested `% 1` (always true) and shifted the nibble out of the
+               byte — every 4bpp upload produced garbage (AUD-001-OPB-07). */
             size_t dst_byte = 0;
             for(size_t src_byte = 0; src_byte < srcBytes; ++src_byte) {
                 uint8_t v = conversionBuffer[src_byte];
 
-                if(src_byte % 1 == 0) {
-                    conversionBuffer[dst_byte] = (conversionBuffer[dst_byte] & 0xF) | ((v & 0xF0) << 4);
+                if(src_byte % 2 == 0) {
+                    conversionBuffer[dst_byte] = (conversionBuffer[dst_byte] & 0xF) | ((v & 0xF) << 4);
                 } else {
                     conversionBuffer[dst_byte] = (conversionBuffer[dst_byte] & 0xF0) | (v & 0xF);
-                }
-
-                if(src_byte % 1 == 0) {
                     dst_byte++;
                 }
             }
@@ -2032,6 +2125,13 @@ void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
         return;
     }
 
+    /* Dirty only on a real change: an unconditional mark forced a full poly
+       header rebuild for no-op re-sets and unknown pnames (AUD-001-OPB-32). */
+    const GLenum old_min = active->minFilter;
+    const GLenum old_mag = active->magFilter;
+    const GLubyte old_wrap = active->uv_wrap;
+    const GLushort old_bank = active->shared_bank;
+
     if(target == GL_TEXTURE_2D) {
         switch(pname) {
             case GL_TEXTURE_MAG_FILTER:
@@ -2062,19 +2162,22 @@ void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
                 }
                 active->minFilter = param;
             break;
+            /* Each wrap mode assigns BOTH axis bits: setting one without
+               clearing the other left a texture switched from mirrored to
+               repeat/clamp still mirroring (AUD-001-OPB-11). */
             case GL_TEXTURE_WRAP_S:
                 switch(param) {
                     case GL_CLAMP_TO_EDGE:
                     case GL_CLAMP:
-                        active->uv_wrap |= CLAMP_U;
+                        active->uv_wrap = (active->uv_wrap & ~MIRROR_U) | CLAMP_U;
                         break;
 
                     case GL_REPEAT:
-                        active->uv_wrap &= ~CLAMP_U;
+                        active->uv_wrap &= ~(CLAMP_U | MIRROR_U);
                         break;
 
                     case GL_MIRRORED_REPEAT:
-                        active->uv_wrap |= MIRROR_U;
+                        active->uv_wrap = (active->uv_wrap & ~CLAMP_U) | MIRROR_U;
                         break;
                 }
 
@@ -2084,15 +2187,15 @@ void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
                 switch(param) {
                     case GL_CLAMP_TO_EDGE:
                     case GL_CLAMP:
-                        active->uv_wrap |= CLAMP_V;
+                        active->uv_wrap = (active->uv_wrap & ~MIRROR_V) | CLAMP_V;
                         break;
 
                     case GL_REPEAT:
-                        active->uv_wrap &= ~CLAMP_V;
+                        active->uv_wrap &= ~(CLAMP_V | MIRROR_V);
                         break;
 
                     case GL_MIRRORED_REPEAT:
-                        active->uv_wrap |= MIRROR_V;
+                        active->uv_wrap = (active->uv_wrap & ~CLAMP_V) | MIRROR_V;
                         break;
                 }
 
@@ -2105,7 +2208,10 @@ void APIENTRY glTexParameteri(GLenum target, GLenum pname, GLint param) {
         }
     }
 
-    _glGPUStateMarkDirty();
+    if(active->minFilter != old_min || active->magFilter != old_mag ||
+       active->uv_wrap != old_wrap || active->shared_bank != old_bank) {
+        _glGPUStateMarkDirty();
+    }
 }
 
 void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
@@ -2114,7 +2220,7 @@ void APIENTRY glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
 
 GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsizei width, GLenum format, GLenum type, const GLvoid *data) {
 
-    GLint validTargets[] = {
+    static const GLint validTargets[] = {
         GL_TEXTURE_2D,
         GL_SHARED_TEXTURE_PALETTE_EXT,
         GL_SHARED_TEXTURE_PALETTE_0_KOS,GL_SHARED_TEXTURE_PALETTE_1_KOS,GL_SHARED_TEXTURE_PALETTE_2_KOS,GL_SHARED_TEXTURE_PALETTE_3_KOS,GL_SHARED_TEXTURE_PALETTE_4_KOS,GL_SHARED_TEXTURE_PALETTE_5_KOS,GL_SHARED_TEXTURE_PALETTE_6_KOS,GL_SHARED_TEXTURE_PALETTE_7_KOS,GL_SHARED_TEXTURE_PALETTE_8_KOS,GL_SHARED_TEXTURE_PALETTE_9_KOS,
@@ -2126,9 +2232,9 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
         GL_SHARED_TEXTURE_PALETTE_60_KOS,GL_SHARED_TEXTURE_PALETTE_61_KOS,GL_SHARED_TEXTURE_PALETTE_62_KOS,GL_SHARED_TEXTURE_PALETTE_63_KOS,
         0};
 
-    GLint validInternalFormats[] = {GL_RGB8, GL_RGBA8, GL_RGBA4, 0};
-    GLint validFormats[] = {GL_RGB, GL_RGBA,GL_RGB5_A1, GL_RGB5_A1, GL_RGB565_KOS, GL_RGBA4, 0};
-    GLint validTypes[] = {GL_UNSIGNED_BYTE, GL_BYTE, GL_UNSIGNED_SHORT, GL_SHORT, 0};
+    static const GLint validInternalFormats[] = {GL_RGB8, GL_RGBA8, GL_RGBA4, 0};
+    static const GLint validFormats[] = {GL_RGB, GL_RGBA,GL_RGB5_A1, GL_RGB5_A1, GL_RGB565_KOS, GL_RGBA4, 0};
+    static const GLint validTypes[] = {GL_UNSIGNED_BYTE, GL_BYTE, GL_UNSIGNED_SHORT, GL_SHORT, 0};
 
     if(_glCheckValidEnum(target, validTargets, __func__) != 0) {
         return;
@@ -2237,6 +2343,13 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
     }
 
     palette->data = (GLubyte*) malloc(width * destStride);
+    /* Graceful OOM instead of the loud gl_assert further down
+       (AUD-001-OPB-18). */
+    if(!palette->data) {
+        _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+        palette->format = palette->width = palette->size = 0;
+        return;
+    }
     palette->format = internalFormat;
     palette->width = width;
     palette->size = (width > 16) ? 256 : 16;
@@ -2249,6 +2362,9 @@ GLAPI void APIENTRY glColorTableEXT(GLenum target, GLenum internalFormat, GLsize
         _glKosThrowError(GL_INVALID_OPERATION, __func__);
 
         free(palette->data);
+        /* Dangling data double-freed on delete / re-upload without this
+           (AUD-001-OPB-01). */
+        palette->data = NULL;
         palette->format = palette->width = palette->size = 0;
         return;
     }
@@ -2324,9 +2440,34 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
         return;
     }
 
+    /* Uncompressed updates only: texel-linear size math is ~4x a VQ block
+       allocation — the compressed path has its own entry point (review F10). */
+    if (active->isCompressed) {
+        _glKosThrowError(GL_INVALID_OPERATION, __func__);
+        return;
+    }
+
     // Retrieve the dimensions of the currently bound texture
     GLsizei textureWidth = active->width;
     GLsizei textureHeight = active->height;
+
+    /* Mip-level routing (AUD-001-OPB-03): the update targets `level`'s slice
+       of the chain, whose dimensions halve per level. A level the texture
+       never allocated (non-mipmapped, or beyond the chain) is invalid, and
+       must be rejected BEFORE the bounds validation below sizes against the
+       wrong slice. */
+    if (level < 0) {
+        _glKosThrowError(GL_INVALID_VALUE, __func__);
+        return;
+    }
+    if (level > 0) {
+        if (active->baseDataOffset == 0 || (GLuint) level >= active->mipmapCount) {
+            _glKosThrowError(GL_INVALID_OPERATION, __func__);
+            return;
+        }
+        textureWidth = MAX(textureWidth >> level, 1);
+        textureHeight = MAX(textureHeight >> level, 1);
+    }
 
     if (!_glTexSubImage2DValidate(target, level, xoffset, yoffset, width, height, format, type, textureWidth, textureHeight)) {
         INFO_MSG("Error: _glTexSubImage2DValidate failed\n");
@@ -2373,7 +2514,8 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
     }
 
     // Calculate the starting point for the subregion in the texture data
-    GLubyte* targetData = active->data;
+    GLubyte* targetData = (active->baseDataOffset == 0)
+        ? active->data : _glGetMipmapLocation(active, level);
     if (needs_conversion > 0) {
         GLubyte* conversionBuffer = (GLubyte*) memalign(32, destBytes);
 
@@ -2390,9 +2532,13 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
         bool pack = (needs_conversion & CONVERSION_TYPE_PACK) == CONVERSION_TYPE_PACK;
         needs_conversion &= ~CONVERSION_TYPE_PACK;
 
-        // Only initialize the buffer with zeros if it's a partial update
+        /* Partial update: seed the scratch with the CURRENT texture content so
+           everything outside the sub-rect survives the full-buffer copy-back
+           below (AUD-001-OPB-02 — the old memset wiped it to transparent
+           black). Layout-agnostic: twiddled content reads back twiddled and
+           returns unchanged. */
         if (xoffset != 0 || yoffset != 0 || width != textureWidth || height != textureHeight) {
-            memset(conversionBuffer, 0, destBytes);
+            FASTCPY(conversionBuffer, targetData, destBytes);
         }
         if (needs_conversion == CONVERSION_TYPE_CONVERT) {
             for (uint32_t y = 0; y < height; ++y) {
@@ -2404,17 +2550,17 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
                 }
             }
         } else if (needs_conversion == 2 || needs_conversion == 3) {
-            if(!twid_prepare_table(textureWidth, textureHeight)) {
-                free(conversionBuffer);
-                _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
-                return;
-            }
+            uint32_t maskX, maskY;
+            calc_twiddle_factors(textureWidth, textureHeight, &maskX, &maskY);
+            const uint32_t tx0 = twid_scatter(xoffset, maskX);
+            uint32_t ty = twid_scatter(yoffset, maskY);
 
             for (uint32_t y = yoffset; y < yoffset + height; ++y) {
+                uint32_t tx = tx0;
                 for (uint32_t x = xoffset; x < xoffset + width; ++x) {
                     uint32_t srcIndex = (y - yoffset) * width + (x - xoffset);
-                    uint32_t newLocation = twid_location(y * textureWidth + x);
-                    dst = conversionBuffer + (destStride * newLocation);
+                    dst = conversionBuffer + (destStride * (tx | ty));
+                    tx = (tx - maskX) & maskX;
 
                     if (needs_conversion == 3) {
                         conversion(src + srcIndex * sourceStride, dst);
@@ -2422,6 +2568,7 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
                         memcpy(dst, src + srcIndex * sourceStride, destStride);
                     }
                 }
+                ty = (ty - maskY) & maskY;
             }
         }
 

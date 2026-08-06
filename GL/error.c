@@ -13,7 +13,6 @@
 #include "private.h"
 
 static GLenum LAST_ERROR = GL_NO_ERROR;
-static char ERROR_FUNCTION[64] = { '\0' };
 
 GL_FORCE_INLINE const char* _glErrorEnumAsString(GLenum error) {
     switch(error) {
@@ -29,8 +28,10 @@ GL_FORCE_INLINE const char* _glErrorEnumAsString(GLenum error) {
 void _glKosThrowError(GLenum error, const char *function) {
     if(LAST_ERROR == GL_NO_ERROR) {
         LAST_ERROR = error;
-        sprintf(ERROR_FUNCTION, "%s\n", function);
-        fprintf(stderr, "GL ERROR: %s when calling %s\n", _glErrorEnumAsString(LAST_ERROR), ERROR_FUNCTION);
+        /* Print the name directly: the old fixed 64-byte sprintf staging
+           buffer was one long __func__ from stack corruption on the error
+           path, and double-printed its newline (AUD-001-OPB-22). */
+        fprintf(stderr, "GL ERROR: %s when calling %s\n", _glErrorEnumAsString(LAST_ERROR), function);
     }
 }
 

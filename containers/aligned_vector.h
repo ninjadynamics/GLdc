@@ -52,7 +52,9 @@ AV_FORCE_INLINE void *AV_MEMCPY4(void *dest, const void *src, size_t len)
   uint32_t diff = (uint32_t)d - (uint32_t)(s + 1); // extra offset because input gets incremented before output is calculated
   // Underflow would be like adding a negative offset
 
-  // Can use 'd' as a scratch reg now
+  // Asm operands must be lvalues (AUD-001-OPA-18)
+  uint32_t in_ = (uint32_t) s;
+  uint32_t scratch_;
   asm volatile (
     "clrs\n" // Align for parallelism (CO) - SH4a use "stc SR, Rn" instead with a dummy Rn
   ".align 2\n"
@@ -61,7 +63,7 @@ AV_FORCE_INLINE void *AV_MEMCPY4(void *dest, const void *src, size_t len)
     "mov.b @%[in]+, %[scratch]\n\t" // scratch = *(s++) (LS 1/2)
     "bf.s 0b\n\t" // while(s != nexts) aka while(!T) (BR 1/2)
     " mov.b %[scratch], @(%[offset], %[in])\n" // *(datatype_of_s*) ((char*)s + diff) = scratch, where src + diff = dest (LS 1)
-    : [in] "+&r" ((uint32_t)s), [scratch] "=&r" ((uint32_t)d), [size] "+&r" (len) // outputs
+    : [in] "+&r" (in_), [scratch] "=&r" (scratch_), [size] "+&r" (len) // outputs
     : [offset] "z" (diff) // inputs
     : "t", "memory" // clobbers
   );

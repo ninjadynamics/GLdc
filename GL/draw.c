@@ -29,7 +29,9 @@ static inline GLuint _parseUIntIndex(const GLubyte* in) {
 }
 
 static inline GLuint _parseUShortIndex(const GLubyte* in) {
-    return *((GLshort*) in);
+    /* UNSIGNED short: the old signed read sign-extended indices >= 32768
+       into ~4G offsets (AUD-001-OPA-06). */
+    return *((const GLushort*) in);
 }
 
 GL_FORCE_INLINE GLsizei index_size(GLenum type) {
@@ -1190,6 +1192,28 @@ static void _glCancelPendingCapture(void) {
     }
 }
 
+/* The fused writer raw-reinterprets client pointers (uint32 color reads,
+   float position reads): anything but the fast-path layout with 4-aligned
+   pointers/strides is an SH4 address-error exception, not a slow path
+   (AUD-001-OPA-02). Mirrors the checks the PUC and holo lanes already do. */
+GL_FORCE_INLINE GLboolean _glFusedLaneCompatible(void) {
+    return ATTRIB_LIST.fast_path &&
+           ((((uintptr_t) ATTRIB_LIST.vertex.ptr) | ATTRIB_LIST.vertex.stride |
+             ((uintptr_t) ATTRIB_LIST.uv.ptr) | ATTRIB_LIST.uv.stride |
+             ((uintptr_t) ATTRIB_LIST.colour.ptr) | ATTRIB_LIST.colour.stride) & 3) == 0;
+}
+
+/* One-shot diagnostic for the TA-sprite entry points: outside their contract
+   they emit nothing, and a silent drop would read as "the city lights
+   vanished" with no clue (AUD-001-OPA-10). */
+static void _glSpriteLaneDropWarn(void) {
+    static GLboolean warned = GL_FALSE;
+    if(!warned) {
+        warned = GL_TRUE;
+        fprintf(stderr, "[GLDC] sprite draw dropped: TNL effects or immediate mode active\n");
+    }
+}
+
 /* City window replay's hot case is not a plain clone: every record is copied,
    recolored to a constant and polygon-offset in succession. The old sequence
    made three complete passes over the destination (shz copy, color patch,
@@ -1232,13 +1256,14 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
 
     PolyList* out = _glActivePolyList();
     const uint32_t vec = aligned_vector_size(&out->vector);
-    const GLboolean header_required = (vec == 0) || _glGPUStateIsDirty();
+    const GLboolean header_required = !out->header_emitted || _glGPUStateIsDirty();
 
     aligned_vector_extend(&out->vector, c->count + (header_required ? 1 : 0));
 
     if(header_required) {
         apply_poly_header((PolyHeader*) aligned_vector_at(&out->vector, vec), GL_FALSE, out, 0);
         _glGPUStateMarkClean();
+        out->header_emitted = GL_TRUE;
     }
 
     /* Resolve source AFTER the extend: a same-list replay would have realloc'd it. */
@@ -1357,12 +1382,26 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
        write flags past the reservation (genTriangles' EOL pass, genQuadStrip's
        pair loop). Per the GL spec excess trailing vertices are IGNORED —
        truncate, and treat a fully-degenerate count as a clean no-op, not a GL
-       error. QUADS and TRIANGLE_STRIP need nothing: genQuads emits whole
-       quads only and a strip has no partial primitive. */
+       error. QUADS truncates too — its trailing partial-quad records were
+       fully initialized but never EOL-terminated (reviewer F10); a strip has
+       no partial primitive but needs 3 vertices to exist at all. */
     switch(mode) {
         case GL_TRIANGLES:
             count -= count % 3;
             if(!count) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        case GL_QUADS:
+            count &= ~3u;
+            if(!count) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        case GL_TRIANGLE_STRIP:
+            if(count < 3) {
                 _glCancelPendingCapture();
                 return;
             }
@@ -1403,7 +1442,7 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
 
     uint32_t vector_size = aligned_vector_size(&target->output->vector);
 
-    GLboolean header_required = (vector_size == 0) || _glGPUStateIsDirty();
+    GLboolean header_required = !target->output->header_emitted || _glGPUStateIsDirty();
 
     target->count = calcFinalVertices(mode, count);
     target->header_offset = vector_size;
@@ -1433,6 +1472,7 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     if(header_required) {
         apply_poly_header(_glSubmissionTargetHeader(target), GL_FALSE, target->output, 0);
         _glGPUStateMarkClean();
+        target->output->header_emitted = GL_TRUE;
     }
 
     _glTnlLoadMatrix();
@@ -1522,7 +1562,7 @@ static Vertex* _glBeginFusedDraw(GLuint total) {
 #endif
 
     const uint32_t vector_size = aligned_vector_size(&target->output->vector);
-    const GLboolean header_required = (vector_size == 0) || _glGPUStateIsDirty();
+    const GLboolean header_required = !target->output->header_emitted || _glGPUStateIsDirty();
 
     target->count = total;
     target->header_offset = vector_size;
@@ -1533,6 +1573,7 @@ static Vertex* _glBeginFusedDraw(GLuint total) {
     if(header_required) {
         apply_poly_header(_glSubmissionTargetHeader(target), GL_FALSE, target->output, 0);
         _glGPUStateMarkClean();
+        target->output->header_emitted = GL_TRUE;
     }
 
     _glTnlLoadMatrix();
@@ -1666,7 +1707,7 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
     }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE || !_glFusedLaneCompatible()) {
         /* Outside the narrow contract: the general path (or its error).
            No capture cancel here — the fallback draws for real and handles
            the pending arm itself. Degenerate strips are skipped so their
@@ -2067,7 +2108,10 @@ void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLs
     TRACE();
 
     if(quads <= 0) return;
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;   /* narrow contract */
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        _glSpriteLaneDropWarn();   /* narrow contract */
+        return;
+    }
 
     _glTnlLoadMatrix();
     SceneSpriteQuads(pos, (const uint32_t*) colors, quads);
@@ -2080,7 +2124,10 @@ void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* color
     TRACE();
 
     if(sprites <= 0) return;
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        _glSpriteLaneDropWarn();
+        return;
+    }
 
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, NULL, NULL, sprites,
@@ -2100,7 +2147,10 @@ void APIENTRY glKosDrawSpriteCentersUVRectScale(const GLfloat* centers,
     TRACE();
 
     if(sprites <= 0) return;
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        _glSpriteLaneDropWarn();
+        return;
+    }
 
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, half_sizes, uv_rects, sprites,
@@ -2121,7 +2171,10 @@ void APIENTRY glKosDrawSpriteCentersUVRectScalePlane(const GLfloat* centers,
     TRACE();
 
     if(sprites <= 0) return;
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        _glSpriteLaneDropWarn();
+        return;
+    }
 
     _glTnlLoadMatrix();
     SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
@@ -2142,7 +2195,10 @@ void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
 
     if(sprites <= 0 || !cells) return;
     if(grid_log2 < 1 || grid_log2 > 3) return;
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        _glSpriteLaneDropWarn();
+        return;
+    }
 
     _glTnlLoadMatrix();
     SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
@@ -2154,6 +2210,9 @@ void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
 void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     TRACE();
 
+    /* Trailing partial primitive: the fused writer would emit its records
+       without an EOL. Truncate like the public GL path does (codex review). */
+    count -= count % 3;
     if(count < 3) {
         _glCancelPendingCapture();
         return;
@@ -2164,7 +2223,7 @@ void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
-    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE || !_glFusedLaneCompatible()) {
         /* Fallback draws for real — it handles the pending arm itself. */
         glDrawArrays(GL_TRIANGLES, first, count);
         return;

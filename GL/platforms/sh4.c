@@ -22,7 +22,7 @@ void _glS3DrainOP(void);
    2x the capped city (CITY_SUBMIT_VCAP) plus the rest of the scene. Costs ~917 KB extra VRAM
    over stock (of 8 MB; framebuffers + VQ textures leave room). The game also caps the city
    submission as a hard backstop, so this size is headroom, not a hard dependency. */
-#define PVR_VERTEX_BUF_SIZE 6144 * 256
+#define PVR_VERTEX_BUF_SIZE (6144 * 256)
 #define PVR_OPB_COUNT       4
 
 #define likely(x)      __builtin_expect(!!(x), 1)
@@ -148,14 +148,6 @@ static void ApplyDeferredFogTable(void) {
     deferredFog.mode = DEFERRED_FOG_NONE;
 }
 
-GL_FORCE_INLINE bool glIsVertex(const float flags) {
-    return flags == GPU_CMD_VERTEX_EOL || flags == GPU_CMD_VERTEX;
-}
-
-GL_FORCE_INLINE bool glIsLastVertex(const float flags) {
-    return flags == GPU_CMD_VERTEX_EOL;
-}
-
 void InitGPU(_Bool autosort, _Bool fsaa) {
     pvr_init_params_t params = {
         /* Bin sizes: opaque, op_modifier, translucent, tr_modifier, punch-through.
@@ -258,12 +250,19 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
     vout->xyz[0] = invt * v1->xyz[0] + t * v2->xyz[0];
     vout->xyz[1] = invt * v1->xyz[1] + t * v2->xyz[1];
     vout->xyz[2] = invt * v1->xyz[2] + t * v2->xyz[2];
-    vout->xyz[2] = (vout->xyz[2] < FLT_EPSILON) ? FLT_EPSILON : vout->xyz[2];
 
     vout->uv[0] = invt * v1->uv[0] + t * v2->uv[0];
     vout->uv[1] = invt * v1->uv[1] + t * v2->uv[1];
 
     vout->w = invt * v1->w + t * v2->w;
+
+    /* Perspective verts overwrite xyz[2] with 1/|w| at divide time, so this
+       floor is inert there; for w==1 ortho verts xyz[2] feeds the ortho depth
+       formula and flooring a legitimately negative clipped z collapsed its
+       depth to ~1.0 (AUD-001-OPA-14). */
+    if(vout->w != 1.0f) {
+        vout->xyz[2] = (vout->xyz[2] < FLT_EPSILON) ? FLT_EPSILON : vout->xyz[2];
+    }
 
     vout->bgra[0] = invt * v1->bgra[0] + t * v2->bgra[0];
     vout->bgra[1] = invt * v1->bgra[1] + t * v2->bgra[1];
@@ -431,7 +430,6 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n) {
             break;
             case NONE_VISIBLE:
                 break;
-            break;
             case FIRST_VISIBLE:
                 _glClipEdge(v0, v1, a);
                 a->flags = GPU_CMD_VERTEX;
@@ -795,6 +793,10 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     pvr_sprite_hdr_t shdr;
     pvr_sprite_compile(&shdr, &sc);
 
+    /* GL polygon-offset parity with SceneSpriteCenters: the finalizer that
+       normally applies it never sees these records (AUD-001-OPA-09). */
+    const float depth_mul = _glPolygonOffsetMul;
+
     uint32_t last_argb = 0;
     int have_hdr = 0;
 
@@ -852,13 +854,13 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
         s->flags = GPU_CMD_VERTEX_EOL;
         s->ax = xyz[k][0][0] * fa;
         s->ay = xyz[k][0][1] * fa;
-        s->az = (w[k][0] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][0][2]) : fa;
+        s->az = ((w[k][0] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][0][2]) : fa) * depth_mul;
         s->bx = xyz[k][1][0] * fb;
         s->by = xyz[k][1][1] * fb;
-        s->bz = (w[k][1] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][1][2]) : fb;
+        s->bz = ((w[k][1] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][1][2]) : fb) * depth_mul;
         s->cx = xyz[k][2][0] * fc;
         s->cy = xyz[k][2][1] * fc;
-        s->cz = (w[k][2] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][2][2]) : fc;
+        s->cz = ((w[k][2] == 1.0f) ? _glFastInvert(1.0001f + xyz[k][2][2]) : fc) * depth_mul;
         s->dx = xyz[k][3][0] * fd;
         s->dy = xyz[k][3][1] * fd;
         s->dummy = 0;
@@ -1027,6 +1029,9 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     pvr_sprite_hdr_t shdr;
     _glCompileCurrentSpriteHeader(out, &shdr);
 
+    /* GL polygon-offset parity (AUD-001-OPA-09), hoisted once per call. */
+    const float depth_mul = _glPolygonOffsetMul;
+
     float tu[3], tv[3], uw, vw;
     TransformVertex(ux, uy, uz, 0.0f, tu, &uw);
     TransformVertex(vx, vy, vz, 0.0f, tv, &vw);
@@ -1053,7 +1058,14 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
         switch(grid_log2) {
             case 1: cell_uv = cell_uv_2x2; break;
             case 2: cell_uv = cell_uv_4x4; break;
-            default: cell_uv = cell_uv_8x8; break;
+            case 3: cell_uv = cell_uv_8x8; break;
+            default:
+                /* The banks (and cell_uv_inset[4]) top out at 8x8: a larger
+                   grid would overrun both (AUD-001-OPA-11). The public
+                   wrapper guards 1..3; keep the internal contract loud. */
+                gl_assert(0 && "grid_log2 out of range");
+                cell_uv = cell_uv_8x8;
+                break;
         }
         cell_mask = grid * grid - 1;
         if(!(cell_uv_valid & cache_bit) || inset != cell_uv_inset[grid_log2]) {
@@ -1123,8 +1135,12 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
             const float svx = tv[0] * hs;
             const float svy = tv[1] * hs;
             const float invw = _glFastInvert(cw[k]);
-            const float z = (cw[k] == 1.0f)
-                ? _glFastInvert(1.0001f + tc[k][2]) : invw;
+            /* GL polygon-offset parity with the Centers lane
+               (AUD-001-OPA-09). depth_mul is hoisted: the float stores
+               through the batch pointer would otherwise force GCC to
+               re-load the global every sprite (may-alias). */
+            const float z = ((cw[k] == 1.0f)
+                ? _glFastInvert(1.0001f + tc[k][2]) : invw) * depth_mul;
 
             s->flags = GPU_CMD_VERTEX_EOL;
             s->ax = (tc[k][0] - sux - svx) * invw;

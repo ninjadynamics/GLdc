@@ -14,8 +14,10 @@
 
 
 /* Depth range */
-GLfloat DEPTH_RANGE_MULTIPLIER_L = (1 - 0) / 2;
-GLfloat DEPTH_RANGE_MULTIPLIER_H = (0 + 1) / 2;
+/* 0.5f, not integer `1 / 2` == 0 (AUD-001-OPB-24); harmless only because
+   _glInitMatrices calls glDepthRange before any draw — now correct anyway. */
+GLfloat DEPTH_RANGE_MULTIPLIER_L = 0.5f;
+GLfloat DEPTH_RANGE_MULTIPLIER_H = 0.5f;
 
 static Stack __attribute__((aligned(32))) MATRIX_STACKS[4]; // modelview, projection, texture
 static Matrix4x4 __attribute__((aligned(32))) NORMAL_MATRIX;
@@ -381,12 +383,12 @@ void glLoadTransposeMatrixf(const GLfloat *m) {
     TEMP[M6] = m[9];
     TEMP[M7] = m[13];
 
-    TEMP[M8] = m[3];
+    TEMP[M8] = m[2];
     TEMP[M9] = m[6];
     TEMP[M10] = m[10];
     TEMP[M11] = m[14];
 
-    TEMP[M12] = m[4];
+    TEMP[M12] = m[3];
     TEMP[M13] = m[7];
     TEMP[M14] = m[11];
     TEMP[M15] = m[15];
@@ -409,12 +411,12 @@ void glMultTransposeMatrixf(const GLfloat *m) {
     tmp[M6] = m[9];
     tmp[M7] = m[13];
 
-    tmp[M8] = m[3];
+    tmp[M8] = m[2];
     tmp[M9] = m[6];
     tmp[M10] = m[10];
     tmp[M11] = m[14];
 
-    tmp[M12] = m[4];
+    tmp[M12] = m[3];
     tmp[M13] = m[7];
     tmp[M14] = m[11];
     tmp[M15] = m[15];

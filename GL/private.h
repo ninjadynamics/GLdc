@@ -107,6 +107,11 @@ typedef struct {
        already screen-space — SQ'd verbatim after the list's vertex stream and
        cleared with it. Additive/order-free content only (it lands at list end). */
     AlignedVector sprites;
+    /* A poly header has been emitted since the last clear. Explicit state,
+       NOT inferred from vector size: the scissor userclip record also
+       occupies the vector, so "size != 0" lied about the header on
+       scissor-enabled frames (AUD-001-OPA-08). Reset by clear_lists(). */
+    GLboolean header_emitted;
 } PolyList;
 
 typedef struct {
@@ -230,6 +235,10 @@ GL_FORCE_INLINE float clamp(float d, float min, float max) {
 GL_FORCE_INLINE void memcpy_vertex(Vertex *dest, const Vertex *src) {
 #ifdef _arch_dreamcast
     _Complex float double_scratch;
+    /* Asm output operands must be lvalues — the old casts only happened to
+       compile on older GCC front ends (AUD-001-OPA-18). */
+    uint32_t in_ = (uint32_t) src;
+    uint32_t out_ = (uint32_t) dest;
 
     asm volatile (
         "fschg\n\t"
@@ -247,7 +256,7 @@ GL_FORCE_INLINE void memcpy_vertex(Vertex *dest, const Vertex *src) {
         "add #8, %[out]\n\t"
         "fmov.d %[scratch], @%[out]\n\t"
         "fschg\n"
-        : [in] "+&r" ((uint32_t) src), [scratch] "=&d" (double_scratch), [out] "+&r" ((uint32_t) dest)
+        : [in] "+&r" (in_), [scratch] "=&d" (double_scratch), [out] "+&r" (out_)
         :
         : "t", "memory" // clobbers
     );
@@ -354,7 +363,9 @@ GLubyte _glInitTextures();
 
 void _glUpdatePVRTextureContext(PolyContext* context, GLshort textureUnit);
 void _glBuildPolyContext(PolyContext* ctx, PolyList* activePolyList, GLshort textureUnit);
-void _glAllocateSpaceForMipmaps(TextureObject* active);
+/* GL_FALSE = scratch allocation failed; the texture is untouched and
+   GL_OUT_OF_MEMORY is already set — the caller must abort the upload. */
+GLboolean _glAllocateSpaceForMipmaps(TextureObject* active);
 
 typedef struct {
     const void* ptr;  // 4
@@ -384,7 +395,7 @@ typedef struct {
 
 extern AttribPointerList ATTRIB_LIST;
 
-GLboolean _glCheckValidEnum(GLint param, GLint* values, const char* func);
+GLboolean _glCheckValidEnum(GLint param, const GLint* values, const char* func);
 
 GLuint* _glGetEnabledAttributes();
 GL_NO_INLINE void _glUpdateAttributes();
@@ -474,6 +485,7 @@ void _glApplyScissor(bool force);
 void _glSetColorMaterialMask(GLenum mask);
 void _glSetColorMaterialMode(GLenum mode);
 GLenum _glColorMaterialMode();
+GLenum _glColorMaterialMask();
 
 Material* _glActiveMaterial();
 void _glSetLightModelViewerInEyeCoordinates(GLboolean v);
