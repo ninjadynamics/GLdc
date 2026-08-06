@@ -43,8 +43,28 @@ void* aligned_vector_reserve(AlignedVector* vector, uint32_t element_count) {
 
     uint32_t original_byte_size = (hdr->size * hdr->element_size);
 
+    /* Overflow must be LOUD in Release (AUD-001-OPA-19/OPA-07), and the guard
+       must run on the RAW request: ROUND_TO_CHUNK_SIZE itself wraps above
+       UINT32_MAX-255, and the growth bump below adds up to 2048+256 more —
+       the 4096 headroom covers both, so the byte-size multiply cannot wrap.
+       Cold path — only reached when actually growing. */
+    av_assert(element_count < UINT32_MAX / hdr->element_size - 4096u);
+
     /* We overallocate so that we don't make small allocations during push backs */
     element_count = ROUND_TO_CHUNK_SIZE(element_count);
+
+    /* Bounded growth (AUD-001-OPA-03): exact-fit growth memcpys the whole
+       accumulated vector every 256 elements — an O(N^2/512)-byte copy cascade
+       on a first-peak climb. Growing by min(capacity/2, 2048) elements past
+       the request is geometric below 4096 elements and linear (+2048 steps)
+       above — roughly 8x fewer copies at city peaks — while capping the
+       overshoot at 2048 elements (64 KiB for 32-byte records) per vector. */
+    {
+        uint32_t half = hdr->capacity / 2;
+        uint32_t bump = (half > 2048u) ? 2048u : half;
+        uint32_t grown = hdr->capacity + bump;
+        if(grown > element_count) element_count = ROUND_TO_CHUNK_SIZE(grown);
+    }
 
     uint32_t new_byte_size = (element_count * hdr->element_size);
     uint8_t* original_data = vector->data;
@@ -55,7 +75,7 @@ void* aligned_vector_reserve(AlignedVector* vector, uint32_t element_count) {
             vector->data = (unsigned char*) memalign(0x20, new_byte_size);
     #endif
 
-    assert(vector->data);
+    av_assert(vector->data);
 
     AV_MEMCPY4(vector->data, original_data, original_byte_size);
     free(original_data);
@@ -82,6 +102,7 @@ void aligned_vector_shrink_to_fit(AlignedVector* vector) {
 #else
         vector->data = (unsigned char*) memalign(0x20, new_byte_size);
 #endif
+        av_assert(vector->data);
         if(original_data) {
             FASTCPY(vector->data, original_data, new_byte_size);
             free(original_data);

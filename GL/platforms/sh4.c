@@ -885,7 +885,9 @@ uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
+#if GLDC_SWAP_TELEMETRY
     const uint64_t spr_t0 = timer_us_gettime64();
+#endif
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
 
@@ -993,7 +995,9 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
         }
     }
     aligned_vector_resize(sv, base_blocks + used_blocks);
+#if GLDC_SWAP_TELEMETRY
     _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
+#endif
 }
 
 /* Camera-plane center lane. A view-plane billboard has equal homogeneous W
@@ -1014,7 +1018,9 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                              int grid_log2, float inset,
                              float ux, float uy, float uz,
                              float vx, float vy, float vz) {
+#if GLDC_SWAP_TELEMETRY
     const uint64_t spr_t0 = timer_us_gettime64();
+#endif
     PolyList* out = _glActivePolyList();
     AlignedVector* sv = &out->sprites;
 
@@ -1154,7 +1160,9 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     aligned_vector_resize(sv, base_blocks + used_blocks);
     _glSpriteHdrCount += hdrs;
     _glSpriteRecCount += (used_blocks - hdrs) >> 1;
+#if GLDC_SWAP_TELEMETRY
     _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
+#endif
 }
 
 /* SQ a finished sprite sidecar verbatim (records are pre-divided, pre-compiled).

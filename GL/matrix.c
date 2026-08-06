@@ -80,6 +80,9 @@ void _glInitMatrices() {
     glViewport(0, 0, vid_mode->width, vid_mode->height);
 }
 
+/* Non-SH4ZAM normal-matrix fallback (UpdateNormalMatrix below); compiled out
+   in the shipping config. */
+#ifndef USE_SH4ZAM
 #define swap(a, b) { \
     GLfloat x = (a); \
     a = b; \
@@ -113,9 +116,10 @@ static void transpose(GLfloat* m) {
     swap(m[2], m[8]);
     swap(m[3], m[12]);
     swap(m[6], m[9]);
-    swap(m[7], m[3]);
+    swap(m[7], m[13]);   /* was m[3]: a 3-cycle, not a transpose (AUD-001-OPB-14) */
     swap(m[11], m[14]);
 }
+#endif  /* !USE_SH4ZAM */
 
 /* XMTRX <- a . b (load a, apply b), pipelined under SH4ZAM. Result stays live
    in XMTRX (no store) — for callers that then transform vertices. */

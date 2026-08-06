@@ -72,9 +72,20 @@ static void calc_twiddle_factors(uint32_t w, uint32_t h, uint32_t* maskX, uint32
     }
 }
 
-void build_twiddle_table(int32_t w, int32_t h) {
+GLboolean build_twiddle_table(int32_t w, int32_t h) {
     free(TWIDDLE_TABLE.table);
     TWIDDLE_TABLE.table = (int32_t*) malloc(w * h * sizeof(int32_t));
+
+    /* 4 B/texel from the main-RAM heap (a 512x512 upload needs a contiguous
+       1 MiB block) — a realistic failure on a 16 MiB console. Leave a
+       consistent empty table so a later upload retries cleanly; the caller
+       must NOT touch twid_location (AUD-001-OPB-05). */
+    if(!TWIDDLE_TABLE.table) {
+        TWIDDLE_TABLE.width = 0;
+        TWIDDLE_TABLE.height = 0;
+        return GL_FALSE;
+    }
+
     TWIDDLE_TABLE.width = w;
     TWIDDLE_TABLE.height = h;
 
@@ -90,12 +101,16 @@ void build_twiddle_table(int32_t w, int32_t h) {
         }
         idxY = (idxY - maskY) & maskY;
     }
+    return GL_TRUE;
 }
 
-static void twid_prepare_table(uint32_t w, uint32_t h) {
+/* GL_FALSE means the table is unavailable — the caller must bail (throwing
+   GL_OUT_OF_MEMORY) before any twid_location access. */
+static GLboolean twid_prepare_table(uint32_t w, uint32_t h) {
     if(TWIDDLE_TABLE.width != w || TWIDDLE_TABLE.height != h || !TWIDDLE_TABLE.table) {
-        build_twiddle_table(w, h);
+        return build_twiddle_table(w, h);
     }
+    return GL_TRUE;
 }
 
 /* Given a 0-based texel location, returns new 0-based texel location */
@@ -667,7 +682,17 @@ static int DEFERRED_FREE_COUNT = 0;
 static void _glDeferFree(void* data, GLshort bank, GLushort size) {
     if(DEFERRED_FREE_COUNT >= GLDC_DEFERRED_FREES) {
         /* Overflow: fall back to the old immediate free — worst case is the old
-           one-frame artifact for this texture, never a leak. */
+           one-frame artifact for this texture, never a leak. Say so ONCE:
+           silent overflow would reintroduce the corruption the queue exists to
+           prevent with no way to observe the ceiling, but a full-reset bulk
+           unload overflows per-texture and a print per record would stall the
+           teardown for hundreds of ms over dcload (Audit #001). */
+        static GLboolean warned = GL_FALSE;
+        if(!warned) {
+            warned = GL_TRUE;
+            fprintf(stderr, "[GLDC] deferred-free queue overflow (cap %d): immediate free\n",
+                    GLDC_DEFERRED_FREES);
+        }
         if(data) alloc_free(ALLOC_BASE, data);
         if(bank > -1) _glReleasePaletteSlot(bank, size);
         return;
@@ -1902,7 +1927,11 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             if(is4BPPFormat(internalFormat) && is4BPPFormat(format)) {
                 // Special case twiddling. We have to unpack each src value
                 // and repack into the right place
-                twid_prepare_table(width, height);
+                if(!twid_prepare_table(width, height)) {
+                    free(conversionBuffer);
+                    _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+                    return;
+                }
 
                 for(uint32_t i = 0; i < (width * height); ++i) {
                     uint32_t newLocation = twid_location(i);
@@ -1925,7 +1954,11 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                     }
                 }
             } else {
-                twid_prepare_table(width, height);
+                if(!twid_prepare_table(width, height)) {
+                    free(conversionBuffer);
+                    _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+                    return;
+                }
 
                 for(uint32_t i = 0; i < (width * height); ++i) {
                     uint32_t newLocation = twid_location(i);
@@ -1939,7 +1972,11 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
             }
         } else if(needs_conversion == 3) {
             // Convert + twiddle
-            twid_prepare_table(width, height);
+            if(!twid_prepare_table(width, height)) {
+                free(conversionBuffer);
+                _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+                return;
+            }
 
             for(uint32_t i = 0; i < (width * height); ++i) {
                 uint32_t newLocation = twid_location(i);
@@ -2340,6 +2377,13 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
     if (needs_conversion > 0) {
         GLubyte* conversionBuffer = (GLubyte*) memalign(32, destBytes);
 
+        /* Same bail as glTexImage2D's scratch: never memset/convert through
+           NULL on allocator exhaustion. */
+        if (!conversionBuffer) {
+            _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+            return;
+        }
+
         const GLubyte* src = data;
         GLubyte* dst = conversionBuffer;
 
@@ -2360,7 +2404,11 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
                 }
             }
         } else if (needs_conversion == 2 || needs_conversion == 3) {
-            twid_prepare_table(textureWidth, textureHeight);
+            if(!twid_prepare_table(textureWidth, textureHeight)) {
+                free(conversionBuffer);
+                _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
+                return;
+            }
 
             for (uint32_t y = yoffset; y < yoffset + height; ++y) {
                 for (uint32_t x = xoffset; x < xoffset + width; ++x) {

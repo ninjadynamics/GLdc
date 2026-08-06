@@ -35,3 +35,14 @@
 #ifndef GLDC_GOLD_BLOCK
 #define GLDC_GOLD_BLOCK 0
 #endif
+
+/* [GLDC-T] swap-time telemetry (2026-07-15/31 investigations): flush.c's
+   wait/op/pt/tr/fin split + the sh4.c sprite-lane timers (sprcall=). Lives
+   here (not flush.c) so BOTH files compile it out together — the sprite
+   timers used to run unconditionally (Audit #001 OPA-12). 0 removes the
+   timer sampling and the print; the cheap event counters (grow=, hdr/rec)
+   still tick. Override without editing: make gldc GLDC_SWAP_TELEMETRY=0
+   (if the wrapper forwards it) or flip the default below. */
+#ifndef GLDC_SWAP_TELEMETRY
+#define GLDC_SWAP_TELEMETRY 1   /* bottleneck hunt 2026-07-31: [GLDC-T] split ON — return to 0 after */
+#endif

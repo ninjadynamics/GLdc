@@ -502,7 +502,14 @@ void _glGPUStateMarkDirty();
 
 void _glTnlLoadMatrix(void);
 void _glTnlApplyEffects(SubmissionTarget* target);
-GLboolean _glTnlEffectsActive(void);
+
+/* The fused draw lanes (draw.c) go straight to clip space and skip
+   _glTnlApplyEffects — they must fall back to the general path whenever any
+   effect is live. Per-draw gate on hot lanes: a plain load, not a call. */
+extern int TNL_EFFECTS;
+GL_FORCE_INLINE GLboolean _glTnlEffectsActive(void) {
+    return TNL_EFFECTS != 0;
+}
 
 void _glTnlUpdateLighting(void);
 void _glTnlUpdateTextureMatrix(void);

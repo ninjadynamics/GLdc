@@ -74,7 +74,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.04 22:45]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.06 08:25]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -163,11 +163,8 @@ extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM rel
    pvr_wait_ready (previous-frame PVR wait) together with the three SceneListSubmit walks
    and scene finish — a submission win is invisible until these are split. Rate-limited
    aggregate print every 600 swaps; near-zero cost otherwise.
-   GLDC_SWAP_TELEMETRY 0 (default) compiles the sampling AND the [GLDC-T] print out
-   entirely — flip to 1 when the swap split is being investigated. */
-#ifndef GLDC_SWAP_TELEMETRY
-#define GLDC_SWAP_TELEMETRY 1   /* bottleneck hunt 2026-07-31: [GLDC-T] wait/op/pt/tr split ON — return to 0 after */
-#endif
+   GLDC_SWAP_TELEMETRY lives in config.h (sh4.c's sprite-lane timers share it —
+   Audit #001 OPA-12); 0 compiles the sampling AND the [GLDC-T] print out entirely. */
 #if GLDC_SWAP_TELEMETRY
 #include <arch/timer.h>
 #include <stdio.h>

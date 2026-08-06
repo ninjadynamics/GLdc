@@ -893,7 +893,9 @@ static void generate(SubmissionTarget* target, const GLenum mode, const GLsizei 
     if(ATTRIB_LIST.fast_path) {
         GLDC_STAT_INC(fast_path_hits);
 
-        /* Patch C: Specialized P+UV+Color dispatch — skips ST/Normal entirely */
+        /* Patch C: Specialized P+UV+Color dispatch — skips ST/Normal entirely.
+           submitVertices' extras-resize skip mirrors this condition — keep in
+           sync. */
         if(!indices && (ATTRIB_LIST.enabled & (ST_ENABLED_FLAG | NORMAL_ENABLED_FLAG)) == 0) {
             switch(mode) {
                 case GL_QUADS:
@@ -1172,6 +1174,22 @@ void _glInvalidateCapturedArrays(void) {
     CAPTURE_PENDING = -1;
 }
 
+/* A draw attempt that emits nothing must not leave a pending capture armed:
+   the arm would latch onto the NEXT unrelated draw and the paired replay
+   would clone foreign geometry (AUD-001-OPA-01). Cancelling clears the SLOT
+   too, so that replay becomes a clean no-op instead. Called only on no-op /
+   error exits — never on a draw that emits vertices, so the hot path never
+   pays for it. NOT called when a fused lane falls back to glDrawArrays: the
+   fallback performs (and captures) the real draw. The TA-sprite lanes are
+   outside the capture system entirely — they neither consume nor cancel the
+   arm; only vertex-vector draws do. */
+static void _glCancelPendingCapture(void) {
+    if(CAPTURE_PENDING >= 0) {
+        CAPTURED_SPANS[CAPTURE_PENDING].count = 0;
+        CAPTURE_PENDING = -1;
+    }
+}
+
 /* City window replay's hot case is not a plain clone: every record is copied,
    recolored to a constant and polygon-offset in succession. The old sequence
    made three complete passes over the destination (shz copy, color patch,
@@ -1301,11 +1319,17 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     GLDC_STAT_ADD(vertices_transformed, count);
 
     /* Do nothing if vertices aren't enabled */
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+        _glCancelPendingCapture();
+        return;
+    }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     /* No vertices? Do nothing */
-    if(!count) return;
+    if(!count) {
+        _glCancelPendingCapture();
+        return;
+    }
 
     /* Polygons are treated as triangle fans, the only time this would be a
      * problem is if we supported glPolygonMode(..., GL_LINE) but we don't.
@@ -1325,6 +1349,46 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
             default:
                 mode = GL_TRIANGLE_FAN;
         }
+    }
+
+    /* Degenerate primitive counts (AUD-001-OPA-05): calcFinalVertices()
+       returns fewer records than the generators write below these minimums
+       (heap overflow / GLuint underflow), and partial trailing primitives
+       write flags past the reservation (genTriangles' EOL pass, genQuadStrip's
+       pair loop). Per the GL spec excess trailing vertices are IGNORED —
+       truncate, and treat a fully-degenerate count as a clean no-op, not a GL
+       error. QUADS and TRIANGLE_STRIP need nothing: genQuads emits whole
+       quads only and a strip has no partial primitive. */
+    switch(mode) {
+        case GL_TRIANGLES:
+            count -= count % 3;
+            if(!count) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        case GL_QUAD_STRIP:
+            count &= ~1u;
+            if(count < 4) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        case GL_TRIANGLE_FAN:
+            if(count < 3) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        case GL_LINES:
+        case GL_LINE_STRIP:
+            if(count < 2) {
+                _glCancelPendingCapture();
+                return;
+            }
+            break;
+        default:
+            break;
     }
 
     target->output = _glActivePolyList();
@@ -1348,8 +1412,20 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     gl_assert(target->start_offset >= target->header_offset);
     gl_assert(target->count);
 
-    /* Make sure we have enough room for all the "extra" data */
-    aligned_vector_resize(extras, target->count);
+    /* Make sure we have enough room for all the "extra" data. The PUC
+       generators are the only ones that never touch VERTEX_EXTRAS — mirror
+       their dispatch condition in generate() EXACTLY and skip the grow for
+       them (AUD-001-OPA-04: the vector otherwise grows to the peak per-draw
+       vertex count as pure garbage). TNL effects read extras regardless of
+       generator, so they force the resize. Keep in sync with generate(). */
+    const GLboolean puc_skips_extras =
+        ATTRIB_LIST.fast_path && !indices &&
+        (ATTRIB_LIST.enabled & (ST_ENABLED_FLAG | NORMAL_ENABLED_FLAG)) == 0 &&
+        (mode == GL_QUADS || mode == GL_TRIANGLES) &&
+        !_glTnlEffectsActive();
+    if(!puc_skips_extras) {
+        aligned_vector_resize(extras, target->count);
+    }
 
     /* Make room for the vertices and header */
     aligned_vector_extend(&target->output->vector, target->count + (header_required));
@@ -1580,21 +1656,43 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
 void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n) {
     TRACE();
 
-    if(n <= 0) return;
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+    if(n <= 0) {
+        _glCancelPendingCapture();
+        return;
+    }
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+        _glCancelPendingCapture();
+        return;
+    }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
-        /* Outside the narrow contract: the general path (or its error). */
+        /* Outside the narrow contract: the general path (or its error).
+           No capture cancel here — the fallback draws for real and handles
+           the pending arm itself. Degenerate strips are skipped so their
+           no-op glDrawArrays cannot cancel the arm meant for a REAL strip
+           later in this batch. */
+        GLboolean drew = GL_FALSE;
         for(GLsizei s = 0; s < n; ++s) {
+            if(counts[s] < 3) continue;
             glDrawArrays(GL_TRIANGLE_STRIP, firsts[s], counts[s]);
+            drew = GL_TRUE;
         }
+        if(!drew) _glCancelPendingCapture();
         return;
     }
 
+    /* Degenerate strips are excluded from the reservation AND the emit loop:
+       a negative count would otherwise shrink the reservation the positive
+       strips then overrun. */
     GLsizei total = 0;
-    for(GLsizei i = 0; i < n; ++i) total += counts[i];
-    if(total < 3) return;
+    for(GLsizei i = 0; i < n; ++i) {
+        if(counts[i] >= 3) total += counts[i];
+    }
+    if(total < 3) {
+        _glCancelPendingCapture();
+        return;
+    }
 
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint) total);
@@ -1608,6 +1706,7 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
     Vertex* it = _glBeginFusedDraw((GLuint) total);
 
     for(GLsizei s = 0; s < n; ++s) {
+        if(counts[s] < 3) continue;   /* excluded from the reservation above */
         const GLubyte* pp = ATTRIB_LIST.vertex.ptr + firsts[s] * pstride;
         const GLubyte* up = has_uv  ? ATTRIB_LIST.uv.ptr     + firsts[s] * ustride : NULL;
         const GLubyte* cp = has_col ? ATTRIB_LIST.colour.ptr + firsts[s] * cstride : NULL;
@@ -1689,8 +1788,14 @@ GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
         const GLint* firsts, const GLsizei* counts, GLsizei n) {
     TRACE();
 
-    if(n <= 0 || !firsts || !counts) return 0;
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return 0;
+    if(n <= 0 || !firsts || !counts) {
+        _glCancelPendingCapture();
+        return 0;
+    }
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+        _glCancelPendingCapture();
+        return 0;
+    }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     GLboolean valid_counts = GL_TRUE;
@@ -1700,8 +1805,12 @@ GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
             break;
         }
     }
-    if(!valid_counts || !_glHoloLaneCompatible())
-        return _glHoloFallbackQuads(firsts, counts, n);
+    if(!valid_counts || !_glHoloLaneCompatible()) {
+        const GLsizei drew = _glHoloFallbackQuads(firsts, counts, n);
+        /* A fallback that emitted nothing must not leave the arm pending. */
+        if(drew == 0) _glCancelPendingCapture();
+        return drew;
+    }
 
     const GLuint pstride = ATTRIB_LIST.vertex.stride;
     const GLuint ustride = ATTRIB_LIST.uv.stride;
@@ -1719,7 +1828,12 @@ GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
             if(!_glHoloQuadCollapsed(pp, pstride)) ++active_quads;
         }
     }
-    if(active_quads == 0) return 0;
+    if(active_quads == 0) {
+        /* Whole batch collapsed (hidden marquee slots) — emits nothing, the
+           live AUD-001-OPA-01 trigger on this lane. */
+        _glCancelPendingCapture();
+        return 0;
+    }
 
     const GLsizei output_count = active_quads << 2;
     GLDC_STAT_INC(submit_vertices_calls);
@@ -1833,8 +1947,14 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
         const GLint* firsts, const GLsizei* counts, GLsizei n) {
     TRACE();
 
-    if(n <= 0 || !firsts || !counts) return 0;
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return 0;
+    if(n <= 0 || !firsts || !counts) {
+        _glCancelPendingCapture();
+        return 0;
+    }
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+        _glCancelPendingCapture();
+        return 0;
+    }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     GLboolean valid_counts = GL_TRUE;
@@ -1844,8 +1964,12 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
             break;
         }
     }
-    if(!valid_counts || !_glHoloLaneCompatible())
-        return _glHoloFallbackQuads(firsts, counts, n);
+    if(!valid_counts || !_glHoloLaneCompatible()) {
+        const GLsizei drew = _glHoloFallbackQuads(firsts, counts, n);
+        /* A fallback that emitted nothing must not leave the arm pending. */
+        if(drew == 0) _glCancelPendingCapture();
+        return drew;
+    }
 
     const GLuint pstride = ATTRIB_LIST.vertex.stride;
     const GLuint ustride = ATTRIB_LIST.uv.stride;
@@ -1870,7 +1994,10 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
             }
         }
     }
-    if(output_count <= 0) return 0;
+    if(output_count <= 0) {
+        _glCancelPendingCapture();
+        return 0;
+    }
 
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint)(output_count - (seam_count << 1)));
@@ -2027,11 +2154,18 @@ void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
 void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     TRACE();
 
-    if(count < 3) return;
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+    if(count < 3) {
+        _glCancelPendingCapture();
+        return;
+    }
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+        _glCancelPendingCapture();
+        return;
+    }
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        /* Fallback draws for real — it handles the pending arm itself. */
         glDrawArrays(GL_TRIANGLES, first, count);
         return;
     }
@@ -2056,6 +2190,17 @@ void APIENTRY glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvo
     GLDC_STAT_INC(draw_elements_calls);
 
     if(_glCheckImmediateModeInactive(__func__)) {
+        _glCancelPendingCapture();
+        return;
+    }
+
+    /* Validate while the count is still signed (AUD-001-OPA-07): negative is
+       a GL error, zero a valid no-op; both emit nothing, so neither may leave
+       a pending capture armed. submitVertices takes GLuint — a negative
+       slipping through would reserve gigabytes. */
+    if(count <= 0) {
+        if(count < 0) _glKosThrowError(GL_INVALID_VALUE, __func__);
+        _glCancelPendingCapture();
         return;
     }
 
@@ -2067,6 +2212,14 @@ void APIENTRY glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     GLDC_STAT_INC(draw_arrays_calls);
 
     if(_glCheckImmediateModeInactive(__func__)) {
+        _glCancelPendingCapture();
+        return;
+    }
+
+    /* Same signed-count contract as glDrawElements (AUD-001-OPA-07). */
+    if(count <= 0) {
+        if(count < 0) _glKosThrowError(GL_INVALID_VALUE, __func__);
+        _glCancelPendingCapture();
         return;
     }
 

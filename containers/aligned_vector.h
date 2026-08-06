@@ -142,8 +142,9 @@ AV_FORCE_INLINE void* aligned_vector_resize(AlignedVector* vector, const uint32_
     uint32_t previous_count = hdr->size;
     if(previous_count < element_count) {
         if(hdr->capacity < element_count) {
-            /* If we didn't have capacity, increase capacity (slow). Exact
-               capacity is sufficient and must not force a same-size realloc. */
+            /* If we didn't have capacity, increase capacity (slow). The growth
+               policy lives in reserve (bounded over-allocation); a satisfied
+               capacity must never force a same-size realloc. */
             aligned_vector_reserve(vector, element_count);
         }
         ret = vector->data + previous_count * hdr->element_size;

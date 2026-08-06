@@ -8,7 +8,8 @@
 #include "private.h"
 #include "platform.h"
 
-static int TNL_EFFECTS, TNL_LIGHTING, TNL_TEXTURE, TNL_COLOR;
+int TNL_EFFECTS;   /* read inline by _glTnlEffectsActive (private.h) — per-draw gate */
+static int TNL_LIGHTING, TNL_TEXTURE, TNL_COLOR;
 
 #define ITERATE(count) \
     GLuint i = count; \
@@ -31,13 +32,6 @@ void _glTnlLoadMatrix(void) {
 
 static void updateEffects(void) {
     TNL_EFFECTS = TNL_LIGHTING | TNL_TEXTURE | TNL_COLOR;
-}
-
-/* The fused draw lanes (draw.c) go straight to clip space and skip
-   _glTnlApplyEffects — they must fall back to the general path whenever any
-   effect is live. */
-GLboolean _glTnlEffectsActive(void) {
-    return TNL_EFFECTS != 0;
 }
 
 static void transformVertices(SubmissionTarget* target) {
@@ -83,7 +77,6 @@ static void textureEffect(SubmissionTarget* target) {
     Matrix4x4* m = _glGetTextureMatrix();
     UploadMatrix4x4(m);
     float coords[4];
-    float* ptr = (float*)m;
 
     Vertex* it     = _glSubmissionTargetStart(target);
     uint32_t count = target->count;

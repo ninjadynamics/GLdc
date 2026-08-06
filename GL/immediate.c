@@ -24,11 +24,6 @@ static GLfloat __attribute__((aligned(32))) ST_COORD[2] = {0.0f, 0.0f};
 static AlignedVector VERTICES;
 static AttribPointerList IM_ATTRIBS;
 
-/* We store the list of attributes that have been "enabled" by a call to
-  glColor, glNormal, glTexCoord etc. otherwise we already have defaults that
-  can be applied faster */
-static GLuint IM_ENABLED_VERTEX_ATTRIBUTES = 0;
-
 typedef struct __attribute__((aligned(32))) {
     GLfloat x;
     GLfloat y;
