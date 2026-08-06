@@ -44,5 +44,5 @@
    still tick. Override without editing: make gldc GLDC_SWAP_TELEMETRY=0
    (if the wrapper forwards it) or flip the default below. */
 #ifndef GLDC_SWAP_TELEMETRY
-#define GLDC_SWAP_TELEMETRY 1   /* bottleneck hunt 2026-07-31: [GLDC-T] split ON — return to 0 after */
+#define GLDC_SWAP_TELEMETRY 0   /* returned to 0 (2026-08-06, quiet/ship profile) after the 2026-07-31 hunt */
 #endif

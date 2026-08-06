@@ -59,7 +59,12 @@ else()
     set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -ffast-math")
 endif()
 
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -fexpensive-optimizations -fomit-frame-pointer -finline-functions")
+# -DNDEBUG: the KOS toolchain file never seeds it, so plain assert() has been
+# LIVE in every Release build to date (Audit #001, 2026-08-06) — including the
+# hot submission containers (aligned_vector_at). With it defined, gl_assert
+# switches to its guru-fault leg (print + forced misaligned write -> the host
+# crash screen), so every critical guard remains fatal-and-visible.
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG -fexpensive-optimizations -fomit-frame-pointer -finline-functions")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -std=c++14 -O3 -g0 -s -fomit-frame-pointer -fstrict-aliasing")
 
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3 -fexpensive-optimizations -fomit-frame-pointer -finline-functions")
