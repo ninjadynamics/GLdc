@@ -28,6 +28,7 @@ static struct {
     GLboolean normalize_enabled;
     GLboolean scissor_test_enabled;
     GLboolean fog_enabled;
+    GLboolean vertex_paint_enabled;
     GLboolean depth_mask_enabled;
 
     struct {
@@ -71,6 +72,7 @@ static struct {
     .normalize_enabled = GL_FALSE,
     .scissor_test_enabled = GL_FALSE,
     .fog_enabled = GL_FALSE,
+    .vertex_paint_enabled = GL_FALSE,
     .depth_mask_enabled = GL_FALSE,
     .scissor_rect = {0, 0, 640, 480, false},
     .blend_sfactor = GL_ONE,
@@ -86,6 +88,29 @@ static struct {
     .enabled_light_count = 0,
     .shade_model = GL_SMOOTH
 };
+
+/* The paint target is shared by HyperSolar's disc and roads. It persists after
+   disable because list submission happens later; each polygon header records
+   whether its following vertices use the offset-color combiner. */
+static uint32_t VERTEX_PAINT_COLOR = 0;
+
+void APIENTRY glKosVertexPaint(GLboolean enabled, GLubyte r, GLubyte g, GLubyte b) {
+    const uint32_t color = PACK_ARGB8888(0, r, g, b);
+    enabled = enabled ? GL_TRUE : GL_FALSE;
+    if(GPUState.vertex_paint_enabled != enabled || VERTEX_PAINT_COLOR != color) {
+        GPUState.vertex_paint_enabled = enabled;
+        VERTEX_PAINT_COLOR = color;
+        _glGPUStateMarkDirty();
+    }
+}
+
+GLboolean _glVertexPaintEnabled(void) {
+    return GPUState.vertex_paint_enabled;
+}
+
+uint32_t _glVertexPaintColor(void) {
+    return VERTEX_PAINT_COLOR;
+}
 
 void _glGPUStateMarkClean() {
     GPUState.is_dirty = GL_FALSE;

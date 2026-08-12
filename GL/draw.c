@@ -1030,6 +1030,7 @@ void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort
     ctx.depth.write = _glIsDepthWriteEnabled() ? GPU_DEPTHWRITE_ENABLE : GPU_DEPTHWRITE_DISABLE;
 
     ctx.gen.shading = (_glGetShadeModel() == GL_SMOOTH) ? GPU_SHADE_GOURAUD : GPU_SHADE_FLAT;
+    ctx.gen.specular = _glVertexPaintEnabled() ? 1 : 0;
 
     if(_glIsScissorTestEnabled()) {
         ctx.gen.clip_mode = GPU_USERCLIP_INSIDE;
