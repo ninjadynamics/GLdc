@@ -291,7 +291,7 @@ GLAPI void APIENTRY glKosShutdown();
 /* Memory allocation extension (GL_KOS_texture_memory_management) */
 GLAPI GLvoid APIENTRY glDefragmentTextureMemory_KOS(void);
 
-/* HyperSolar opaque floor-paint combiner. While enabled, incoming vertex alpha
+/* HyperSolar opaque post-texture paint combiner. While enabled, vertex alpha
    is the textured share: base = texture*RGB*A, offset = paintRGB*(1-A).
    This uses the PVR's offset-color input and remains a one-pass opaque draw. */
 GLAPI GLvoid APIENTRY glKosVertexPaint(GLboolean enabled,

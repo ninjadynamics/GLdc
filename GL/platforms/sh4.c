@@ -216,6 +216,7 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
 
 static uintptr_t sq_dest_addr = 0;
 static bool submit_vertex_paint = false;
+static uint32_t submit_vertex_paint_color = 0;
 static inline bool is_header(const Vertex* v);
 
 GL_FORCE_INLINE uint8_t _glPaintScale8(uint8_t value, uint8_t scale) {
@@ -225,7 +226,7 @@ GL_FORCE_INLINE uint8_t _glPaintScale8(uint8_t value, uint8_t scale) {
 /* Turn the ordinary BGRA+A record into the PVR's base+offset pair after W is
    no longer needed. Input A is the textured share. The compiled header's
    specular bit enables q7/oargb, giving texture*base + offset in one OP pass. */
-GL_FORCE_INLINE void _glApplyVertexPaint(Vertex* v) {
+GL_FORCE_INLINE void _glApplyVertexPaint(Vertex* v, uint32_t target) {
     const uint8_t keep = v->bgra[3];
     if(likely(keep == 255)) {
         ((uint32_t*)v)[7] = 0;
@@ -234,11 +235,10 @@ GL_FORCE_INLINE void _glApplyVertexPaint(Vertex* v) {
     if(unlikely(keep == 0)) {
         v->bgra[0] = v->bgra[1] = v->bgra[2] = 0;
         v->bgra[3] = 255;
-        ((uint32_t*)v)[7] = _glVertexPaintColor();
+        ((uint32_t*)v)[7] = target;
         return;
     }
     const uint8_t paint = (uint8_t)(255u - keep);
-    const uint32_t target = _glVertexPaintColor();
     const uint8_t tb = (uint8_t)target;
     const uint8_t tg = (uint8_t)(target >> 8);
     const uint8_t tr = (uint8_t)(target >> 16);
@@ -265,7 +265,14 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
         Vertex __attribute__((aligned(32))) painted;
         for(size_t i = 0; i < count; ++i) {
             painted = v[i];
-            if(!is_header(&painted)) _glApplyVertexPaint(&painted);
+            if(is_header(&painted)) {
+                if(painted.flags & GPU_TA_CMD_SPECULAR_MASK) {
+                    submit_vertex_paint_color = ((uint32_t*)&painted)[7];
+                }
+                ((uint32_t*)&painted)[7] = 0xffffffffu;
+            } else {
+                _glApplyVertexPaint(&painted, submit_vertex_paint_color);
+            }
             sq_fast_cpy((void *)sq_dest_addr, &painted, 1);
         }
     }
@@ -340,7 +347,8 @@ static inline bool is_header(const Vertex* v) {
    fallback for strips that cross the near plane (or are malformed). The fast
    wrapper below feeds it single header-less strip spans, so the minimum
    renderable span here is 3 vertices, not header+3. */
-static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_paint) {
+static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_paint,
+                                   uint32_t vertex_paint_color) {
     TRACE();
 
     if(n < 3) {
@@ -360,6 +368,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_paint) {
 #endif
 
     submit_vertex_paint = vertex_paint;
+    submit_vertex_paint_color = vertex_paint_color;
 
     /* This is a bit cumbersome - in some cases (particularly case 2)
        we finish the vertex submission with a duplicated final vertex so
@@ -606,17 +615,20 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_paint) {
    bit 5. Headers ride the run verbatim. The math is the
    _glPerspectiveDivideVertex math verbatim (same fsrra, same w==1 ortho
    branch), so the TA sees byte-identical records. */
-static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_paint) {
+static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_paint,
+                               uint32_t initial_vertex_paint_color) {
     uintptr_t d = sq_dest_addr;
     bool vertex_paint = initial_vertex_paint;
+    uint32_t vertex_paint_color = initial_vertex_paint_color;
     for(; n--; ++v, d += 32) {
         uint32_t* q = (uint32_t*)d;
         PREFETCH(v + 2);
         if(unlikely(is_header(v))) {
             const uint32_t* s = (const uint32_t*)v;
             vertex_paint = (s[0] & GPU_TA_CMD_SPECULAR_MASK) != 0;
+            if(vertex_paint) vertex_paint_color = s[7];
             q[0] = s[0]; q[1] = s[1]; q[2] = s[2]; q[3] = s[3];
-            q[4] = s[4]; q[5] = s[5]; q[6] = s[6]; q[7] = s[7];
+            q[4] = s[4]; q[5] = s[5]; q[6] = s[6]; q[7] = 0xffffffffu;
         } else {
             const float w = v->w;
             const float f = _glFastInvert(w);
@@ -642,10 +654,10 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_paint) {
                     q[7] = 0;
                 } else if(unlikely(keep == 0)) {
                     q[6] = 0xFF000000u;
-                    q[7] = _glVertexPaintColor();
+                    q[7] = vertex_paint_color;
                 } else {
                     const uint8_t paint = (uint8_t)(255u - keep);
-                    const uint32_t target = _glVertexPaintColor();
+                    const uint32_t target = vertex_paint_color;
                     q[6] = PACK_ARGB8888(255,
                         _glPaintScale8(v->bgra[2], keep),
                         _glPaintScale8(v->bgra[1], keep),
@@ -700,11 +712,14 @@ void SceneListSubmit(Vertex* vertices, int n) {
     Vertex* run_start = v;
     bool vertex_paint = false;
     bool run_start_paint = false;
+    uint32_t vertex_paint_color = 0;
+    uint32_t run_start_paint_color = 0;
 
     while(v < vend) {
         if(is_header(v)) {
             GLDC_STAT_INC(scene_headers_seen);
             vertex_paint = (v->flags & GPU_TA_CMD_SPECULAR_MASK) != 0;
+            if(vertex_paint) vertex_paint_color = ((const uint32_t*)v)[7];
             ++v;                      /* headers ride the current run */
             continue;
         }
@@ -731,25 +746,31 @@ void SceneListSubmit(Vertex* vertices, int n) {
                strip stays in clip space until submitted. */
             v = strip_end + 1;        /* strip stays in the run */
             if(v - run_start >= GLDC_VISIBLE_RUN_CACHE_RECORDS) {
-                _glDivideSubmitRun(run_start, (int)(v - run_start), run_start_paint);
+                _glDivideSubmitRun(run_start, (int)(v - run_start),
+                                   run_start_paint, run_start_paint_color);
                 run_start = v;
                 run_start_paint = vertex_paint;
+                run_start_paint_color = vertex_paint_color;
             }
         } else {
             /* Flush everything accumulated before this strip, then let the
                exact old path do the clip work on the strip alone. */
             if(v > run_start) {
-                _glDivideSubmitRun(run_start, (int)(v - run_start), run_start_paint);
+                _glDivideSubmitRun(run_start, (int)(v - run_start),
+                                   run_start_paint, run_start_paint_color);
             }
-            SceneListSubmitGeneric(v, (int)(strip_end - v) + 1, vertex_paint);
+            SceneListSubmitGeneric(v, (int)(strip_end - v) + 1,
+                                   vertex_paint, vertex_paint_color);
             v = strip_end + 1;
             run_start = v;
             run_start_paint = vertex_paint;
+            run_start_paint_color = vertex_paint_color;
         }
     }
 
     if(v > run_start) {
-        _glDivideSubmitRun(run_start, (int)(v - run_start), run_start_paint);
+        _glDivideSubmitRun(run_start, (int)(v - run_start),
+                           run_start_paint, run_start_paint_color);
     }
 
     sq_wait();
@@ -1392,7 +1413,7 @@ void _glS3SubmitOpTail(void) {
         *PVR_LMMODE0 = 0;
         *PVR_LMMODE1 = 0;
         sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
-        SceneListSubmitGeneric(start, (int)n, false);
+        SceneListSubmitGeneric(start, (int)n, false, 0);
         sq_wait();
     }
     s3_op_drained = size;

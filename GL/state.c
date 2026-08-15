@@ -89,9 +89,8 @@ static struct {
     .shade_model = GL_SMOOTH
 };
 
-/* The paint target is shared by HyperSolar's disc and roads. It persists after
-   disable because list submission happens later; each polygon header records
-   whether its following vertices use the offset-color combiner. */
+/* Each paint-enabled polygon header snapshots this target, so differently
+   colored opaque paint passes may coexist in the deferred scene list. */
 static uint32_t VERTEX_PAINT_COLOR = 0;
 
 void APIENTRY glKosVertexPaint(GLboolean enabled, GLubyte r, GLubyte g, GLubyte b) {

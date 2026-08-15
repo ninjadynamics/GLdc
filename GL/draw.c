@@ -1101,6 +1101,13 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
     /* Force bits 18 and 19 on to switch to 6 triangle strips */
     header->cmd |= 0xC0000;
 
+    /* Vertex paint is resolved only when the queued scene is submitted, so
+       bind its target color to this header instead of consulting the then-
+       current global state. d4 is unused for ordinary packed-color polygons;
+       the SH4 submitter consumes this sideband value and restores the normal
+       0xffffffff filler before the header reaches the TA. */
+    if(_glVertexPaintEnabled()) header->d4 = _glVertexPaintColor();
+
     /* Post-process the vertex list */
     /*
      * This is currently unnecessary. aligned_vector memsets the allocated objects
