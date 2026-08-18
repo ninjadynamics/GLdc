@@ -182,6 +182,9 @@ GLAPI void APIENTRY glKosQueueFogTableFlat(GLfloat amount, GLfloat a, GLfloat r,
                                           GLfloat b, GLfloat farDepth);
 GLAPI void APIENTRY glKosQueueFogTableExp2(GLfloat a, GLfloat r, GLfloat g, GLfloat b,
                                           GLfloat start, GLfloat end, GLfloat power);
+/* Queue the global PVR vertex-fog color for the next scene. The register is
+   global (unlike a polygon header), so it is latched only at SceneBegin. */
+GLAPI void APIENTRY glKosQueueFogVertexColor(GLfloat r, GLfloat g, GLfloat b);
 
 /* Render everything submitted so far into a VRAM texture (`tex`, a
    pvr_mem_malloc'd w x h power-of-two target) instead of the screen, then clear
@@ -291,11 +294,23 @@ GLAPI void APIENTRY glKosShutdown();
 /* Memory allocation extension (GL_KOS_texture_memory_management) */
 GLAPI GLvoid APIENTRY glDefragmentTextureMemory_KOS(void);
 
-/* HyperSolar opaque post-texture paint combiner. While enabled, vertex alpha
-   is the textured share: base = texture*RGB*A, offset = paintRGB*(1-A).
-   This uses the PVR's offset-color input and remains a one-pass opaque draw. */
-GLAPI GLvoid APIENTRY glKosVertexPaint(GLboolean enabled,
-                                      GLubyte r, GLubyte g, GLubyte b);
+/* Radial per-vertex fog fused into the existing client-array writer. Coordinates
+   and radius are in the caller's current object space. BLEND selects the PVR's
+   hardware vertex-fog combiner; BLEND_PRECOMPUTED selects the same combiner but
+   consumes the coefficient already present in client color alpha, performing no
+   position/radius work in GLdc. ATTENUATE_ALPHA only multiplies source alpha by
+   (1-fog), for additive layers that must not add the fog color a second time.
+   MIX_UNTEXTURED preserves source alpha while mixing vertex RGB; it is for sparse
+   untextured translucent details whose alpha cannot also carry a fog coefficient. */
+#define GL_KOS_VERTEX_FOG_OFF               0
+#define GL_KOS_VERTEX_FOG_BLEND             1
+#define GL_KOS_VERTEX_FOG_ATTENUATE_ALPHA   2
+#define GL_KOS_VERTEX_FOG_MIX_UNTEXTURED    3
+#define GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED 4
+GLAPI GLvoid APIENTRY glKosVertexFogRadial(GLint mode,
+                                           GLfloat center_x, GLfloat center_z,
+                                           GLfloat radius, GLfloat alpha,
+                                           GLfloat curve);
 
 /* glGet extensions */
 #define GL_FREE_TEXTURE_MEMORY_KOS                  0xEF3D

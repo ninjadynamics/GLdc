@@ -549,10 +549,117 @@ static void generateArrays(SubmissionTarget* target, const GLsizei first, const 
    being read); +64 always requests a future line. */
 #define PUC_PREF_AHEAD 64
 
+/* Radial fog normally rides the PUC writer below: source X/Z and the freshly
+   MOVCA'd output line are already hot, so there is no second vertex-stream
+   walk. The generic generator retains a post-pass fallback farther down. */
+GL_FORCE_INLINE float _glRadialFogAt(const GLdcRadialFogState* fog,
+                                     float x, float z) {
+    const float dx = x - fog->center_x;
+    const float dz = z - fog->center_z;
+    return (dx * dx + dz * dz) * fog->inv_radius2;
+}
+
+GL_FORCE_INLINE unsigned _glRadialFogAmountQuartic(
+        const GLdcRadialFogState* fog, float x, float z) {
+    const float at = _glRadialFogAt(fog, x, z);
+    if(at <= 0.0f) return 0;
+    if(at >= 1.0f) return fog->amount[GLDC_RADIAL_FOG_LUT_N];
+    return (unsigned)(fog->amount_scale * at * at + 0.5f);
+}
+
+GL_FORCE_INLINE unsigned _glRadialFogAmount(const GLdcRadialFogState* fog,
+                                             float x, float z) {
+    if(fog->quartic_curve)
+        return _glRadialFogAmountQuartic(fog, x, z);
+
+    const float at = _glRadialFogAt(fog, x, z);
+    if(at <= 0.0f) return 0;
+    if(at >= 1.0f) return fog->amount[GLDC_RADIAL_FOG_LUT_N];
+    const float fi = at * (float)GLDC_RADIAL_FOG_LUT_N;
+    const unsigned li = (unsigned)fi;
+    const float a0 = (float)fog->amount[li];
+    return (unsigned)(a0 +
+        ((float)fog->amount[li + 1] - a0) * (fi - (float)li) + 0.5f);
+}
+
+GL_FORCE_INLINE void _glWriteRadialFogAmount(Vertex* out,
+                                             const GLdcRadialFogState* fog,
+                                             unsigned amount) {
+    if(fog->mode == GL_KOS_VERTEX_FOG_BLEND) {
+        out->bgra[3] = (GLubyte)amount;
+    } else if(fog->mode == GL_KOS_VERTEX_FOG_ATTENUATE_ALPHA) {
+        const unsigned keep = 255u - amount;
+        out->bgra[3] = (GLubyte)
+            (((unsigned)out->bgra[3] * keep + 127u) / 255u);
+    } else {
+        const unsigned keep = 255u - amount;
+        out->bgra[0] = (GLubyte)
+            (((unsigned)out->bgra[0] * keep +
+              (unsigned)fog->color_b * amount + 127u) / 255u);
+        out->bgra[1] = (GLubyte)
+            (((unsigned)out->bgra[1] * keep +
+              (unsigned)fog->color_g * amount + 127u) / 255u);
+        out->bgra[2] = (GLubyte)
+            (((unsigned)out->bgra[2] * keep +
+              (unsigned)fog->color_r * amount + 127u) / 255u);
+    }
+}
+
+GL_FORCE_INLINE void _glWriteRadialFog(Vertex* out,
+                                       const GLdcRadialFogState* fog,
+                                       float x, float z) {
+    _glWriteRadialFogAmount(out, fog, _glRadialFogAmount(fog, x, z));
+}
+
+/* City walls, signs, poles and many roof details are vertical quads: source
+   2 repeats source 1's X/Z and source 3 repeats source 0's X/Z. Reuse those
+   exact coefficients; general roof quads fall through to four evaluations. */
+GL_FORCE_INLINE void _glWriteRadialFogQuad(Vertex* out,
+                                           const GLdcRadialFogState* fog,
+                                           const GLubyte* pp,
+                                           GLuint stride) {
+    const float* p0 = (const float*)pp;
+    const float* p1 = (const float*)(pp + stride);
+    const float* p2 = (const float*)(pp + (stride << 1));
+    const float* p3 = (const float*)(pp + stride * 3);
+    unsigned a0, a1, a2, a3;
+    if(fog->quartic_curve) {
+        a0 = _glRadialFogAmountQuartic(fog, p0[0], p0[2]);
+        a1 = _glRadialFogAmountQuartic(fog, p1[0], p1[2]);
+        a2 = (p2[0] == p1[0] && p2[2] == p1[2])
+            ? a1 : _glRadialFogAmountQuartic(fog, p2[0], p2[2]);
+        a3 = (p3[0] == p0[0] && p3[2] == p0[2])
+            ? a0 : _glRadialFogAmountQuartic(fog, p3[0], p3[2]);
+    } else {
+        a0 = _glRadialFogAmount(fog, p0[0], p0[2]);
+        a1 = _glRadialFogAmount(fog, p1[0], p1[2]);
+        a2 = (p2[0] == p1[0] && p2[2] == p1[2])
+            ? a1 : _glRadialFogAmount(fog, p2[0], p2[2]);
+        a3 = (p3[0] == p0[0] && p3[2] == p0[2])
+            ? a0 : _glRadialFogAmount(fog, p3[0], p3[2]);
+    }
+    if(fog->mode == GL_KOS_VERTEX_FOG_BLEND) {
+        out[0].bgra[3] = (GLubyte)a0;
+        out[1].bgra[3] = (GLubyte)a1;
+        out[3].bgra[3] = (GLubyte)a2;
+        out[2].bgra[3] = (GLubyte)a3;
+        return;
+    }
+    _glWriteRadialFogAmount(out + 0, fog, a0);
+    _glWriteRadialFogAmount(out + 1, fog, a1);
+    _glWriteRadialFogAmount(out + 3, fog, a2);
+    _glWriteRadialFogAmount(out + 2, fog, a3);
+}
+
 static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
 
     Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
+    const GLdcRadialFogState* const radial = _glRadialVertexFog();
+    const GLboolean radial_active =
+        radial->mode != GL_KOS_VERTEX_FOG_OFF &&
+        radial->mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED &&
+        ATTRIB_LIST.vertex.type == GL_FLOAT;
 
     /* ---- Fused four-vertex kernel (2026-07-16, the city lane) ----
        The three-pass SoA body below touches every output line three times
@@ -598,8 +705,11 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
             for(GLuint q = count >> 2; q--; it += 4) {
                 PREFETCH(pp + PUC_PREF_AHEAD);
                 PREFETCH(cp + PUC_PREF_AHEAD);
+                const GLubyte* const qpp = pp;
                 PC_Q_PAIR(0, 1, GPU_CMD_VERTEX, GPU_CMD_VERTEX);
                 PC_Q_PAIR(3, 2, GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+                if(radial_active)
+                    _glWriteRadialFogQuad(it, radial, qpp, pstride);
             }
 #undef PC_Q_PAIR
 
@@ -612,6 +722,9 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                                 ((const float*) pp)[2], 1.0f, it->xyz, &it->w);
                 it->uv[0] = 0.0f; it->uv[1] = 0.0f;
                 *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
+                if(radial_active)
+                    _glWriteRadialFog(it, radial, ((const float*)pp)[0],
+                                      ((const float*)pp)[2]);
                 it->flags = (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
                 pp += pstride; cp += cstride;
             }
@@ -638,13 +751,19 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                batches rode the pairs. They take the proven single-vertex path. */
             if(count < 64) {
                 for(GLuint q = count >> 2; q--; it += 4) {
+                    const GLubyte* const qpp = pp;
                     PUC_Q_VERT(0, GPU_CMD_VERTEX);
                     PUC_Q_VERT(1, GPU_CMD_VERTEX);
                     PUC_Q_VERT(3, GPU_CMD_VERTEX_EOL);
                     PUC_Q_VERT(2, GPU_CMD_VERTEX);
+                    if(radial_active)
+                        _glWriteRadialFogQuad(it, radial, qpp, pstride);
                 }
                 for(GLuint r = 0; r < (count & 3); ++r, ++it) {
+                    const float* const rp = (const float*)pp;
                     PUC_Q_VERT(0, (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
+                    if(radial_active)
+                        _glWriteRadialFog(it, radial, rp[0], rp[2]);
                 }
                 return;   /* (PUC_Q_VERT's #undef stays at the block end below) */
             }
@@ -692,15 +811,29 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                 const int padj = (int)pstride - 12;
                 const int uadj = (int)ustride - 8;
                 const int cadj = (int)cstride - 4;
-                for(GLuint q = count >> 2; q--; it += 4) {
-                    PREFETCH(pp + PUC_PREF_AHEAD);
-                    PREFETCH(up + PUC_PREF_AHEAD);
-                    PREFETCH(cp + PUC_PREF_AHEAD);
-                    TransformFillQuad(pp, up, cp, padj, uadj, cadj,
-                                      GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, it);
-                    pp += pstride << 2;
-                    up += ustride << 2;
-                    cp += cstride << 2;
+                if(radial_active) {
+                    for(GLuint q = count >> 2; q--; it += 4) {
+                        PREFETCH(pp + PUC_PREF_AHEAD);
+                        PREFETCH(up + PUC_PREF_AHEAD);
+                        PREFETCH(cp + PUC_PREF_AHEAD);
+                        TransformFillQuad(pp, up, cp, padj, uadj, cadj,
+                                          GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, it);
+                        _glWriteRadialFogQuad(it, radial, pp, pstride);
+                        pp += pstride << 2;
+                        up += ustride << 2;
+                        cp += cstride << 2;
+                    }
+                } else {
+                    for(GLuint q = count >> 2; q--; it += 4) {
+                        PREFETCH(pp + PUC_PREF_AHEAD);
+                        PREFETCH(up + PUC_PREF_AHEAD);
+                        PREFETCH(cp + PUC_PREF_AHEAD);
+                        TransformFillQuad(pp, up, cp, padj, uadj, cadj,
+                                          GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, it);
+                        pp += pstride << 2;
+                        up += ustride << 2;
+                        cp += cstride << 2;
+                    }
                 }
             }
 #else
@@ -708,8 +841,11 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                 PREFETCH(pp + PUC_PREF_AHEAD);
                 PREFETCH(up + PUC_PREF_AHEAD);
                 PREFETCH(cp + PUC_PREF_AHEAD);
+                const GLubyte* const qpp = pp;
                 PUC_Q_PAIR(0, 1, GPU_CMD_VERTEX, GPU_CMD_VERTEX);
                 PUC_Q_PAIR(3, 2, GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);   /* src 2 = last strip record */
+                if(radial_active)
+                    _glWriteRadialFogQuad(it, radial, qpp, pstride);
             }
 #endif
 #undef PUC_Q_PAIR
@@ -719,7 +855,10 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
                must be initialized. Sequential, old flag pattern; the submit
                finalizer's generic path EOL-handles the unterminated span. */
             for(GLuint r = 0; r < (count & 3); ++r, ++it) {
+                const float* const rp = (const float*)pp;
                 PUC_Q_VERT(0, (r == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
+                if(radial_active)
+                    _glWriteRadialFog(it, radial, rp[0], rp[2]);
             }
 #undef PUC_Q_VERT
             return;
@@ -801,6 +940,9 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
             Vertex* dst = PUC_DST(it, i);
             PREFETCH(ptr + PUC_PREF_AHEAD);
             TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, dst->xyz, &dst->w);
+            if(radial_active)
+                _glWriteRadialFog(dst, radial, ((float*)ptr)[0],
+                                  ((float*)ptr)[2]);
             /* strip-order slot 3 (source vertex 2) carries EOL — no record swap needed */
             dst->flags = (((i & 3) == 2) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX);
             ptr += stride;
@@ -815,6 +957,11 @@ static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsi
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
 
     Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
+    const GLdcRadialFogState* const radial = _glRadialVertexFog();
+    const GLboolean radial_active =
+        radial->mode != GL_KOS_VERTEX_FOG_OFF &&
+        radial->mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED &&
+        ATTRIB_LIST.vertex.type == GL_FLOAT;
 
     GLuint min = 0;
     for(min = 0; min < count; min += 60) {
@@ -874,11 +1021,23 @@ static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsi
         stride = ATTRIB_LIST.vertex.stride;
         ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
         it = start;
-        for(int_fast32_t i = 0; i < loop; ++i, ++it) {
-            PREFETCH(ptr + PUC_PREF_AHEAD);
-            TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
-            it->flags = ((min + i + 1) % 3 == 0) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
-            ptr += stride;
+        if(radial_active) {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                PREFETCH(ptr + PUC_PREF_AHEAD);
+                TransformVertex(((float*) ptr)[0], ((float*) ptr)[1],
+                                ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
+                _glWriteRadialFog(it, radial, ((float*)ptr)[0],
+                                  ((float*)ptr)[2]);
+                it->flags = ((min + i + 1) % 3 == 0) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+                ptr += stride;
+            }
+        } else {
+            for(int_fast32_t i = 0; i < loop; ++i, ++it) {
+                PREFETCH(ptr + PUC_PREF_AHEAD);
+                TransformVertex(((float*) ptr)[0], ((float*) ptr)[1], ((float*) ptr)[2], 1.0f, it->xyz, &it->w);
+                it->flags = ((min + i + 1) % 3 == 0) ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+                ptr += stride;
+            }
         }
 
         /* ST and Normal loops: SKIPPED — not enabled */
@@ -971,6 +1130,37 @@ static void generate(SubmissionTarget* target, const GLenum mode, const GLsizei 
     }
 }
 
+/* Apply the radial coefficient while object-space X/Z are still available.
+   The scene finalizer later moves BLEND coefficients into oargb.a after W is
+   consumed; ATTENUATE_ALPHA and sparse untextured RGB mixing finish here. */
+static void _glApplyRadialVertexFog(SubmissionTarget* target, GLenum mode,
+                                    GLsizei first, GLuint count,
+                                    const GLvoid* indices) {
+    const GLdcRadialFogState* fog = _glRadialVertexFog();
+    if(fog->mode == GL_KOS_VERTEX_FOG_OFF ||
+       fog->mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED || indices ||
+       (mode != GL_QUADS && mode != GL_TRIANGLES) ||
+       !(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG) ||
+       ATTRIB_LIST.vertex.type != GL_FLOAT) return;
+
+    /* The common P+UV+Color client-array generators wrote fog while X/Z and
+       the destination cache line were already live. Do not walk them again. */
+    if(ATTRIB_LIST.fast_path &&
+       (ATTRIB_LIST.enabled & (ST_ENABLED_FLAG | NORMAL_ENABLED_FLAG)) == 0)
+        return;
+
+    const GLuint stride = ATTRIB_LIST.vertex.stride;
+    const GLubyte* src = ATTRIB_LIST.vertex.ptr + (size_t)first * stride;
+    Vertex* out = _glSubmissionTargetStart(target);
+    for(GLuint i = 0; i < count; ++i, src += stride) {
+        const float* p = (const float*)src;
+        GLuint oi = i;
+        if(mode == GL_QUADS)
+            oi ^= (((i & 3u) == 2u || (i & 3u) == 3u) ? 1u : 0u);
+        _glWriteRadialFog(out + oi, fog, p[0], p[2]);
+    }
+}
+
 GL_FORCE_INLINE int _calc_pvr_face_culling() {
     if(!_glIsCullingEnabled()) {
         return GPU_CULLING_SMALL;
@@ -1030,7 +1220,11 @@ void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort
     ctx.depth.write = _glIsDepthWriteEnabled() ? GPU_DEPTHWRITE_ENABLE : GPU_DEPTHWRITE_DISABLE;
 
     ctx.gen.shading = (_glGetShadeModel() == GL_SMOOTH) ? GPU_SHADE_GOURAUD : GPU_SHADE_FLAT;
-    ctx.gen.specular = _glVertexPaintEnabled() ? 1 : 0;
+    const GLdcRadialFogState* radial_fog = _glRadialVertexFog();
+    const GLboolean radial_blend =
+        radial_fog->mode == GL_KOS_VERTEX_FOG_BLEND ||
+        radial_fog->mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED;
+    ctx.gen.specular = radial_blend ? 1 : 0;
 
     if(_glIsScissorTestEnabled()) {
         ctx.gen.clip_mode = GPU_USERCLIP_INSIDE;
@@ -1038,7 +1232,9 @@ void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort
         ctx.gen.clip_mode = GPU_USERCLIP_DISABLE;
     }
 
-    if(_glIsFogEnabled()) {
+    if(radial_blend) {
+        ctx.gen.fog_type = GPU_FOG_VERTEX;
+    } else if(_glIsFogEnabled()) {
         ctx.gen.fog_type = GPU_FOG_TABLE;
     } else {
         ctx.gen.fog_type = GPU_FOG_DISABLE;
@@ -1100,13 +1296,6 @@ GL_FORCE_INLINE void apply_poly_header(PolyHeader* header, GLboolean multiTextur
 
     /* Force bits 18 and 19 on to switch to 6 triangle strips */
     header->cmd |= 0xC0000;
-
-    /* Vertex paint is resolved only when the queued scene is submitted, so
-       bind its target color to this header instead of consulting the then-
-       current global state. d4 is unused for ordinary packed-color polygons;
-       the SH4 submitter consumes this sideband value and restores the normal
-       0xffffffff filler before the header reaches the TA. */
-    if(_glVertexPaintEnabled()) header->d4 = _glVertexPaintColor();
 
     /* Post-process the vertex list */
     /*
@@ -1277,7 +1466,14 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
     /* Resolve source AFTER the extend: a same-list replay would have realloc'd it. */
     Vertex* src = (Vertex*) aligned_vector_at(&c->list->vector, c->start);
     Vertex* dst = (Vertex*) aligned_vector_at(&out->vector, vec + (header_required ? 1 : 0));
-    if(bgra && _glPolygonOffsetMul != 1.0f) {
+    const GLint radial_mode = _glRadialVertexFog()->mode;
+    const GLboolean radial_attenuate =
+        radial_mode == GL_KOS_VERTEX_FOG_ATTENUATE_ALPHA;
+    const GLboolean radial_blend =
+        radial_mode == GL_KOS_VERTEX_FOG_BLEND ||
+        radial_mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED;
+    if(bgra && _glPolygonOffsetMul != 1.0f &&
+       !radial_attenuate && !radial_blend) {
         _glReplayCopyColorOffset(dst, src, c->count, bgra,
                                  1.0f / _glPolygonOffsetMul);
         return;
@@ -1293,12 +1489,23 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
 
     if(bgra) {   /* constant color override (NULL keeps the captured tints) */
         Vertex* v = dst;
+        const Vertex* s = src;
         Vertex* const end = dst + c->count;
-        for(; v < end; ++v) {
+        for(; v < end; ++v, ++s) {
             v->bgra[0] = bgra[0];
             v->bgra[1] = bgra[1];
             v->bgra[2] = bgra[2];
-            v->bgra[3] = bgra[3];
+            if(radial_attenuate) {
+                const unsigned keep = 255u - (unsigned)s->bgra[3];
+                v->bgra[3] = (GLubyte)
+                    (((unsigned)bgra[3] * keep + 127u) / 255u);
+            } else if(radial_blend) {
+                /* A captured opaque shell stores its radial coefficient in A.
+                   Preserve it while replacing only the replay's RGB. */
+                v->bgra[3] = s->bgra[3];
+            } else {
+                v->bgra[3] = bgra[3];
+            }
         }
     }
 
@@ -1486,6 +1693,8 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     _glTnlLoadMatrix();
 
     generate(target, mode, first, count, (GLubyte*) indices, type);
+
+    _glApplyRadialVertexFog(target, mode, first, count, indices);
 
     _glTnlApplyEffects(target);
 

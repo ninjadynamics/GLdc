@@ -67,6 +67,22 @@ endif()
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG -fexpensive-optimizations -fomit-frame-pointer -finline-functions")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -std=c++14 -O3 -g0 -s -fomit-frame-pointer -fstrict-aliasing")
 
+# -flto + -ffat-lto-objects: the check_ipo_supported probe above fails silently
+# under kos-cc (CMake can't identify the compiler), so INTERPROCEDURAL_OPTIMIZATION
+# never actually applied — the game links with -flto=auto, which made libGL.a the
+# only non-LTO participant (every cross-TU state accessor a real jsr). Fat objects
+# keep the archive valid for a plain `ar` while still carrying the LTO IR the game
+# link consumes for cross-module inlining. -fno-strict-aliasing: GLdc type-puns
+# Vertex/color bytes (sh4.c, draw.c) — fine per-TU at -O3, but whole-program
+# aliasing analysis under LTO (plus the game's -fipa-pta) is more aggressive.
+# Known failure mode if the game link ever ICEs ("gen_reg_rtx, emit-rtl.cc"):
+# that is the fingerprinted GCC 13.2 SH unsafe-math-under-LTO bug — the fix is
+# taming -ffast-math above (append -fno-unsafe-math-optimizations), NOT dropping LTO.
+# REVERTED 2026-08-18: the first LTO build (together with the raylib-dc -O3/-flto
+# tier) broke rendering on hardware (wrong 3D models / no render). Re-enable only
+# in isolation, one fork at a time, with a hardware check per step.
+# set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -flto -ffat-lto-objects -fno-strict-aliasing")
+
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3 -fexpensive-optimizations -fomit-frame-pointer -finline-functions")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -std=c++14 -O3 -fomit-frame-pointer -fstrict-aliasing")
 

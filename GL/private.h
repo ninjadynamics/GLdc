@@ -286,6 +286,20 @@ typedef struct {
     float st[2];
 } VertexExtra;
 
+#define GLDC_RADIAL_FOG_LUT_N 1024
+typedef struct {
+    GLint mode;
+    GLfloat center_x;
+    GLfloat center_z;
+    GLfloat inv_radius2;
+    GLfloat amount_scale;
+    GLubyte color_b;
+    GLubyte color_g;
+    GLubyte color_r;
+    GLboolean quartic_curve;
+    GLubyte amount[GLDC_RADIAL_FOG_LUT_N + 1];
+} GLdcRadialFogState;
+
 /* Generating PVR vertices from the user-submitted data gets complicated, particularly
  * when a realloc could invalidate pointers. This structure holds all the information
  * we need on the target vertex array to allow passing around to the various stages (e.g. generate/clip etc.)
@@ -501,8 +515,8 @@ GLboolean _glNearZClippingEnabled();
 GLboolean _glGPUStateIsDirty();
 void _glGPUStateMarkClean();
 void _glGPUStateMarkDirty();
-GLboolean _glVertexPaintEnabled(void);
-uint32_t _glVertexPaintColor(void);
+const GLdcRadialFogState* _glRadialVertexFog(void);
+void _glSetRadialVertexFogColor(GLfloat r, GLfloat g, GLfloat b);
 
 #define MAX_GLDC_TEXTURE_UNITS 2
 #define MAX_GLDC_LIGHTS 8

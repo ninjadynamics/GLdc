@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #include "../include/GL/glext.h"
 #include "private.h"
@@ -28,7 +29,6 @@ static struct {
     GLboolean normalize_enabled;
     GLboolean scissor_test_enabled;
     GLboolean fog_enabled;
-    GLboolean vertex_paint_enabled;
     GLboolean depth_mask_enabled;
 
     struct {
@@ -72,7 +72,6 @@ static struct {
     .normalize_enabled = GL_FALSE,
     .scissor_test_enabled = GL_FALSE,
     .fog_enabled = GL_FALSE,
-    .vertex_paint_enabled = GL_FALSE,
     .depth_mask_enabled = GL_FALSE,
     .scissor_rect = {0, 0, 640, 480, false},
     .blend_sfactor = GL_ONE,
@@ -89,26 +88,80 @@ static struct {
     .shade_model = GL_SMOOTH
 };
 
-/* Each paint-enabled polygon header snapshots this target, so differently
-   colored opaque paint passes may coexist in the deferred scene list. */
-static uint32_t VERTEX_PAINT_COLOR = 0;
+static GLdcRadialFogState RADIAL_VERTEX_FOG = {
+    .mode = GL_KOS_VERTEX_FOG_OFF,
+    .center_x = 0.0f,
+    .center_z = 0.0f,
+    .inv_radius2 = 1.0f
+};
+static GLfloat RADIAL_FOG_ALPHA = -1.0f;
+static GLfloat RADIAL_FOG_CURVE = -1.0f;
 
-void APIENTRY glKosVertexPaint(GLboolean enabled, GLubyte r, GLubyte g, GLubyte b) {
-    const uint32_t color = PACK_ARGB8888(0, r, g, b);
-    enabled = enabled ? GL_TRUE : GL_FALSE;
-    if(GPUState.vertex_paint_enabled != enabled || VERTEX_PAINT_COLOR != color) {
-        GPUState.vertex_paint_enabled = enabled;
-        VERTEX_PAINT_COLOR = color;
-        _glGPUStateMarkDirty();
+static GLubyte _glFogColorByte(GLfloat value) {
+    int q = (int)(value * 255.0f + 0.5f);
+    return (GLubyte)(q < 0 ? 0 : q > 255 ? 255 : q);
+}
+
+void _glSetRadialVertexFogColor(GLfloat r, GLfloat g, GLfloat b) {
+    RADIAL_VERTEX_FOG.color_r = _glFogColorByte(r);
+    RADIAL_VERTEX_FOG.color_g = _glFogColorByte(g);
+    RADIAL_VERTEX_FOG.color_b = _glFogColorByte(b);
+}
+
+void APIENTRY glKosVertexFogRadial(GLint mode,
+                                   GLfloat center_x, GLfloat center_z,
+                                   GLfloat radius, GLfloat alpha,
+                                   GLfloat curve) {
+    if(mode != GL_KOS_VERTEX_FOG_BLEND &&
+       mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED &&
+       mode != GL_KOS_VERTEX_FOG_ATTENUATE_ALPHA &&
+       mode != GL_KOS_VERTEX_FOG_MIX_UNTEXTURED) {
+        mode = GL_KOS_VERTEX_FOG_OFF;
+    }
+    if(radius <= 0.0f || alpha <= 0.0f) mode = GL_KOS_VERTEX_FOG_OFF;
+    if(alpha > 1.0f) alpha = 1.0f;
+    if(curve < 0.01f) curve = 0.01f;
+
+    if(RADIAL_VERTEX_FOG.mode != mode) {
+        const GLboolean old_blend =
+            RADIAL_VERTEX_FOG.mode == GL_KOS_VERTEX_FOG_BLEND ||
+            RADIAL_VERTEX_FOG.mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED;
+        const GLboolean new_blend =
+            mode == GL_KOS_VERTEX_FOG_BLEND ||
+            mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED;
+        RADIAL_VERTEX_FOG.mode = mode;
+        /* Only BLEND changes the polygon header (vertex fog + offset field).
+           ATTENUATE_ALPHA and MIX_UNTEXTURED are writer-only transforms; do
+           not manufacture headers for every additive roof-detail bracket. */
+        if(old_blend != new_blend)
+            _glGPUStateMarkDirty();
+    }
+    RADIAL_VERTEX_FOG.center_x = center_x;
+    RADIAL_VERTEX_FOG.center_z = center_z;
+    if(mode == GL_KOS_VERTEX_FOG_OFF ||
+       mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED) return;
+    RADIAL_VERTEX_FOG.inv_radius2 = 1.0f / (radius * radius);
+    RADIAL_VERTEX_FOG.amount_scale = 255.0f * alpha;
+    /* HyperSolar's authored floor-disc curve is quartic. Its exact byte value
+       is cheaper to evaluate as at*at than to index/interpolate the generic
+       LUT, and it avoids pulling a 1 KiB table through the SH4 data cache. */
+    RADIAL_VERTEX_FOG.quartic_curve = curve == 4.0f ? GL_TRUE : GL_FALSE;
+
+    if(RADIAL_FOG_ALPHA != alpha || RADIAL_FOG_CURVE != curve) {
+        for(int i = 0; i <= GLDC_RADIAL_FOG_LUT_N; ++i) {
+            const float d2 = (float)i * (1.0f / (float)GLDC_RADIAL_FOG_LUT_N);
+            int amount = (int)(255.0f * alpha *
+                __builtin_powf(d2, curve * 0.5f) + 0.5f);
+            RADIAL_VERTEX_FOG.amount[i] =
+                (GLubyte)(amount < 0 ? 0 : amount > 255 ? 255 : amount);
+        }
+        RADIAL_FOG_ALPHA = alpha;
+        RADIAL_FOG_CURVE = curve;
     }
 }
 
-GLboolean _glVertexPaintEnabled(void) {
-    return GPUState.vertex_paint_enabled;
-}
-
-uint32_t _glVertexPaintColor(void) {
-    return VERTEX_PAINT_COLOR;
+const GLdcRadialFogState* _glRadialVertexFog(void) {
+    return &RADIAL_VERTEX_FOG;
 }
 
 void _glGPUStateMarkClean() {

@@ -2474,13 +2474,6 @@ void APIENTRY glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint y
         return;
     }
 
-    GLboolean isPaletted = (
-        active->internalFormat == GL_COLOR_INDEX8_EXT ||
-        active->internalFormat == GL_COLOR_INDEX4_EXT ||
-        active->internalFormat == GL_COLOR_INDEX4_TWID_KOS ||
-        active->internalFormat == GL_COLOR_INDEX8_TWID_KOS
-    ) ? GL_TRUE : GL_FALSE;
-
     GLenum cleanInternalFormat = _cleanInternalFormat(active->internalFormat);
 
     // Determine source stride
