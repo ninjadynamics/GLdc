@@ -617,7 +617,6 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
         case GL_NEARZ_CLIPPING_KOS:
             if(GPUState.znear_clipping_enabled != GL_TRUE) {
                 GPUState.znear_clipping_enabled = GL_TRUE;
-                GPUState.is_dirty = GL_TRUE;
             }
         break;
         case GL_POLYGON_OFFSET_POINT:
@@ -625,14 +624,12 @@ GLAPI void APIENTRY glEnable(GLenum cap) {
         case GL_POLYGON_OFFSET_FILL:
             if(GPUState.polygon_offset_enabled != GL_TRUE) {
                 GPUState.polygon_offset_enabled = GL_TRUE;
-                GPUState.is_dirty = GL_TRUE;
                 _glUpdatePolygonOffset();
             }
         break;
         case GL_NORMALIZE:
             if(GPUState.normalize_enabled != GL_TRUE) {
                 GPUState.normalize_enabled = GL_TRUE;
-                GPUState.is_dirty = GL_TRUE;
             }
         break;
         case GL_TEXTURE_TWIDDLE_KOS:
@@ -730,7 +727,6 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
         case GL_NEARZ_CLIPPING_KOS:
             if(GPUState.znear_clipping_enabled != GL_FALSE) {
                 GPUState.znear_clipping_enabled = GL_FALSE;
-                GPUState.is_dirty = GL_TRUE;
             }
         break;
         case GL_POLYGON_OFFSET_POINT:
@@ -738,14 +734,12 @@ GLAPI void APIENTRY glDisable(GLenum cap) {
         case GL_POLYGON_OFFSET_FILL:
             if(GPUState.polygon_offset_enabled != GL_FALSE) {
                 GPUState.polygon_offset_enabled = GL_FALSE;
-                GPUState.is_dirty = GL_TRUE;
                 _glUpdatePolygonOffset();
             }
         break;
         case GL_NORMALIZE:
             if(GPUState.normalize_enabled != GL_FALSE) {
                 GPUState.normalize_enabled = GL_FALSE;
-                GPUState.is_dirty = GL_TRUE;
             }
         break;
         case GL_TEXTURE_TWIDDLE_KOS:
@@ -899,9 +893,11 @@ void _glUpdatePolygonOffset(void) {
 }
 
 void glPolygonOffset(GLfloat factor, GLfloat units) {
+    if(GPUState.offset_factor == factor && GPUState.offset_units == units) {
+        return;
+    }
     GPUState.offset_factor = factor;
     GPUState.offset_units = units;
-    GPUState.is_dirty = GL_TRUE;
     _glUpdatePolygonOffset();
 }
 

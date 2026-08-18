@@ -527,26 +527,31 @@ void APIENTRY glEnableClientState(GLenum cap) {
 
     switch(cap) {
     case GL_VERTEX_ARRAY:
-        ATTRIB_LIST.enabled |= VERTEX_ENABLED_FLAG;
-	    ATTRIB_LIST.dirty   |= VERTEX_ENABLED_FLAG;
+        if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
+            ATTRIB_LIST.enabled |= VERTEX_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |= VERTEX_ENABLED_FLAG;
+        }
         break;
     case GL_COLOR_ARRAY:
-        ATTRIB_LIST.enabled |= DIFFUSE_ENABLED_FLAG;
-	    ATTRIB_LIST.dirty   |= DIFFUSE_ENABLED_FLAG;
+        if(!(ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG)) {
+            ATTRIB_LIST.enabled |= DIFFUSE_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |= DIFFUSE_ENABLED_FLAG;
+        }
         break;
     case GL_NORMAL_ARRAY:
-        ATTRIB_LIST.enabled |= NORMAL_ENABLED_FLAG;
-        ATTRIB_LIST.dirty   |= NORMAL_ENABLED_FLAG;
+        if(!(ATTRIB_LIST.enabled & NORMAL_ENABLED_FLAG)) {
+            ATTRIB_LIST.enabled |= NORMAL_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |= NORMAL_ENABLED_FLAG;
+        }
         break;
-    case GL_TEXTURE_COORD_ARRAY:
-        (ACTIVE_CLIENT_TEXTURE) ?
-            (ATTRIB_LIST.enabled |= ST_ENABLED_FLAG):
-            (ATTRIB_LIST.enabled |= UV_ENABLED_FLAG);
-
-        (ACTIVE_CLIENT_TEXTURE) ?
-            (ATTRIB_LIST.dirty   |= ST_ENABLED_FLAG):
-            (ATTRIB_LIST.dirty   |= UV_ENABLED_FLAG);
+    case GL_TEXTURE_COORD_ARRAY: {
+        const GLuint flag = ACTIVE_CLIENT_TEXTURE ? ST_ENABLED_FLAG : UV_ENABLED_FLAG;
+        if(!(ATTRIB_LIST.enabled & flag)) {
+            ATTRIB_LIST.enabled |= flag;
+            ATTRIB_LIST.dirty   |= flag;
+        }
         break;
+    }
     default:
         _glKosThrowError(GL_INVALID_ENUM, __func__);
     }
@@ -557,26 +562,31 @@ void APIENTRY glDisableClientState(GLenum cap) {
 
     switch(cap) {
     case GL_VERTEX_ARRAY:
-        ATTRIB_LIST.enabled &= ~VERTEX_ENABLED_FLAG;
-	    ATTRIB_LIST.dirty   |=  VERTEX_ENABLED_FLAG;
+        if(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG) {
+            ATTRIB_LIST.enabled &= ~VERTEX_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |=  VERTEX_ENABLED_FLAG;
+        }
         break;
     case GL_COLOR_ARRAY:
-        ATTRIB_LIST.enabled &= ~DIFFUSE_ENABLED_FLAG;
-	    ATTRIB_LIST.dirty   |=  DIFFUSE_ENABLED_FLAG;
+        if(ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) {
+            ATTRIB_LIST.enabled &= ~DIFFUSE_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |=  DIFFUSE_ENABLED_FLAG;
+        }
         break;
     case GL_NORMAL_ARRAY:
-        ATTRIB_LIST.enabled &= ~NORMAL_ENABLED_FLAG;
-	    ATTRIB_LIST.dirty   |=  NORMAL_ENABLED_FLAG;
+        if(ATTRIB_LIST.enabled & NORMAL_ENABLED_FLAG) {
+            ATTRIB_LIST.enabled &= ~NORMAL_ENABLED_FLAG;
+            ATTRIB_LIST.dirty   |=  NORMAL_ENABLED_FLAG;
+        }
         break;
-    case GL_TEXTURE_COORD_ARRAY:
-        (ACTIVE_CLIENT_TEXTURE) ?
-            (ATTRIB_LIST.enabled &= ~ST_ENABLED_FLAG):
-            (ATTRIB_LIST.enabled &= ~UV_ENABLED_FLAG);
-
-        (ACTIVE_CLIENT_TEXTURE) ?
-            (ATTRIB_LIST.dirty   |=  ST_ENABLED_FLAG):
-            (ATTRIB_LIST.dirty   |=  UV_ENABLED_FLAG);
+    case GL_TEXTURE_COORD_ARRAY: {
+        const GLuint flag = ACTIVE_CLIENT_TEXTURE ? ST_ENABLED_FLAG : UV_ENABLED_FLAG;
+        if(ATTRIB_LIST.enabled & flag) {
+            ATTRIB_LIST.enabled &= ~flag;
+            ATTRIB_LIST.dirty   |=  flag;
+        }
         break;
+    }
     default:
         _glKosThrowError(GL_INVALID_ENUM, __func__);
     }

@@ -88,6 +88,7 @@ typedef struct {
     size_t pool_size; // Size of the memory pool
     uint8_t* base_address; // First 2k aligned address in the pool
     size_t block_count;  // Number of 2k blocks in the pool
+    size_t used_bytes;   // Allocated 256-byte subblocks; O(1) VRAM usage query
 
     /* It's frustrating that we need to do this dynamically
      * but we need to know the size allocated when we free()...
@@ -101,7 +102,7 @@ typedef struct {
 
 
 static PoolHeader pool_header = {
-    {0}, NULL, 0, NULL, 0, NULL
+    {0}, NULL, 0, NULL, 0, 0, NULL
 };
 
 void* alloc_base_address(void* pool) {
@@ -256,6 +257,7 @@ int alloc_init(void* pool, size_t size) {
      * wasn't aligned to 2048 */
     pool_header.pool_size = pool_header.block_count * 2048;
 
+    pool_header.used_bytes = 0;
     pool_header.allocations = NULL;
 
     gl_assert(((uintptr_t) pool_header.base_address) % 2048 == 0);
@@ -304,6 +306,7 @@ static void* alloc_malloc_internal(void* pool, size_t size, bool for_defrag) {
     void* ret = alloc_next_available_ex(pool, size, &start_subblock, &required_subblocks);
 
     if(ret) {
+        const size_t allocated_bytes = required_subblocks * 256;
         size_t block;
         uint8_t offset;
 
@@ -339,6 +342,8 @@ static void* alloc_malloc_internal(void* pool, size_t size, bool for_defrag) {
         if(mask) {
             pool_header.block_usage[block++] |= mask;
         }
+
+        pool_header.used_bytes += allocated_bytes;
 
         // defrag allocations don't create new entries, they reuse old ones
         if(for_defrag) {
@@ -392,6 +397,7 @@ void* alloc_malloc(void* pool, size_t size) {
 
 static void alloc_release_blocks(struct AllocEntry* it) {
     size_t used_subblocks = size_to_subblock_count(it->size);
+    pool_header.used_bytes -= used_subblocks * 256;
     size_t subblock = subblock_from_pointer(it->pointer);
     size_t block;
     uint8_t offset;
@@ -493,24 +499,9 @@ void alloc_run_defrag(void* pool, defrag_address_move callback, int max_iteratio
     }
 }
 
-static inline uint8_t count_ones(uint8_t byte) {
-    static const uint8_t NIBBLE_LOOKUP [16] = {
-        0, 1, 1, 2, 1, 2, 2, 3,
-        1, 2, 2, 3, 2, 3, 3, 4
-    };
-    return NIBBLE_LOOKUP[byte & 0x0F] + NIBBLE_LOOKUP[byte >> 4];
-}
-
 size_t alloc_count_free(void* pool) {
     (void) pool;
-
-    size_t total_used = 0;
-
-    for(size_t i = 0; i < pool_header.block_count; ++i) {
-        total_used += count_ones(pool_header.block_usage[i]) * 256;
-    }
-
-    return pool_header.pool_size - total_used;
+    return pool_header.pool_size - pool_header.used_bytes;
 }
 
 size_t alloc_count_continuous(void* pool) {

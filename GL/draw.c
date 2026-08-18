@@ -1821,7 +1821,7 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
         Vertex* it, const GLubyte* pp, const GLubyte* up, const GLubyte* cp,
         GLuint pstride, GLuint ustride, GLuint cstride,
         GLsizei c, GLboolean tris_eol) {
-    GLsizei eol_next = tris_eol ? 2 : c - 1;   /* index of the next EOL vertex */
+    GLsizei eol_next = 2;   /* index of the next triangle-soup EOL vertex */
 
     if(up && cp) {
         GLsizei i = 0;
@@ -1847,16 +1847,21 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
             (it + 1)->uv[1] = ((const float*) (up + ustride))[1];
             *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
             *((uint32_t*) (it + 1)->bgra) = *((const uint32_t*) (cp + cstride));
-            if(i == eol_next) {
-                it->flags = GPU_CMD_VERTEX_EOL;
-                eol_next += 3;   /* only reachable again on the tris rule */
+            if(tris_eol) {
+                if(i == eol_next) {
+                    it->flags = GPU_CMD_VERTEX_EOL;
+                    eol_next += 3;
+                } else {
+                    it->flags = GPU_CMD_VERTEX;
+                }
+                if(i + 1 == eol_next) {
+                    (it + 1)->flags = GPU_CMD_VERTEX_EOL;
+                    eol_next += 3;
+                } else {
+                    (it + 1)->flags = GPU_CMD_VERTEX;
+                }
             } else {
                 it->flags = GPU_CMD_VERTEX;
-            }
-            if(i + 1 == eol_next) {
-                (it + 1)->flags = GPU_CMD_VERTEX_EOL;
-                eol_next += 3;
-            } else {
                 (it + 1)->flags = GPU_CMD_VERTEX;
             }
             pp += pstride << 1;
@@ -1872,7 +1877,7 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
             up += ustride;
             *((uint32_t*) it->bgra) = *((const uint32_t*) cp);
             cp += cstride;
-            if(i == eol_next) {
+            if(tris_eol && i == eol_next) {
                 it->flags = GPU_CMD_VERTEX_EOL;
                 eol_next += 3;
             } else {
@@ -1899,7 +1904,7 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
             } else {
                 *((uint32_t*) it->bgra) = ~0;
             }
-            if(i == eol_next) {
+            if(tris_eol && i == eol_next) {
                 it->flags = GPU_CMD_VERTEX_EOL;
                 eol_next += 3;
             } else {
@@ -1908,6 +1913,10 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
             pp += pstride;
         }
     }
+    /* Strip callers have exactly one EOL. Stamping it once removes the
+       loop-carried EOL compare/branch from every strip vertex. tris_eol is a
+       call-site constant and this writer is force-inlined. */
+    if(!tris_eol) (it - 1)->flags = GPU_CMD_VERTEX_EOL;
     return it;
 }
 
