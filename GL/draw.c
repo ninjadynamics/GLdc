@@ -1496,7 +1496,14 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
             v->bgra[1] = bgra[1];
             v->bgra[2] = bgra[2];
             if(radial_attenuate) {
-                const unsigned keep = 255u - (unsigned)s->bgra[3];
+                /* Captured A stores a precomputed fog amount. ATTENUATE's
+                   alpha scales that amount, allowing an additive replay to
+                   retain a configurable floor while following the same
+                   already-resolved curve. Alpha 1 preserves legacy behavior. */
+                const unsigned amount =
+                    ((unsigned)s->bgra[3] *
+                     (unsigned)_glRadialVertexFog()->amount_scale + 127u) / 255u;
+                const unsigned keep = 255u - amount;
                 v->bgra[3] = (GLubyte)
                     (((unsigned)bgra[3] * keep + 127u) / 255u);
             } else if(radial_blend) {
