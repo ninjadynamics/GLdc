@@ -259,6 +259,9 @@ GL_FORCE_INLINE void _glApplyVertexFog(Vertex* v) {
 
 static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
     TRACE();
+    /* This is the generic clip path's actual TA output count, including
+       vertices created by clipping and any headers it submits. */
+    GLDC_STAT_ADD(scene_generic_records, (GLuint)count);
 
 #if CLIP_DEBUG
     fprintf(stderr, "{%f, %f, %f, %f}, // %x (%x)\n", v->xyz[0], v->xyz[1], v->xyz[2], v->w, v->flags, v);
@@ -628,6 +631,9 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
    _glPerspectiveDivideVertex math verbatim (same fsrra, same w==1 ortho
    branch), so the TA sees byte-identical records. */
 static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
+    /* One input record becomes exactly one TA record on this all-visible
+       path, so the run length is also its actual output count. */
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)n);
     uintptr_t d = sq_dest_addr;
     bool vertex_fog = initial_vertex_fog;
     for(; n--; ++v, d += 32) {
@@ -693,7 +699,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
     }
 
     GLDC_STAT_INC(scene_list_submits);
-    GLDC_STAT_ADD(scene_vertices_in, n);
+    GLDC_STAT_ADD(scene_records_in, n);
 
     PVR_SET(SPAN_SORT_CFG, 0x0);
     *PVR_LMMODE0 = 0;
@@ -1272,6 +1278,8 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
    Self-contained register setup: the vertex submit may not have run this list. */
 void SceneSpritesSubmit(void* blob, int blocks32) {
     if(blocks32 <= 0) return;
+
+    GLDC_STAT_ADD(scene_sprite_records, (GLuint)blocks32);
 
     PVR_SET(SPAN_SORT_CFG, 0x0);
     *PVR_LMMODE0 = 0;

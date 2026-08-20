@@ -7,6 +7,7 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 option(BUILD_SAMPLES "Build example/sample programs" ON)
 option(BUILD_TESTS   "Build test executables" ON)
 option(USE_SH4ZAM    "Use SH4ZAM optimized Dreamcast math" OFF)
+option(GLDC_ENABLE_STATS "Enable GLdc performance counters" OFF)
 
 # set the default backend
 if(PLATFORM_DREAMCAST)
@@ -100,6 +101,7 @@ set(
     GL/flush.c
     GL/fog.c
     GL/framebuffer.c
+    GL/gldc_stats.c
     GL/glu.c
     GL/immediate.c
     GL/lighting.c
@@ -138,6 +140,10 @@ else()
 endif()
 
 add_library(GL STATIC ${SOURCES})
+
+if(GLDC_ENABLE_STATS)
+    target_compile_definitions(GL PUBLIC GLDC_ENABLE_STATS)
+endif()
 
 if(PLATFORM_DREAMCAST AND USE_SH4ZAM)
     target_compile_definitions(GL PUBLIC USE_SH4ZAM)

@@ -1,5 +1,5 @@
 /*
- * gldc_stats.c - GLdc Performance Instrumentation Implementation (Phase 0 expanded)
+ * gldc_stats.c - GLdc performance instrumentation implementation
  *
  * Compile with -DGLDC_ENABLE_STATS to activate counters.
  */
@@ -10,29 +10,34 @@
 
 #ifdef GLDC_ENABLE_STATS
 
-GLdcStats g_gldc_stats = {0};
+GLdcStats g_gldc_stats = {
+    .struct_size = sizeof(GLdcStats),
+    .abi_version = GL_KOS_STATS_ABI_VERSION
+};
 
-void glKosResetStats(void) {
-    uint32_t frame = g_gldc_stats.frame_no + 1;
+void APIENTRY glKosResetStats(void) {
+    const GLuint frame = g_gldc_stats.frame_no + 1;
     memset(&g_gldc_stats, 0, sizeof(GLdcStats));
+    g_gldc_stats.struct_size = sizeof(GLdcStats);
+    g_gldc_stats.abi_version = GL_KOS_STATS_ABI_VERSION;
     g_gldc_stats.frame_no = frame;
 }
 
-const GLdcStats* glKosGetStats(void) {
+const GLdcStats* APIENTRY glKosGetStats(void) {
     return &g_gldc_stats;
 }
 
-void glKosPrintStats(void) {
+void APIENTRY glKosPrintStats(void) {
     const GLdcStats* s = &g_gldc_stats;
 
     /* Compute derived metrics */
-    uint32_t avg_vtx_per_draw = s->submit_vertices_calls > 0
+    GLuint avg_vtx_per_draw = s->submit_vertices_calls > 0
         ? s->vertices_transformed / s->submit_vertices_calls : 0;
-    uint32_t avg_strip_len = s->strip_count > 0
+    GLuint avg_strip_len = s->strip_count > 0
         ? s->strip_vertices_total / s->strip_count : 0;
 
     /* Line 1: Draw submission (original Patch B) */
-    printf("[GLdc F#%u] arr=%u elem=%u submit=%u fast=%u miss=%u hdr=%u "
+    printf("[GLdc F#%u] arr=%u elem=%u submit=%u attribFast=%u attribSlow=%u hdr=%u "
            "dirty=%u vtx=%u tex=%u avgVtx=%u\n",
            s->frame_no,
            s->draw_arrays_calls,
@@ -46,8 +51,8 @@ void glKosPrintStats(void) {
            s->texture_binds,
            avg_vtx_per_draw);
 
-    /* Line 2: Clipping */
-    printf("[GLdc F#%u] clip: tested=%u all=%u none=%u partial=%u edges=%u\n",
+    /* Line 2: Triangles classified inside the generic clip fallback only. */
+    printf("[GLdc F#%u] gclip: tested=%u all=%u none=%u partial=%u edges=%u\n",
            s->frame_no,
            s->clip_triangles_tested,
            s->clip_all_visible,
@@ -55,21 +60,55 @@ void glKosPrintStats(void) {
            s->clip_partial,
            s->clip_edges_generated);
 
-    /* Line 3: Scene submission */
-    printf("[GLdc F#%u] scene: submits=%u verts_in=%u hdrs=%u\n",
+    /* Line 3: Scene submission. `generic` is the post-clip output count. */
+    printf("[GLdc F#%u] scene: submits=%u records_in=%u hdrs=%u divided=%u "
+           "generic=%u sprites=%u offset=%u\n",
            s->frame_no,
            s->scene_list_submits,
-           s->scene_vertices_in,
-           s->scene_headers_seen);
+           s->scene_records_in,
+           s->scene_headers_seen,
+           s->scene_divided_records,
+           s->scene_generic_records,
+           s->scene_sprite_records,
+           s->polygon_offset_vertices);
 
-    /* Line 4: Strips + Patch E (future phases, prints zeros until active) */
-    if (s->strip_count > 0 || s->patchE_hits > 0 || s->patchE_fallbacks > 0) {
-        printf("[GLdc F#%u] strips=%u avgLen=%u patchE: hits=%u fall=%u\n",
+    /* Line 4: Fast-lane routing; pairs are accepted/fallback calls. */
+    if (s->multistrip_hits > 0 || s->multistrip_fallbacks > 0 ||
+        s->triangle_array_hits > 0 || s->triangle_array_fallbacks > 0 ||
+        s->planar_quad_hits > 0 || s->planar_quad_fallbacks > 0 ||
+        s->quad_strip_hits > 0 || s->quad_strip_fallbacks > 0 ||
+        s->sprite_lane_hits > 0 || s->sprite_lane_drops > 0 ||
+        s->interleaved_hits > 0 || s->interleaved_fallbacks > 0) {
+        printf("[GLdc F#%u] lanes: multi=%u/%u strips=%u avgLen=%u "
+               "tri=%u/%u planar=%u/%u qstrip=%u/%u sprite=%u/%u items=%u "
+               "p3t2=%u/%u verts=%u\n",
                s->frame_no,
+               s->multistrip_hits,
+               s->multistrip_fallbacks,
                s->strip_count,
                avg_strip_len,
-               s->patchE_hits,
-               s->patchE_fallbacks);
+               s->triangle_array_hits,
+               s->triangle_array_fallbacks,
+               s->planar_quad_hits,
+               s->planar_quad_fallbacks,
+               s->quad_strip_hits,
+               s->quad_strip_fallbacks,
+               s->sprite_lane_hits,
+               s->sprite_lane_drops,
+               s->sprite_items,
+               s->interleaved_hits,
+               s->interleaved_fallbacks,
+               s->interleaved_vertices);
+        if(s->interleaved_fallbacks > 0) {
+            printf("[GLdc F#%u] p3t2 fall: mode/count=%u align=%u tnl=%u "
+                   "immediate=%u radial=%u\n",
+                   s->frame_no,
+                   s->interleaved_fallback_mode_or_count,
+                   s->interleaved_fallback_alignment,
+                   s->interleaved_fallback_tnl,
+                   s->interleaved_fallback_immediate,
+                   s->interleaved_fallback_radial_fog);
+        }
     }
 
     /* Line 5: Immediate mode (if any — should be near zero with batcher) */
@@ -85,8 +124,8 @@ void glKosPrintStats(void) {
 #else
 
 /* Stubs when stats are disabled */
-void glKosResetStats(void) {}
-const GLdcStats* glKosGetStats(void) { return (const GLdcStats*)0; }
-void glKosPrintStats(void) {}
+void APIENTRY glKosResetStats(void) {}
+const GLdcStats* APIENTRY glKosGetStats(void) { return (const GLdcStats*)0; }
+void APIENTRY glKosPrintStats(void) {}
 
 #endif /* GLDC_ENABLE_STATS */

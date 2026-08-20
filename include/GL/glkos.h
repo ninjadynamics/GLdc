@@ -6,6 +6,117 @@ __BEGIN_DECLS
 
 extern const char* GLDC_VERSION;
 
+/* Paired fast-lane ABI shared by GLdc and tightly coupled consumers such as
+ * raylib-dc. Bump this whenever a glKos fast-path signature or data contract
+ * changes incompatibly; it is deliberately independent of GLDC_VERSION. */
+#define GL_KOS_FAST_PATH_ABI_VERSION 1u
+#define GL_KOS_HAS_INTERLEAVED_P3T2BGRA 1
+#define GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA (1u << 0)
+#define GL_KOS_FAST_PATH_CAPABILITIES GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA
+
+/* Borrowed, synchronous fast-lane input shared with paired adapters such as
+ * raylib-dc. The implementation consumes/copies every vertex before return;
+ * this type does NOT imply swap-stable lifetime or deferred submission. */
+typedef struct GLKosVertexP3T2BGRA {
+    GLfloat x, y, z;
+    GLfloat u, v;
+    GLuint bgra;
+} GLKosVertexP3T2BGRA;
+
+/* Compile-time feature macros let an independently built adapter retain its
+ * ordinary client-array fallback when paired with an older GLdc header. */
+GLAPI GLuint APIENTRY glKosGetFastPathCapabilities(void);
+
+/* Try the fixed interleaved P3F/T2F/BGRA lane without changing client-array
+ * state. GL_TRUE means the draw was consumed synchronously. GL_FALSE means no
+ * render/list/header/capture state changed and the caller must use its exact
+ * ordinary fallback (instrumentation counters may change). V1 accepts only
+ * aligned complete GL_TRIANGLES/GL_QUADS batches, no active TnL effects or
+ * glBegin/glEnd, and radial fog OFF or BLEND_PRECOMPUTED. */
+GLAPI GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
+
+/* GLdcStats is public even when instrumentation is compiled out so callers
+ * never need private GLdc headers or hand-written declarations. The API
+ * functions are always linkable; glKosGetStats() returns NULL when
+ * GLDC_ENABLE_STATS is disabled. Append fields and bump this version when the
+ * snapshot layout changes. */
+#define GL_KOS_STATS_ABI_VERSION 1u
+
+typedef struct {
+    GLuint struct_size;
+    GLuint abi_version;
+    GLuint frame_no;
+
+    /* General draw submission. */
+    GLuint draw_arrays_calls;
+    GLuint draw_elements_calls;
+    GLuint submit_vertices_calls;
+    GLuint fast_path_hits;       /* generic generator's attribute fast path */
+    GLuint fast_path_misses;
+    GLuint headers_emitted;
+    GLuint state_dirty_events;
+    GLuint vertices_transformed;
+    GLuint texture_binds;
+    GLuint immediate_begin_calls;
+    GLuint immediate_end_calls;
+    GLuint immediate_vertices;
+
+    /* Triangle classifications inside the generic near-plane fallback only;
+     * all-visible strips handled by the outer divided-run scanner are absent. */
+    GLuint clip_triangles_tested;
+    GLuint clip_all_visible;
+    GLuint clip_none_visible;
+    GLuint clip_partial;
+    GLuint clip_edges_generated;
+
+    /* Final TA submission. Record counts are actual 32-byte records written;
+     * generic clipping may therefore emit more records than it consumed. */
+    GLuint scene_list_submits;
+    GLuint scene_records_in;      /* headers plus vertices entering finalizer */
+    GLuint scene_headers_seen;
+    GLuint scene_divided_records;
+    GLuint scene_generic_records;
+    GLuint scene_sprite_records;
+
+    /* Records that paid the ordinary post-transform polygon-offset bake.
+     * Direct TA sprites are intentionally excluded because they do not pay
+     * that pass. */
+    GLuint polygon_offset_vertices;
+
+    /* glKos fast-lane routing. A hit means the specialized lane accepted the
+     * draw; a fallback means it declined and routed to the ordinary GL path.
+     * The latter may still be a no-op for invalid/degenerate GL input. */
+    GLuint multistrip_hits;
+    GLuint multistrip_fallbacks;
+    GLuint strip_count;
+    GLuint strip_vertices_total;
+    GLuint triangle_array_hits;
+    GLuint triangle_array_fallbacks;
+    GLuint planar_quad_hits;
+    GLuint planar_quad_fallbacks;
+    GLuint quad_strip_hits;
+    GLuint quad_strip_fallbacks;
+    GLuint sprite_lane_hits;
+    GLuint sprite_lane_drops;
+    GLuint sprite_items;
+
+    /* Borrowed interleaved P3F/T2F/BGRA routing. A rejected try mutates only
+     * these optional counters; render state and pending capture are untouched. */
+    GLuint interleaved_hits;
+    GLuint interleaved_fallbacks;
+    GLuint interleaved_vertices;
+    GLuint interleaved_fallback_mode_or_count;
+    GLuint interleaved_fallback_alignment;
+    GLuint interleaved_fallback_tnl;
+    GLuint interleaved_fallback_immediate;
+    GLuint interleaved_fallback_radial_fog;
+} GLdcStats;
+
+GLAPI void APIENTRY glKosResetStats(void);
+GLAPI const GLdcStats* APIENTRY glKosGetStats(void);
+GLAPI void APIENTRY glKosPrintStats(void);
+
 
 /*
  * Dreamcast specific compressed + twiddled formats.

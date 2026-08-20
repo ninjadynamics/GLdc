@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <limits.h>
+#include <stddef.h>
 
 #include "private.h"
 #include "platform.h"
@@ -651,15 +652,32 @@ GL_FORCE_INLINE void _glWriteRadialFogQuad(Vertex* out,
     _glWriteRadialFogAmount(out + 2, fog, a3);
 }
 
-static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
-    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+typedef struct {
+    const GLubyte* positions;
+    const GLubyte* uvs;
+    const GLubyte* colors;
+    GLuint position_stride;
+    GLuint uv_stride;
+    GLuint color_stride;
+    GLboolean positions_are_float;
+} PUCQuadInput;
 
+/* One quad writer serves both ordinary client arrays and the typed borrowed
+   raylib lane. Keeping the scheduled small/pair/GOLD kernels here prevents the
+   adapter path from growing a subtly different swizzle, fog or EOL contract. */
+static void _glWritePUCQuads(SubmissionTarget* target,
+                             const PUCQuadInput* input,
+                             const GLuint count) {
     Vertex* const batch_base = (Vertex*) _glSubmissionTargetStart(target);
     const GLdcRadialFogState* const radial = _glRadialVertexFog();
     const GLboolean radial_active =
         radial->mode != GL_KOS_VERTEX_FOG_OFF &&
         radial->mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED &&
-        ATTRIB_LIST.vertex.type == GL_FLOAT;
+        input->positions_are_float;
+
+    const GLuint pstride = input->position_stride;
+    const GLuint ustride = input->uv_stride;
+    const GLuint cstride = input->color_stride;
 
     /* ---- Fused four-vertex kernel (2026-07-16, the city lane) ----
        The three-pass SoA body below touches every output line three times
@@ -670,12 +688,9 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
        last strip record. Requires the full P3F/T2F/C4UB-aligned set — the
        city and glow scratch always are; anything else takes the passes. */
     {
-        const GLuint pstride = ATTRIB_LIST.vertex.stride;
-        const GLuint ustride = ATTRIB_LIST.uv.stride;
-        const GLuint cstride = ATTRIB_LIST.colour.stride;
-        const GLubyte* pp = ATTRIB_LIST.vertex.ptr + first * pstride;
-        const GLubyte* up = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + first * ustride : NULL;
-        const GLubyte* cp = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + first * cstride : NULL;
+        const GLubyte* pp = input->positions;
+        const GLubyte* up = input->uvs;
+        const GLubyte* cp = input->colors;
 
         /* Untextured colored quads: fuse zero-UV fill, color copy, transform
            and strip swizzle into one pass.
@@ -871,7 +886,7 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
     for(min = 0; min < count; min += 60) {
         Vertex* const start = batch_base + min;
         const int_fast32_t loop = ((min + 60) > count) ? count - min : 60;
-        const int offset = (first + min);
+        const int offset = (int)min;
         Vertex* it;
         GLuint stride;
         const GLubyte* ptr;
@@ -880,8 +895,8 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
            (exactly one line per 32B-aligned Vertex, MOVCA.L) so this write stream
            never reads RAM it is about to overwrite; every field gets filled across
            the UV/color/position passes below. Prefetch the input stream ahead. */
-        stride = ATTRIB_LIST.uv.stride;
-        ptr = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG) ? ATTRIB_LIST.uv.ptr + (offset * stride) : NULL;
+        stride = input->uv_stride;
+        ptr = input->uvs ? input->uvs + (offset * stride) : NULL;
         it = start;
         /* Destinations are SWIZZLED to PVR strip order (0,1,3,2 within each quad,
            see PUC_DST below): writing the final order directly removes the old
@@ -907,8 +922,8 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         }
 
         /* Color */
-        stride = ATTRIB_LIST.colour.stride;
-        ptr = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG) ? ATTRIB_LIST.colour.ptr + (offset * stride) : NULL;
+        stride = input->color_stride;
+        ptr = input->colors ? input->colors + (offset * stride) : NULL;
         it = start;
         if(ptr) {
             if(((((uintptr_t) ptr) | stride) & 3) == 0) {
@@ -933,8 +948,8 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
         }
 
         /* Position + transform + quad vertex flags */
-        stride = ATTRIB_LIST.vertex.stride;
-        ptr = ATTRIB_LIST.vertex.ptr + (offset * stride);
+        stride = input->position_stride;
+        ptr = input->positions + (offset * stride);
         it = start;
         for(int_fast32_t i = 0; i < loop; ++i) {
             Vertex* dst = PUC_DST(it, i);
@@ -951,6 +966,25 @@ static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target, const GLs
 
         /* ST and Normal loops: SKIPPED — not enabled */
     }
+}
+
+static void generateArraysFastPath_PUC_QUADS(SubmissionTarget* target,
+                                              const GLsizei first,
+                                              const GLuint count) {
+    if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) return;
+
+    const PUCQuadInput input = {
+        .positions = ATTRIB_LIST.vertex.ptr + first * ATTRIB_LIST.vertex.stride,
+        .uvs = (ATTRIB_LIST.enabled & UV_ENABLED_FLAG)
+            ? ATTRIB_LIST.uv.ptr + first * ATTRIB_LIST.uv.stride : NULL,
+        .colors = (ATTRIB_LIST.enabled & DIFFUSE_ENABLED_FLAG)
+            ? ATTRIB_LIST.colour.ptr + first * ATTRIB_LIST.colour.stride : NULL,
+        .position_stride = ATTRIB_LIST.vertex.stride,
+        .uv_stride = ATTRIB_LIST.uv.stride,
+        .color_stride = ATTRIB_LIST.colour.stride,
+        .positions_are_float = ATTRIB_LIST.vertex.type == GL_FLOAT
+    };
+    _glWritePUCQuads(target, &input, count);
 }
 
 static void generateArraysFastPath_PUC_TRIS(SubmissionTarget* target, const GLsizei first, const GLuint count) {
@@ -1327,6 +1361,7 @@ static SubmissionTarget SUBMISSION_TARGET;
    ortho path derives depth from z, not 1/w. */
 static void _glBakePolygonOffset(Vertex* v, GLuint count) {
     if(_glPolygonOffsetMul == 1.0f) return;
+    GLDC_STAT_ADD(polygon_offset_vertices, count);
     const float inv = 1.0f / _glPolygonOffsetMul;
     Vertex* const end = v + count;
     for(; v < end; ++v) {
@@ -1474,6 +1509,9 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
         radial_mode == GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED;
     if(bgra && _glPolygonOffsetMul != 1.0f &&
        !radial_attenuate && !radial_blend) {
+        /* This fused replay path performs the offset bake itself and returns
+           before _glBakePolygonOffset(), so account for it at this choke. */
+        GLDC_STAT_ADD(polygon_offset_vertices, c->count);
         _glReplayCopyColorOffset(dst, src, c->count, bgra,
                                  1.0f / _glPolygonOffsetMul);
         return;
@@ -1562,8 +1600,6 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
     AlignedVector* const extras = target->extras;
 
     TRACE();
-    GLDC_STAT_INC(submit_vertices_calls);
-    GLDC_STAT_ADD(vertices_transformed, count);
 
     /* Do nothing if vertices aren't enabled */
     if(!(ATTRIB_LIST.enabled & VERTEX_ENABLED_FLAG)) {
@@ -1651,6 +1687,12 @@ GL_FORCE_INLINE void submitVertices(GLenum mode, GLsizei first, GLuint count, GL
         default:
             break;
     }
+
+    /* Count only the validated/truncated input the generators will actually
+       transform. Disabled arrays, empty draws and discarded partial
+       primitives must not inflate the average. */
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, count);
 
     target->output = _glActivePolyList();
     gl_assert(target->output);
@@ -1927,6 +1969,94 @@ GL_FORCE_INLINE Vertex* _glWriteFusedVertices(
     return it;
 }
 
+/* Public borrowed-input seam for paired adapters. Keep the layout checks in
+   the implementation as well as the consumer: a mismatched compiler ABI must
+   fail at build time, never become an SH4 alignment exception on hardware. */
+typedef char GLKosP3T2BGRASizeMustBe24[
+    sizeof(GLKosVertexP3T2BGRA) == 24 ? 1 : -1];
+typedef char GLKosP3T2BGRAPositionMustStartAt0[
+    offsetof(GLKosVertexP3T2BGRA, x) == 0 ? 1 : -1];
+typedef char GLKosP3T2BGRAUvMustStartAt12[
+    offsetof(GLKosVertexP3T2BGRA, u) == 12 ? 1 : -1];
+typedef char GLKosP3T2BGRAColorMustStartAt20[
+    offsetof(GLKosVertexP3T2BGRA, bgra) == 20 ? 1 : -1];
+
+GLuint APIENTRY glKosGetFastPathCapabilities(void) {
+    return GL_KOS_FAST_PATH_CAPABILITIES;
+}
+
+GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    TRACE();
+
+    const GLboolean complete_triangles =
+        mode == GL_TRIANGLES && count >= 3 && count % 3 == 0;
+    const GLboolean complete_quads =
+        mode == GL_QUADS && count >= 4 && count % 4 == 0;
+    if(!complete_triangles && !complete_quads) {
+        GLDC_STAT_INC(interleaved_fallbacks);
+        GLDC_STAT_INC(interleaved_fallback_mode_or_count);
+        return GL_FALSE;
+    }
+    if(!vertices || ((uintptr_t)vertices & 3u) != 0) {
+        GLDC_STAT_INC(interleaved_fallbacks);
+        GLDC_STAT_INC(interleaved_fallback_alignment);
+        return GL_FALSE;
+    }
+    if(IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(interleaved_fallbacks);
+        GLDC_STAT_INC(interleaved_fallback_immediate);
+        return GL_FALSE;
+    }
+    if(_glTnlEffectsActive()) {
+        GLDC_STAT_INC(interleaved_fallbacks);
+        GLDC_STAT_INC(interleaved_fallback_tnl);
+        return GL_FALSE;
+    }
+
+    const GLint radial_mode = _glRadialVertexFog()->mode;
+    if(radial_mode != GL_KOS_VERTEX_FOG_OFF &&
+       radial_mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED) {
+        GLDC_STAT_INC(interleaved_fallbacks);
+        GLDC_STAT_INC(interleaved_fallback_radial_fog);
+        return GL_FALSE;
+    }
+
+    /* From this point the call is committed. _glBegin/_glEnd preserve GLdc's
+       header/list chronology, matrix load, capture handoff and offset bake;
+       SceneListSubmit retains the exact near-plane clip/finalize contract. */
+    GLDC_STAT_INC(interleaved_hits);
+    GLDC_STAT_ADD(interleaved_vertices, (GLuint)count);
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
+
+    Vertex* out = _glBeginFusedDraw((GLuint)count);
+    const GLubyte* const base = (const GLubyte*)vertices;
+    if(mode == GL_TRIANGLES) {
+        _glWriteFusedVertices(out,
+                              base + offsetof(GLKosVertexP3T2BGRA, x),
+                              base + offsetof(GLKosVertexP3T2BGRA, u),
+                              base + offsetof(GLKosVertexP3T2BGRA, bgra),
+                              sizeof(GLKosVertexP3T2BGRA),
+                              sizeof(GLKosVertexP3T2BGRA),
+                              sizeof(GLKosVertexP3T2BGRA),
+                              count, GL_TRUE);
+    } else {
+        const PUCQuadInput input = {
+            .positions = base + offsetof(GLKosVertexP3T2BGRA, x),
+            .uvs = base + offsetof(GLKosVertexP3T2BGRA, u),
+            .colors = base + offsetof(GLKosVertexP3T2BGRA, bgra),
+            .position_stride = sizeof(GLKosVertexP3T2BGRA),
+            .uv_stride = sizeof(GLKosVertexP3T2BGRA),
+            .color_stride = sizeof(GLKosVertexP3T2BGRA),
+            .positions_are_float = GL_TRUE
+        };
+        _glWritePUCQuads(&SUBMISSION_TARGET, &input, (GLuint)count);
+    }
+    _glEndFusedDraw();
+    return GL_TRUE;
+}
+
 void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n) {
     TRACE();
 
@@ -1947,12 +2077,28 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
            no-op glDrawArrays cannot cancel the arm meant for a REAL strip
            later in this batch. */
         GLboolean drew = GL_FALSE;
+#ifdef GLDC_ENABLE_STATS
+        GLuint fallback_strips = 0;
+        GLuint fallback_vertices = 0;
+#endif
         for(GLsizei s = 0; s < n; ++s) {
             if(counts[s] < 3) continue;
             glDrawArrays(GL_TRIANGLE_STRIP, firsts[s], counts[s]);
             drew = GL_TRUE;
+#ifdef GLDC_ENABLE_STATS
+            ++fallback_strips;
+            fallback_vertices += (GLuint)counts[s];
+#endif
         }
-        if(!drew) _glCancelPendingCapture();
+        if(!drew) {
+            _glCancelPendingCapture();
+        } else {
+            GLDC_STAT_INC(multistrip_fallbacks);
+#ifdef GLDC_ENABLE_STATS
+            GLDC_STAT_ADD(strip_count, fallback_strips);
+            GLDC_STAT_ADD(strip_vertices_total, fallback_vertices);
+#endif
+        }
         return;
     }
 
@@ -1960,8 +2106,16 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
        a negative count would otherwise shrink the reservation the positive
        strips then overrun. */
     GLsizei total = 0;
+#ifdef GLDC_ENABLE_STATS
+    GLuint valid_strips = 0;
+#endif
     for(GLsizei i = 0; i < n; ++i) {
-        if(counts[i] >= 3) total += counts[i];
+        if(counts[i] >= 3) {
+            total += counts[i];
+#ifdef GLDC_ENABLE_STATS
+            ++valid_strips;
+#endif
+        }
     }
     if(total < 3) {
         _glCancelPendingCapture();
@@ -1970,6 +2124,11 @@ void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, G
 
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint) total);
+    GLDC_STAT_INC(multistrip_hits);
+#ifdef GLDC_ENABLE_STATS
+    GLDC_STAT_ADD(strip_count, valid_strips);
+    GLDC_STAT_ADD(strip_vertices_total, (GLuint)total);
+#endif
 
     const GLuint pstride = ATTRIB_LIST.vertex.stride;
     const GLuint ustride = ATTRIB_LIST.uv.stride;
@@ -2082,7 +2241,11 @@ GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
     if(!valid_counts || !_glHoloLaneCompatible()) {
         const GLsizei drew = _glHoloFallbackQuads(firsts, counts, n);
         /* A fallback that emitted nothing must not leave the arm pending. */
-        if(drew == 0) _glCancelPendingCapture();
+        if(drew == 0) {
+            _glCancelPendingCapture();
+        } else {
+            GLDC_STAT_INC(planar_quad_fallbacks);
+        }
         return drew;
     }
 
@@ -2112,6 +2275,7 @@ GLsizei APIENTRY glKosDrawPlanarQuadsArrays(
     const GLsizei output_count = active_quads << 2;
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint)(active_quads * 3));
+    GLDC_STAT_INC(planar_quad_hits);
 
     Vertex* it = _glBeginFusedDraw((GLuint) output_count);
     for(GLsizei s = 0; s < n; ++s) {
@@ -2241,7 +2405,11 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
     if(!valid_counts || !_glHoloLaneCompatible()) {
         const GLsizei drew = _glHoloFallbackQuads(firsts, counts, n);
         /* A fallback that emitted nothing must not leave the arm pending. */
-        if(drew == 0) _glCancelPendingCapture();
+        if(drew == 0) {
+            _glCancelPendingCapture();
+        } else {
+            GLDC_STAT_INC(quad_strip_fallbacks);
+        }
         return drew;
     }
 
@@ -2275,6 +2443,7 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
 
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint)(output_count - (seam_count << 1)));
+    GLDC_STAT_INC(quad_strip_hits);
 
     Vertex* it = _glBeginFusedDraw((GLuint) output_count);
     for(GLsizei s = 0; s < n; ++s) {
@@ -2342,10 +2511,13 @@ void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLs
 
     if(quads <= 0) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
         _glSpriteLaneDropWarn();   /* narrow contract */
         return;
     }
 
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)quads);
     _glTnlLoadMatrix();
     SceneSpriteQuads(pos, (const uint32_t*) colors, quads);
 }
@@ -2358,10 +2530,13 @@ void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* color
 
     if(sprites <= 0) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
         _glSpriteLaneDropWarn();
         return;
     }
 
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, NULL, NULL, sprites,
                        ux, uy, uz, vx, vy, vz);
@@ -2381,10 +2556,13 @@ void APIENTRY glKosDrawSpriteCentersUVRectScale(const GLfloat* centers,
 
     if(sprites <= 0) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
         _glSpriteLaneDropWarn();
         return;
     }
 
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, half_sizes, uv_rects, sprites,
                        ux, uy, uz, vx, vy, vz);
@@ -2405,10 +2583,13 @@ void APIENTRY glKosDrawSpriteCentersUVRectScalePlane(const GLfloat* centers,
 
     if(sprites <= 0) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
         _glSpriteLaneDropWarn();
         return;
     }
 
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
                             half_sizes, uv_rects, NULL, sprites, 0, 0.0f,
@@ -2429,10 +2610,13 @@ void APIENTRY glKosDrawSpriteCentersUVCellScalePlane(const GLfloat* centers,
     if(sprites <= 0 || !cells) return;
     if(grid_log2 < 1 || grid_log2 > 3) return;
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
         _glSpriteLaneDropWarn();
         return;
     }
 
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCentersPlane(centers, (const uint32_t*) colors,
                             half_sizes, NULL, cells, sprites,
@@ -2457,6 +2641,7 @@ void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
     if(ATTRIB_LIST.dirty) _glUpdateAttributes();
 
     if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE || !_glFusedLaneCompatible()) {
+        GLDC_STAT_INC(triangle_array_fallbacks);
         /* Fallback draws for real — it handles the pending arm itself. */
         glDrawArrays(GL_TRIANGLES, first, count);
         return;
@@ -2464,6 +2649,7 @@ void APIENTRY glKosDrawTrianglesArrays(GLint first, GLsizei count) {
 
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint) count);
+    GLDC_STAT_INC(triangle_array_hits);
 
     const GLuint pstride = ATTRIB_LIST.vertex.stride;
     const GLuint ustride = ATTRIB_LIST.uv.stride;
