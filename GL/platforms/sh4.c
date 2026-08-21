@@ -1,4 +1,5 @@
 #include <float.h>
+#include <limits.h>
 
 #include <dc/sq.h>
 #include <arch/timer.h>
@@ -236,6 +237,221 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
     }
 }
 
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+/* N1's RAM-sink form. It deliberately lives beside the production SH4
+   transform/finalizer so the experiment uses the same FTRV and reciprocal
+   primitives. The persistent GLdc lists are not touched. */
+typedef char NativeBenchInputSizeMustBe24[
+    sizeof(GLKosVertexP3T2BGRA) == 24 ? 1 : -1];
+
+/* Conservative input-side guard for this fixed packed-color benchmark. KOS's
+   current non-DMA close sequence adds eight TA input records with InitGPU's
+   OP/TR/PT configuration: pvr_list_finish(OP) appends a blank header + EOL,
+   then pvr_scene_finish() closes each unopened TR/PT list with two blank
+   headers + EOL. PVR_VERTEX_BUF_SIZE is generated ISP/TSP parameter storage,
+   not a universal count of 32-byte inputs; the hardware harness separately
+   records that generated footprint and uses only the ~30k-record workloads. */
+#define NATIVE_BENCH_TA_CLOSE_RECORDS 8
+#define NATIVE_BENCH_INPUT_RECORD_LIMIT \
+    ((PVR_VERTEX_BUF_SIZE / (int)sizeof(Vertex)) - \
+     NATIVE_BENCH_TA_CLOSE_RECORDS)
+
+/* The sole final-record fill body. RAM and store-queue sinks differ only in
+   cache-line allocation / queue firing around this function, keeping every
+   word and every SH4 reciprocal operation identical. */
+GL_FORCE_INLINE bool _glNativeBenchFillRecord(
+        const GLKosVertexP3T2BGRA* in, uint32_t* q, uint32_t flags,
+        float x, float y, float z, float w) {
+    const bool visible = z >= -w;
+    const float f = _glFastInvert(w);
+    q[0] = flags;
+    ((float*)q)[1] = x * f;
+    ((float*)q)[2] = y * f;
+    ((float*)q)[3] = unlikely(w == 1.0f)
+        ? _glFastInvert(1.0001f + z)
+        : f;
+    ((float*)q)[4] = in->u;
+    ((float*)q)[5] = in->v;
+    q[6] = in->bgra;
+    ((float*)q)[7] = w;
+    return visible;
+}
+
+GL_FORCE_INLINE bool _glNativeBenchPack(
+        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags,
+        float x, float y, float z, float w) {
+    VERTEX_CACHE_ALLOC(out);
+    return _glNativeBenchFillRecord(
+        in, (uint32_t*)out, flags, x, y, z, w);
+}
+
+GL_FORCE_INLINE bool _glNativeBenchPackPair(
+        const GLKosVertexP3T2BGRA* a, const GLKosVertexP3T2BGRA* b,
+        Vertex* da, Vertex* db, uint32_t fa, uint32_t fb) {
+    float axyz[3], bxyz[3], aw, bw;
+    TransformVertex2(a->x, a->y, a->z, axyz, &aw,
+                     b->x, b->y, b->z, bxyz, &bw);
+    const bool av = _glNativeBenchPack(a, da, fa,
+                                       axyz[0], axyz[1], axyz[2], aw);
+    const bool bv = _glNativeBenchPack(b, db, fb,
+                                       bxyz[0], bxyz[1], bxyz[2], bw);
+    return av && bv;
+}
+
+GL_FORCE_INLINE bool _glNativeBenchPackSingle(
+        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags) {
+    float xyz[3], w;
+    TransformVertex(in->x, in->y, in->z, 1.0f, xyz, &w);
+    return _glNativeBenchPack(in, out, flags,
+                              xyz[0], xyz[1], xyz[2], w);
+}
+
+int SceneNativeBenchBuildP3T2BGRA(
+        unsigned int mode, const void* vertices, int count, Vertex* output) {
+    const GLKosVertexP3T2BGRA* in =
+        (const GLKosVertexP3T2BGRA*)vertices;
+
+    if(mode == GL_TRIANGLES) {
+        bool all_visible = true;
+        int i = 0;
+        /* Six records = two complete triangles. Fixed flags eliminate the
+           old loop-carried modulo/EOL decision and retain dual-FTRV issue. */
+        for(; count - i >= 6; i += 6) {
+            if(count - i > 2) PREFETCH(in + i + 2);
+            all_visible &= _glNativeBenchPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            all_visible &= _glNativeBenchPackPair(
+                in + i + 2, in + i + 3, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+            all_visible &= _glNativeBenchPackPair(
+                in + i + 4, in + i + 5, output + i + 4, output + i + 5,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+        }
+        if(i < count) {  /* valid triangle input leaves exactly three */
+            if(count - i > 2) PREFETCH(in + i + 2);
+            all_visible &= _glNativeBenchPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            all_visible &= _glNativeBenchPackSingle(
+                in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
+        }
+        return all_visible ? GL_KOS_NATIVE_BENCH_OK
+                           : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+    }
+
+    /* Long strips are their own benchmark topology. One EOL is stamped on
+       the final record, matching _glWriteFusedVertices(GL_FALSE). */
+    bool all_visible = true;
+    int i = 0;
+    for(; count - i >= 2; i += 2) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        const uint32_t fb = (count - i == 2)
+            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+        all_visible &= _glNativeBenchPackPair(
+            in + i, in + i + 1, output + i, output + i + 1,
+            GPU_CMD_VERTEX, fb);
+    }
+    if(i < count) {
+        all_visible &= _glNativeBenchPackSingle(
+            in + i, output + i, GPU_CMD_VERTEX_EOL);
+    }
+    return all_visible ? GL_KOS_NATIVE_BENCH_OK
+                       : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+}
+
+int SceneNativeBenchFinalizeClassic(Vertex* vertices, int count) {
+    /* Scan before mutation: a rejected near-plane case leaves the classic
+       clip-space records intact for the ordinary clipper/fallback. */
+    bool all_visible = true;
+    for(int i = 0; i < count; ++i) {
+        all_visible &= vertices[i].xyz[2] >= -vertices[i].w;
+    }
+    if(!all_visible) return GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+    _glPerspectiveDivideVertex(vertices, count);
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
+GL_FORCE_INLINE bool _glNativeBenchPackSQ(
+        const GLKosVertexP3T2BGRA* in, uintptr_t d, uint32_t flags,
+        float x, float y, float z, float w) {
+    const bool visible = _glNativeBenchFillRecord(
+        in, (uint32_t*)d, flags, x, y, z, w);
+    __asm__ __volatile__("pref @%0" : : "r"(d) : "memory");
+    return visible;
+}
+
+GL_FORCE_INLINE bool _glNativeBenchPackPairSQ(
+        const GLKosVertexP3T2BGRA* a, const GLKosVertexP3T2BGRA* b,
+        uintptr_t da, uintptr_t db, uint32_t fa, uint32_t fb) {
+    float axyz[3], bxyz[3], aw, bw;
+    TransformVertex2(a->x, a->y, a->z, axyz, &aw,
+                     b->x, b->y, b->z, bxyz, &bw);
+    const bool av = _glNativeBenchPackSQ(
+        a, da, fa, axyz[0], axyz[1], axyz[2], aw);
+    const bool bv = _glNativeBenchPackSQ(
+        b, db, fb, bxyz[0], bxyz[1], bxyz[2], bw);
+    return av && bv;
+}
+
+static bool _glNativeBenchSubmitTrianglesSQ(
+        const GLKosVertexP3T2BGRA* in, int count, uintptr_t* destination) {
+    uintptr_t d = *destination;
+    bool all_visible = true;
+    int i = 0;
+    for(; count - i >= 6; i += 6, d += 6 * 32) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        all_visible &= _glNativeBenchPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+        all_visible &= _glNativeBenchPackPairSQ(
+            in + i + 2, in + i + 3, d + 64, d + 96,
+            GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+        all_visible &= _glNativeBenchPackPairSQ(
+            in + i + 4, in + i + 5, d + 128, d + 160,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+    }
+    if(i < count) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        all_visible &= _glNativeBenchPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+        float xyz[3], w;
+        TransformVertex(in[i + 2].x, in[i + 2].y, in[i + 2].z,
+                        1.0f, xyz, &w);
+        all_visible &= _glNativeBenchPackSQ(
+            in + i + 2, d + 64, GPU_CMD_VERTEX_EOL,
+            xyz[0], xyz[1], xyz[2], w);
+        d += 3 * 32;
+    }
+    *destination = d;
+    return all_visible;
+}
+
+static bool _glNativeBenchSubmitStripSQ(
+        const GLKosVertexP3T2BGRA* in, int count, uintptr_t* destination) {
+    uintptr_t d = *destination;
+    bool all_visible = true;
+    int i = 0;
+    for(; count - i >= 2; i += 2, d += 64) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        const uint32_t fb = (count - i == 2)
+            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+        all_visible &= _glNativeBenchPackPairSQ(
+            in + i, in + i + 1, d, d + 32, GPU_CMD_VERTEX, fb);
+    }
+    if(i < count) {
+        float xyz[3], w;
+        TransformVertex(in[i].x, in[i].y, in[i].z, 1.0f, xyz, &w);
+        all_visible &= _glNativeBenchPackSQ(
+            in + i, d, GPU_CMD_VERTEX_EOL, xyz[0], xyz[1], xyz[2], w);
+        d += 32;
+    }
+    *destination = d;
+    return all_visible;
+}
+#endif
+
 static uintptr_t sq_dest_addr = 0;
 static bool submit_vertex_fog = false;
 static inline bool is_header(const Vertex* v);
@@ -342,6 +558,105 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
 #define SPAN_SORT_CFG 0x005F8030
 static volatile uint32_t* PVR_LMMODE0 = (uint32_t*) 0xA05F6884;
 static volatile uint32_t *PVR_LMMODE1 = (uint32_t*) 0xA05F6888;
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+static bool _glNativeBenchIsOpaquePolyHeader(const void* record) {
+    const uint32_t cmd = ((const uint32_t*)record)[0];
+    return (cmd & 0xf0800000u) == 0x80800000u &&
+           ((cmd & GPU_TA_CMD_TYPE_MASK) >> GPU_TA_CMD_TYPE_SHIFT) ==
+               GPU_LIST_OP_POLY;
+}
+
+GLint APIENTRY glKosNativeBenchSubmitFinalPacket(
+        const GLKosNativeBenchRecord* packet, GLsizei packet_records) {
+    if(!packet || packet_records <= 0 ||
+       packet_records > NATIVE_BENCH_INPUT_RECORD_LIMIT ||
+       ((uintptr_t)packet & 31u) != 0 ||
+       !_glNativeBenchIsOpaquePolyHeader(packet)) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    /* Exclusive benchmark envelope: pvr_list_begin owns SQ/QACR. Keep the
+       same TA setup as SceneListSubmit. One contiguous SQ copy is essential:
+       header -> first vertex and every later record then alternate SQ0/SQ1 by
+       address bit 5 without restarting at SQ0. */
+    pvr_scene_begin();
+    if(pvr_list_begin(PVR_LIST_OP_POLY) < 0) {
+        pvr_scene_finish();
+        return GL_KOS_NATIVE_BENCH_PVR_ERROR;
+    }
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+
+    sq_fast_cpy((void*)SQ_MASK_DEST(PVR_TA_INPUT), packet,
+                (size_t)packet_records);
+    sq_wait();
+
+    const int list_result = pvr_list_finish();
+    const int scene_result = pvr_scene_finish();
+    if(list_result < 0 || scene_result < 0) {
+        return GL_KOS_NATIVE_BENCH_PVR_ERROR;
+    }
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
+int SceneNativeBenchSubmitP3T2BGRAAllVisible(
+        const void* header, unsigned int mode, const void* vertices,
+        const int* counts, int strip_count, int total_count) {
+    if(!header || !vertices || ((uintptr_t)header & 31u) != 0 ||
+       ((uintptr_t)vertices & 3u) != 0 || total_count < 3 ||
+       total_count > NATIVE_BENCH_INPUT_RECORD_LIMIT - 1 ||
+       !_glNativeBenchIsOpaquePolyHeader(header) ||
+       (mode != GL_TRIANGLES && mode != GL_TRIANGLE_STRIP)) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+    if(counts && (mode != GL_TRIANGLE_STRIP || strip_count <= 0)) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    pvr_scene_begin();
+    if(pvr_list_begin(PVR_LIST_OP_POLY) < 0) {
+        pvr_scene_finish();
+        return GL_KOS_NATIVE_BENCH_PVR_ERROR;
+    }
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+    const uintptr_t ta = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+    sq_fast_cpy((void*)ta, header, 1);
+    /* The header occupied SQ0. Begin vertices at SQ1, then carry this address
+       through every strip instead of restarting the queue sequence. */
+    uintptr_t destination = ta + sizeof(Vertex);
+
+    const GLKosVertexP3T2BGRA* in =
+        (const GLKosVertexP3T2BGRA*)vertices;
+    bool all_visible = true;
+    if(mode == GL_TRIANGLES) {
+        all_visible = _glNativeBenchSubmitTrianglesSQ(
+            in, total_count, &destination);
+    } else if(!counts) {
+        all_visible = _glNativeBenchSubmitStripSQ(
+            in, total_count, &destination);
+    } else {
+        int first = 0;
+        for(int s = 0; s < strip_count; ++s) {
+            all_visible &= _glNativeBenchSubmitStripSQ(
+                in + first, counts[s], &destination);
+            first += counts[s];
+        }
+    }
+    sq_wait();
+
+    const int list_result = pvr_list_finish();
+    const int scene_result = pvr_scene_finish();
+    if(list_result < 0 || scene_result < 0) {
+        return GL_KOS_NATIVE_BENCH_PVR_ERROR;
+    }
+    return all_visible ? GL_KOS_NATIVE_BENCH_OK
+                       : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+}
+#endif
 
 enum Visible {
     NONE_VISIBLE = 0,
@@ -617,6 +932,197 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
 
     sq_wait();
 }
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+typedef struct NativeBenchPacketSink {
+    Vertex* packet;
+    int capacity;
+    int count;
+} NativeBenchPacketSink;
+
+/* Count every record even after capacity is exhausted so callers receive the
+   exact required size. The successfully written prefix remains contiguous. */
+static void _glNativeBenchPacketPush(
+        NativeBenchPacketSink* sink, const Vertex* records, int count) {
+    int writable = sink->capacity - sink->count;
+    if(writable < 0) writable = 0;
+    if(writable > count) writable = count;
+    if(writable > 0) {
+        memcpy(sink->packet + sink->count, records,
+               (size_t)writable * sizeof(Vertex));
+    }
+    sink->count += count;
+}
+
+/* Exact specialization of SceneListSubmitGeneric for one independent
+   EOL-terminated triangle. The production edge/divide primitives and the
+   switch's submission order (including continuation duplicates) are retained,
+   while the sink is RAM rather than the TA store queues. */
+static void _glNativeBenchClipTriangleToPacket(
+        Vertex* v, NativeBenchPacketSink* sink) {
+    const int visible_mask =
+        ((v[0].xyz[2] >= -v[0].w) << 0) |
+        ((v[1].xyz[2] >= -v[1].w) << 1) |
+        ((v[2].xyz[2] >= -v[2].w) << 2);
+    Vertex __attribute__((aligned(32))) scratch[4];
+    Vertex __attribute__((aligned(32))) queued;
+    bool have_queued = false;
+    Vertex* const a = &scratch[0];
+    Vertex* const b = &scratch[1];
+    Vertex* const c = &scratch[2];
+    Vertex* const d = &scratch[3];
+
+#define BENCH_QUEUE(vertex) \
+    do { memcpy_vertex(&queued, (vertex)); have_queued = true; } while(0)
+#define BENCH_PUSH(vertex, n) \
+    _glNativeBenchPacketPush(sink, (vertex), (n))
+
+    if(visible_mask == ALL_VISIBLE) {
+        _glPerspectiveDivideVertex(v, 1);
+        BENCH_QUEUE(v);
+    } else {
+        switch(visible_mask) {
+            case NONE_VISIBLE:
+                break;
+            case FIRST_VISIBLE:
+                _glClipEdge(&v[0], &v[1], a);
+                a->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[2], &v[0], b);
+                b->flags = GPU_CMD_VERTEX;
+                _glPerspectiveDivideVertex(&v[0], 1);
+                BENCH_PUSH(&v[0], 1);
+                _glPerspectiveDivideVertex(a, 2);
+                BENCH_PUSH(a, 2);
+                BENCH_QUEUE(b);
+                break;
+            case SECOND_VISIBLE:
+                memcpy_vertex(c, &v[1]);
+                _glClipEdge(&v[0], &v[1], a);
+                a->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[1], &v[2], b);
+                b->flags = v[2].flags;
+                _glPerspectiveDivideVertex(a, 3);
+                BENCH_PUSH(a, 1);
+                BENCH_PUSH(c, 1);
+                BENCH_QUEUE(b);
+                break;
+            case THIRD_VISIBLE:
+                memcpy_vertex(c, &v[2]);
+                _glClipEdge(&v[1], &v[2], a);
+                a->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[2], &v[0], b);
+                b->flags = GPU_CMD_VERTEX;
+                _glPerspectiveDivideVertex(a, 3);
+                BENCH_PUSH(a, 2);
+                BENCH_QUEUE(c);
+                break;
+            case FIRST_AND_SECOND_VISIBLE:
+                memcpy_vertex(c, &v[1]);
+                _glClipEdge(&v[2], &v[0], b);
+                b->flags = GPU_CMD_VERTEX;
+                _glPerspectiveDivideVertex(&v[0], 1);
+                BENCH_PUSH(&v[0], 1);
+                _glClipEdge(&v[1], &v[2], a);
+                a->flags = v[2].flags;
+                _glPerspectiveDivideVertex(a, 3);
+                BENCH_PUSH(c, 1);
+                BENCH_PUSH(b, 2);
+                BENCH_QUEUE(a);
+                break;
+            case SECOND_AND_THIRD_VISIBLE:
+                memcpy_vertex(c, &v[1]);
+                memcpy_vertex(d, &v[2]);
+                _glClipEdge(&v[0], &v[1], a);
+                a->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[2], &v[0], b);
+                b->flags = GPU_CMD_VERTEX;
+                _glPerspectiveDivideVertex(a, 4);
+                BENCH_PUSH(a, 1);
+                BENCH_PUSH(c, 1);
+                BENCH_PUSH(b, 2);
+                BENCH_QUEUE(d);
+                break;
+            case FIRST_AND_THIRD_VISIBLE:
+                memcpy_vertex(c, &v[2]);
+                c->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[0], &v[1], a);
+                a->flags = GPU_CMD_VERTEX;
+                _glClipEdge(&v[1], &v[2], b);
+                b->flags = GPU_CMD_VERTEX;
+                _glPerspectiveDivideVertex(&v[0], 1);
+                BENCH_PUSH(&v[0], 1);
+                _glPerspectiveDivideVertex(a, 3);
+                BENCH_PUSH(a, 1);
+                BENCH_PUSH(c, 1);
+                BENCH_PUSH(b, 1);
+                BENCH_QUEUE(c);
+                break;
+            default:
+                __builtin_unreachable();
+        }
+    }
+
+    if(have_queued) {
+        queued.flags = visible_mask == ALL_VISIBLE
+            ? GPU_CMD_VERTEX : GPU_CMD_VERTEX_EOL;
+        BENCH_PUSH(&queued, 1);
+    }
+    if(visible_mask == ALL_VISIBLE) {
+        _glPerspectiveDivideVertex(&v[1], 2);
+        v[2].flags = GPU_CMD_VERTEX_EOL;
+        BENCH_PUSH(&v[1], 2);
+    }
+
+#undef BENCH_PUSH
+#undef BENCH_QUEUE
+}
+
+int SceneNativeBenchBuildTrianglePacketP3T2BGRA(
+        const void* header, const void* vertices, int count,
+        Vertex* packet, int packet_capacity, int* packet_records) {
+    if(!header || !vertices || !packet || !packet_records || count < 3 ||
+       count % 3 != 0 || packet_capacity < 1 ||
+       count > ((INT_MAX - 1) / 5) * 3) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    memcpy(packet, header, sizeof(Vertex));
+    NativeBenchPacketSink sink = {
+        .packet = packet,
+        .capacity = packet_capacity,
+        .count = 1
+    };
+    const GLKosVertexP3T2BGRA* in =
+        (const GLKosVertexP3T2BGRA*)vertices;
+
+    for(int first = 0; first < count; first += 3) {
+        Vertex __attribute__((aligned(32))) triangle[3];
+        VERTEX_CACHE_ALLOC(&triangle[0]);
+        VERTEX_CACHE_ALLOC(&triangle[1]);
+        VERTEX_CACHE_ALLOC(&triangle[2]);
+        TransformVertex2(
+            in[first].x, in[first].y, in[first].z,
+            triangle[0].xyz, &triangle[0].w,
+            in[first + 1].x, in[first + 1].y, in[first + 1].z,
+            triangle[1].xyz, &triangle[1].w);
+        TransformVertex(
+            in[first + 2].x, in[first + 2].y, in[first + 2].z, 1.0f,
+            triangle[2].xyz, &triangle[2].w);
+        for(int i = 0; i < 3; ++i) {
+            triangle[i].flags = i == 2
+                ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+            triangle[i].uv[0] = in[first + i].u;
+            triangle[i].uv[1] = in[first + i].v;
+            *((uint32_t*)triangle[i].bgra) = in[first + i].bgra;
+        }
+        _glNativeBenchClipTriangleToPacket(triangle, &sink);
+    }
+
+    *packet_records = sink.count;
+    return sink.count <= sink.capacity
+        ? GL_KOS_NATIVE_BENCH_OK : GL_KOS_NATIVE_BENCH_CAPACITY;
+}
+#endif
 
 /* Fused divide+submit for an all-visible run (2026-07-16, the heavy-city gap):
    the three-pass shape (scan, divide-in-place, sq_fast_cpy) reads the run's

@@ -1985,6 +1985,15 @@ GLuint APIENTRY glKosGetFastPathCapabilities(void) {
     return GL_KOS_FAST_PATH_CAPABILITIES;
 }
 
+/* Deliberately mode-specific link symbols: the public macro names the symbol
+   matching the consumer's compile mode, while each archive defines only its
+   own mode. This catches configuration skew in both directions at link time. */
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+void APIENTRY glKosRequireNativeBenchArchive1(void) {}
+#else
+void APIENTRY glKosRequireNativeBenchArchive0(void) {}
+#endif
+
 GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
     TRACE();
@@ -2056,6 +2065,226 @@ GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
     _glEndFusedDraw();
     return GL_TRUE;
 }
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+typedef char GLKosNativeBenchRecordSizeMustBe32[
+    sizeof(GLKosNativeBenchRecord) == 32 ? 1 : -1];
+
+GLuint APIENTRY glKosNativeBenchArchiveAbiVersion(void) {
+    return GL_KOS_NATIVE_BENCH_ABI_VERSION;
+}
+
+static GLint _glNativeBenchCheck(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+        const GLKosNativeBenchRecord* output) {
+    const GLboolean triangles =
+        mode == GL_TRIANGLES && count >= 3 && count % 3 == 0;
+    const GLboolean strip = mode == GL_TRIANGLE_STRIP && count >= 3;
+    if(!triangles && !strip) return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    if(!vertices || !output || ((uintptr_t)vertices & 3u) != 0 ||
+       ((uintptr_t)output & 31u) != 0) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    /* These are the state contracts a direct-final-record lane cannot retain.
+       They are explicit rejects, never inferred all-visible promises. */
+    if(IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
+       _glPolygonOffsetMul != 1.0f || CAPTURE_PENDING >= 0 ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF ||
+       _glActivePolyList() != _glOpaquePolyList() ||
+       _glIsFogEnabled() || _glIsScissorTestEnabled()) {
+        return GL_KOS_NATIVE_BENCH_UNSUPPORTED_STATE;
+    }
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
+static void _glNativeBenchCompileHeaderUnchecked(
+        GLKosNativeBenchRecord* header) {
+    PolyContext ctx;
+    PolyHeader compiled;
+    _glBuildPolyContext(&ctx, _glActivePolyList(), 0);
+    CompilePolyHeader(&compiled, &ctx);
+    compiled.cmd |= 0xC0000;  /* same six-strip header bits */
+    memcpy(header, &compiled, sizeof(compiled));
+}
+
+GLint APIENTRY glKosNativeBenchCompileHeader(
+        GLKosNativeBenchRecord* header) {
+    if(!header || ((uintptr_t)header & 31u) != 0) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+    if(_glActivePolyList() != _glOpaquePolyList() ||
+       _glIsFogEnabled() || _glIsScissorTestEnabled() ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
+        return GL_KOS_NATIVE_BENCH_UNSUPPORTED_STATE;
+    }
+    _glNativeBenchCompileHeaderUnchecked(header);
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
+GLint APIENTRY glKosNativeBenchBuildP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+        GLKosNativeBenchRecord* output) {
+    const GLint check = _glNativeBenchCheck(mode, vertices, count, output);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    _glTnlLoadMatrix();
+    return SceneNativeBenchBuildP3T2BGRA(
+        (unsigned int)mode, vertices, (int)count, (Vertex*)output);
+}
+
+GLint APIENTRY glKosNativeBenchBuildMultiStripsP3T2BGRA(
+        const GLKosVertexP3T2BGRA* vertices,
+        const GLsizei* counts, GLsizei strip_count,
+        GLKosNativeBenchRecord* output) {
+    if(!counts || strip_count <= 0) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    GLsizei total = 0;
+    for(GLsizei s = 0; s < strip_count; ++s) {
+        if(counts[s] < 3 || total > INT_MAX - counts[s]) {
+            return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+        }
+        total += counts[s];
+    }
+    const GLint check = _glNativeBenchCheck(
+        GL_TRIANGLE_STRIP, vertices, total, output);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    _glTnlLoadMatrix();
+    GLsizei first = 0;
+    GLboolean all_visible = GL_TRUE;
+    for(GLsizei s = 0; s < strip_count; ++s) {
+        const GLint result = SceneNativeBenchBuildP3T2BGRA(
+            GL_TRIANGLE_STRIP, vertices + first, counts[s],
+            (Vertex*)output + first);
+        first += counts[s];
+        if(result == GL_KOS_NATIVE_BENCH_NEAR_CLIP) {
+            all_visible = GL_FALSE;
+        } else if(result != GL_KOS_NATIVE_BENCH_OK) {
+            return result;
+        }
+    }
+    return all_visible ? GL_KOS_NATIVE_BENCH_OK
+                       : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+}
+
+GLint APIENTRY glKosNativeBenchValidateP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+        GLKosNativeBenchRecord* candidate,
+        GLKosNativeBenchRecord* classic,
+        GLuint* mismatch_word) {
+    if(mismatch_word) *mismatch_word = 0;
+    GLint check = _glNativeBenchCheck(mode, vertices, count, candidate);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+    if(!classic || ((uintptr_t)classic & 31u) != 0 || classic == candidate) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    _glTnlLoadMatrix();
+    check = SceneNativeBenchBuildP3T2BGRA(
+        (unsigned int)mode, vertices, (int)count, (Vertex*)candidate);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    _glTnlLoadMatrix();
+    const GLubyte* const base = (const GLubyte*)vertices;
+    _glWriteFusedVertices(
+        (Vertex*)classic,
+        base + offsetof(GLKosVertexP3T2BGRA, x),
+        base + offsetof(GLKosVertexP3T2BGRA, u),
+        base + offsetof(GLKosVertexP3T2BGRA, bgra),
+        sizeof(GLKosVertexP3T2BGRA), sizeof(GLKosVertexP3T2BGRA),
+        sizeof(GLKosVertexP3T2BGRA), count,
+        mode == GL_TRIANGLES ? GL_TRUE : GL_FALSE);
+    check = SceneNativeBenchFinalizeClassic((Vertex*)classic, (int)count);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    const GLuint words = (GLuint)count * 8u;
+    if(memcmp(candidate, classic, (size_t)count * sizeof(*candidate)) == 0) {
+        if(mismatch_word) *mismatch_word = words;
+        return GL_KOS_NATIVE_BENCH_OK;
+    }
+    const GLubyte* a = (const GLubyte*)candidate;
+    const GLubyte* b = (const GLubyte*)classic;
+    for(GLuint i = 0; i < words; ++i) {
+        GLuint aw, bw;
+        memcpy(&aw, a + i * sizeof(GLuint), sizeof(aw));
+        memcpy(&bw, b + i * sizeof(GLuint), sizeof(bw));
+        if(aw != bw) {
+            if(mismatch_word) *mismatch_word = i;
+            return GL_KOS_NATIVE_BENCH_MISMATCH;
+        }
+    }
+    /* Full memcmp differed but no full word did: impossible for 32-byte
+       records, retained as a defensive mismatch result. */
+    return GL_KOS_NATIVE_BENCH_MISMATCH;
+}
+
+GLint APIENTRY glKosNativeBenchBuildTrianglePacketP3T2BGRA(
+        const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+        GLKosNativeBenchRecord* packet, GLsizei packet_capacity,
+        GLsizei* packet_records) {
+    if(packet_records) *packet_records = 0;
+    if(!packet_records || packet_capacity <= 0) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+
+    const GLint check = _glNativeBenchCheck(
+        GL_TRIANGLES, vertices, count, packet);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    GLKosNativeBenchRecord header;
+    _glNativeBenchCompileHeaderUnchecked(&header);
+    _glTnlLoadMatrix();
+
+    int records = 0;
+    const GLint result = SceneNativeBenchBuildTrianglePacketP3T2BGRA(
+        &header, vertices, (int)count, (Vertex*)packet,
+        (int)packet_capacity, &records);
+    *packet_records = (GLsizei)records;
+    return result;
+}
+
+GLint APIENTRY glKosNativeBenchSubmitP3T2BGRAAllVisible(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    GLKosNativeBenchRecord header;
+    const GLint check = _glNativeBenchCheck(
+        mode, vertices, count, &header);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    _glNativeBenchCompileHeaderUnchecked(&header);
+    _glTnlLoadMatrix();
+    return SceneNativeBenchSubmitP3T2BGRAAllVisible(
+        &header, (unsigned int)mode, vertices, NULL, 0, (int)count);
+}
+
+GLint APIENTRY glKosNativeBenchSubmitMultiStripsP3T2BGRAAllVisible(
+        const GLKosVertexP3T2BGRA* vertices,
+        const GLsizei* counts, GLsizei strip_count) {
+    if(!counts || strip_count <= 0) {
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    }
+    GLsizei total = 0;
+    for(GLsizei s = 0; s < strip_count; ++s) {
+        if(counts[s] < 3 || total > INT_MAX - counts[s]) {
+            return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+        }
+        total += counts[s];
+    }
+
+    GLKosNativeBenchRecord header;
+    const GLint check = _glNativeBenchCheck(
+        GL_TRIANGLE_STRIP, vertices, total, &header);
+    if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+
+    _glNativeBenchCompileHeaderUnchecked(&header);
+    _glTnlLoadMatrix();
+    return SceneNativeBenchSubmitP3T2BGRAAllVisible(
+        &header, GL_TRIANGLE_STRIP, vertices, (const int*)counts,
+        (int)strip_count, (int)total);
+}
+#endif
 
 void APIENTRY glKosDrawMultiStrips(const GLint* firsts, const GLsizei* counts, GLsizei n) {
     TRACE();

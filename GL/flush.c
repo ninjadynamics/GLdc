@@ -3,6 +3,10 @@
 #include "private.h"
 #include "config.h"
 
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+#include <dc/pvr.h>
+#endif
+
 #if GLDC_S3_SEGMENTED_OP
 /* S3 segmented hot drain — platforms/sh4.c */
 int  _glS3SceneOpen(void);
@@ -74,7 +78,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.21-0111-stats0]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.21-1006-stats0-nbench1]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -229,6 +233,44 @@ static void clear_lists(void) {
     PT_LIST.header_emitted = GL_FALSE;
     TR_LIST.header_emitted = GL_FALSE;
 }
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+/* Submit the ordinary GLdc queues from an already-ready PVR boundary.  The
+   benchmark deliberately keeps pvr_wait_ready() outside its timer; everything
+   from pvr_scene_begin through pvr_scene_finish remains inside, matching the
+   exclusive raw and N1 envelopes.  N0 is opaque-only so accepting any other
+   list/sprite traffic would make the comparison ill-defined. */
+GLint APIENTRY glKosNativeBenchSubmitQueuedReady(void) {
+#if GLDC_S3_SEGMENTED_OP
+    if(_glS3SceneOpen()) {
+        return GL_KOS_NATIVE_BENCH_UNSUPPORTED_STATE;
+    }
+#endif
+    if(!list_has_content(&OP_LIST) ||
+       list_has_content(&PT_LIST) || list_has_content(&TR_LIST) ||
+       aligned_vector_size(&OP_LIST.sprites) != 0) {
+        return GL_KOS_NATIVE_BENCH_UNSUPPORTED_STATE;
+    }
+
+    pvr_scene_begin();
+    SceneListBegin(GPU_LIST_OP_POLY);
+    submit_list(&OP_LIST);
+    SceneListFinish();
+    SceneFinish();
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
+/* Queue lifetime is intentionally separated from submission so cleanup does
+   not pollute the timed envelope.  This is benchmark-only and never services
+   deferred texture frees: the isolated executable loads no game assets. */
+void APIENTRY glKosNativeBenchResetQueued(void) {
+    clear_lists();
+#if GLDC_S3_SEGMENTED_OP
+    _glS3SwapReset();
+#endif
+    _glInvalidateCapturedArrays();
+}
+#endif
 
 #if GLDC_S3_SEGMENTED_OP
 /* S3 swap-side OP: the tail of the vector (undrained remainder) plus the sprite

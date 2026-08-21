@@ -269,6 +269,20 @@ void SceneListBegin(GPUList list);
 void SceneListSubmit(Vertex* v2, int n);
 void SceneListFinish();
 
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+/* N0/N1 RAM sinks. Public validation/state ownership stays in draw.c; these
+   SH4 helpers run with the current transform already loaded into XMTRX. */
+int SceneNativeBenchBuildP3T2BGRA(
+    unsigned int mode, const void* vertices, int count, Vertex* output);
+int SceneNativeBenchFinalizeClassic(Vertex* vertices, int count);
+int SceneNativeBenchSubmitP3T2BGRAAllVisible(
+    const void* header, unsigned int mode, const void* vertices,
+    const int* counts, int strip_count, int total_count);
+int SceneNativeBenchBuildTrianglePacketP3T2BGRA(
+    const void* header, const void* vertices, int count,
+    Vertex* packet, int packet_capacity, int* packet_records);
+#endif
+
 void SceneFinish();
 
 /* TA sprite quads (the glow lane): transform+divide `quads` planar quads NOW

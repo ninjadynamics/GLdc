@@ -36,6 +36,108 @@ GLAPI GLuint APIENTRY glKosGetFastPathCapabilities(void);
 GLAPI GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
     GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
 
+/* Link-time configuration canary. Every Dreamcast consumer should call the
+ * macro once: a normal object can then never silently link a benchmark GLdc
+ * archive (or vice versa). Exactly one of the suffixed symbols exists in a
+ * given archive. */
+GLAPI void APIENTRY glKosRequireNativeBenchArchive0(void);
+GLAPI void APIENTRY glKosRequireNativeBenchArchive1(void);
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+#define glKosRequireNativeBenchArchive() glKosRequireNativeBenchArchive1()
+#else
+#define glKosRequireNativeBenchArchive() glKosRequireNativeBenchArchive0()
+#endif
+
+/* N0/N1 hardware-lab ABI. This is deliberately absent from ordinary builds:
+ * it exposes final 32-byte TA records solely so an exclusive microbenchmark
+ * can compare raw PVR submission, a fused object-to-record kernel, the normal
+ * GLdc lane and raylib on identical input. It is not a game rendering API and
+ * must never be mixed with a live GLdc scene/list. */
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+#define GL_KOS_NATIVE_BENCH_ABI_VERSION 2u
+
+typedef struct __attribute__((aligned(32))) GLKosNativeBenchRecord {
+    GLuint word[8];
+} GLKosNativeBenchRecord;
+
+enum {
+    GL_KOS_NATIVE_BENCH_OK = 0,
+    GL_KOS_NATIVE_BENCH_BAD_ARGUMENT = 1,
+    GL_KOS_NATIVE_BENCH_UNSUPPORTED_STATE = 2,
+    GL_KOS_NATIVE_BENCH_NEAR_CLIP = 3,
+    GL_KOS_NATIVE_BENCH_MISMATCH = 4,
+    GL_KOS_NATIVE_BENCH_PVR_ERROR = 5,
+    GL_KOS_NATIVE_BENCH_CAPACITY = 6
+};
+
+/* Runtime companion to the link-time canary, for logging and diagnostics. */
+GLAPI GLuint APIENTRY glKosNativeBenchArchiveAbiVersion(void);
+
+/* Compile the current GL state into the exact header used by GLdc. This does
+ * not emit a header or mark GL state clean. */
+GLAPI GLint APIENTRY glKosNativeBenchCompileHeader(
+    GLKosNativeBenchRecord* header);
+
+/* Fused object-space -> final-record experiment. V2 accepts GL_TRIANGLES and
+ * GL_TRIANGLE_STRIP with neutral polygon offset, no TnL effects/capture, and
+ * radial vertex fog off. Every input record is transformed even when one
+ * crosses the near plane; NEAR_CLIP is returned after the complete output has
+ * been classified. Such unclipped output must not be submitted. */
+GLAPI GLint APIENTRY glKosNativeBenchBuildP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+    GLKosNativeBenchRecord* output);
+
+/* Contiguous long-strip batch: counts partitions one vertex array and stamps
+ * one EOL per partition. The matrix is loaded once for the whole batch. */
+GLAPI GLint APIENTRY glKosNativeBenchBuildMultiStripsP3T2BGRA(
+    const GLKosVertexP3T2BGRA* vertices,
+    const GLsizei* counts, GLsizei strip_count,
+    GLKosNativeBenchRecord* output);
+
+/* Build both the N1 result and the classic transform+finalize result in RAM,
+ * then compare all eight words per record. mismatch_word receives the first
+ * differing word index, or count*8 on success. */
+GLAPI GLint APIENTRY glKosNativeBenchValidateP3T2BGRA(
+    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+    GLKosNativeBenchRecord* candidate,
+    GLKosNativeBenchRecord* classic,
+    GLuint* mismatch_word);
+
+/* Untimed exact near-plane oracle for independent triangles. packet receives
+ * one compiled opaque header followed by the production clipper's final TA
+ * records, including its exact order, duplicates and EOL flags. Capacity and
+ * packet_records are measured in 32-byte records and include the header. On
+ * CAPACITY, packet_records reports the exact required size; the prefix that
+ * fit remains valid but must not be submitted. Input and packet must not
+ * overlap. */
+GLAPI GLint APIENTRY glKosNativeBenchBuildTrianglePacketP3T2BGRA(
+    const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+    GLKosNativeBenchRecord* packet, GLsizei packet_capacity,
+    GLsizei* packet_records);
+
+/* True object-space -> TA path used by N0 route 2. The immutable input must
+ * have returned OK from the RAM validator first. The timed kernel still
+ * classifies every transformed record and returns NEAR_CLIP after completing,
+ * but it does not clip. These calls own one exclusive opaque scene and must be
+ * preceded by pvr_wait_ready(). */
+GLAPI GLint APIENTRY glKosNativeBenchSubmitP3T2BGRAAllVisible(
+    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
+GLAPI GLint APIENTRY glKosNativeBenchSubmitMultiStripsP3T2BGRAAllVisible(
+    const GLKosVertexP3T2BGRA* vertices,
+    const GLsizei* counts, GLsizei strip_count);
+
+/* Submit one contiguous header+final-record packet in an exclusive opaque PVR
+ * scene. packet_records includes the header. The caller must pvr_wait_ready()
+ * before the timed call; no ordinary GLdc/raylib geometry may be pending. */
+GLAPI GLint APIENTRY glKosNativeBenchSubmitFinalPacket(
+    const GLKosNativeBenchRecord* packet, GLsizei packet_records);
+
+/* Queue-only benchmark envelope. SubmitQueuedReady assumes PVR readiness and
+ * an opaque-only queued scene; ResetQueued discards it after the timer. */
+GLAPI GLint APIENTRY glKosNativeBenchSubmitQueuedReady(void);
+GLAPI void APIENTRY glKosNativeBenchResetQueued(void);
+#endif
+
 /* GLdcStats is public even when instrumentation is compiled out so callers
  * never need private GLdc headers or hand-written declarations. The API
  * functions are always linkable; glKosGetStats() returns NULL when
