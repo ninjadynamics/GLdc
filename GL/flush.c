@@ -78,7 +78,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.21-1130-stats0-nbench0-n21]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [N2 deferred lanes]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -217,7 +217,7 @@ static int _gt_frames;
 static void submit_list(PolyList* l) {
     const GLboolean has_deferred =
 #if GLDC_DEFERRED_P3T2BGRA
-        l == &OP_LIST && _glDeferredP3T2BGRACount() > 0;
+        _glDeferredP3T2BGRAListCount(l) > 0;
 #else
         GL_FALSE;
 #endif
@@ -234,7 +234,7 @@ static GLboolean list_has_content(PolyList* l) {
     if(aligned_vector_header(&l->vector)->size > 2 ||
        aligned_vector_size(&l->sprites) > 0) return GL_TRUE;
 #if GLDC_DEFERRED_P3T2BGRA
-    if(l == &OP_LIST && _glDeferredP3T2BGRACount() > 0) return GL_TRUE;
+    if(_glDeferredP3T2BGRAListCount(l) > 0) return GL_TRUE;
 #endif
     return GL_FALSE;
 }
@@ -340,9 +340,11 @@ void APIENTRY glKosSwapBuffers() {
     _gt_op_verts += aligned_vector_size(&OP_LIST.vector);
 #if GLDC_DEFERRED_P3T2BGRA
     /* Replace each physical sentinel with the logical vertices transformed at
-       swap so op ns/v remains an honest denominator. */
-    _gt_op_verts += _glDeferredP3T2BGRAVertexCount() -
-                    _glDeferredP3T2BGRACount();
+       swap so OP ns/v and the reported TR volume keep honest denominators. */
+    _gt_op_verts += _glDeferredP3T2BGRAListVertexCount(&OP_LIST) -
+                    _glDeferredP3T2BGRAListCount(&OP_LIST);
+    _gt_tr_verts += _glDeferredP3T2BGRAListVertexCount(&TR_LIST) -
+                    _glDeferredP3T2BGRAListCount(&TR_LIST);
 #endif
     _gt_tr_verts += aligned_vector_size(&TR_LIST.vector);
 #endif

@@ -114,7 +114,11 @@ void APIENTRY glKosPrintStats(void) {
     if(s->deferred_quad_attempts > 0 ||
        s->deferred_descriptors_submitted > 0) {
         printf("[GLdc F#%u] n2: try=%u hit=%u fall=%u queued=%u "
-               "drain=%u direct=%u nearq=%u reject=%u/%u/%u/%u/%u/%u\n",
+               "drain=%u direct=%u nearq=%u soa=%u/%u/%u/%u:%u/%u/%u "
+               "mstrip=%u/%u/%u/%u/%u:%u/%u/%u "
+               "tri=%u/%u/%u/%u:%u/%u/%u "
+               "color=%u/%u/%u/%u:%u/%u/%u "
+               "reject=%u/%u/%u/%u/%u/%u\n",
                s->frame_no,
                s->deferred_quad_attempts,
                s->deferred_quad_hits,
@@ -123,6 +127,35 @@ void APIENTRY glKosPrintStats(void) {
                s->deferred_descriptors_submitted,
                s->deferred_direct_vertices,
                s->deferred_near_quads,
+               s->deferred_array_attempts,
+               s->deferred_array_hits,
+               s->deferred_array_fallbacks,
+               s->deferred_array_vertices,
+               s->deferred_array_descriptors_submitted,
+               s->deferred_array_direct_vertices,
+               s->deferred_array_near_quads,
+               s->deferred_multistrip_attempts,
+               s->deferred_multistrip_hits,
+               s->deferred_multistrip_fallbacks,
+               s->deferred_multistrip_strips,
+               s->deferred_multistrip_vertices,
+               s->deferred_multistrip_descriptors_submitted,
+               s->deferred_multistrip_direct_vertices,
+               s->deferred_multistrip_near_fallbacks,
+               s->deferred_triangle_attempts,
+               s->deferred_triangle_hits,
+               s->deferred_triangle_fallbacks,
+               s->deferred_triangle_vertices,
+               s->deferred_triangle_descriptors_submitted,
+               s->deferred_triangle_direct_vertices,
+               s->deferred_triangle_near_fallbacks,
+               s->deferred_color_array_attempts,
+               s->deferred_color_array_hits,
+               s->deferred_color_array_fallbacks,
+               s->deferred_color_array_vertices,
+               s->deferred_color_array_descriptors_submitted,
+               s->deferred_color_array_direct_vertices,
+               s->deferred_color_array_near_quads,
                s->deferred_reject_disabled,
                s->deferred_reject_mode_or_count,
                s->deferred_reject_alignment,

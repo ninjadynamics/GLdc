@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #include <limits.h>
 #include <stddef.h>
 
@@ -1980,14 +1981,24 @@ typedef char GLKosP3T2BGRAUvMustStartAt12[
     offsetof(GLKosVertexP3T2BGRA, u) == 12 ? 1 : -1];
 typedef char GLKosP3T2BGRAColorMustStartAt20[
     offsetof(GLKosVertexP3T2BGRA, bgra) == 20 ? 1 : -1];
+typedef char GLKosStripRangeSizeMustBe8[
+    sizeof(GLKosStripRange) == 8 ? 1 : -1];
+typedef char GLKosStripRangeFirstMustStartAt0[
+    offsetof(GLKosStripRange, first) == 0 ? 1 : -1];
+typedef char GLKosStripRangeCountMustStartAt4[
+    offsetof(GLKosStripRange, count) == 4 ? 1 : -1];
 
 #if GLDC_DEFERRED_P3T2BGRA
 #define GLDC_DEFERRED_P3T2BGRA_CAPACITY 64u
+#define GLDC_DEFERRED_P3T2BGRA_STRIP_CAPACITY 4096u
 
 static GLdcDeferredP3T2BGRA __attribute__((aligned(32)))
     DEFERRED_P3T2BGRA[GLDC_DEFERRED_P3T2BGRA_CAPACITY];
+static GLKosStripRange __attribute__((aligned(32)))
+    DEFERRED_P3T2BGRA_STRIPS[GLDC_DEFERRED_P3T2BGRA_STRIP_CAPACITY];
 static GLuint DEFERRED_P3T2BGRA_COUNT;
 static GLuint DEFERRED_P3T2BGRA_VERTICES;
+static GLuint DEFERRED_P3T2BGRA_STRIP_COUNT;
 
 const GLdcDeferredP3T2BGRA* _glDeferredP3T2BGRAAt(GLuint index) {
     return index < DEFERRED_P3T2BGRA_COUNT
@@ -2002,9 +2013,27 @@ GLuint _glDeferredP3T2BGRAVertexCount(void) {
     return DEFERRED_P3T2BGRA_VERTICES;
 }
 
+GLuint _glDeferredP3T2BGRAListCount(const PolyList* list) {
+    GLuint count = 0;
+    for(GLuint i = 0; i < DEFERRED_P3T2BGRA_COUNT; ++i) {
+        if(DEFERRED_P3T2BGRA[i].list == list) ++count;
+    }
+    return count;
+}
+
+GLuint _glDeferredP3T2BGRAListVertexCount(const PolyList* list) {
+    GLuint count = 0;
+    for(GLuint i = 0; i < DEFERRED_P3T2BGRA_COUNT; ++i) {
+        if(DEFERRED_P3T2BGRA[i].list == list)
+            count += DEFERRED_P3T2BGRA[i].count;
+    }
+    return count;
+}
+
 void _glResetDeferredP3T2BGRA(void) {
     DEFERRED_P3T2BGRA_COUNT = 0;
     DEFERRED_P3T2BGRA_VERTICES = 0;
+    DEFERRED_P3T2BGRA_STRIP_COUNT = 0;
 }
 #endif
 
@@ -2099,52 +2128,70 @@ GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
     return GL_TRUE;
 }
 
-GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
-        const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
+        const GLKosVertexP3T2BGRA* vertices,
+        const GLfloat* positions, const GLfloat* texcoords,
+        const GLubyte* colors, const GLubyte* constant_bgra,
+        GLsizei count, GLboolean arrays, GLboolean constant_color) {
     TRACE();
     GLDC_STAT_INC(deferred_quad_attempts);
+    if(arrays) GLDC_STAT_INC(deferred_array_attempts);
+    if(constant_color) GLDC_STAT_INC(deferred_color_array_attempts);
+
+#define DEFERRED_REJECT(counter) do {             \
+        GLDC_STAT_INC(deferred_quad_fallbacks);   \
+        if(arrays)                                \
+            GLDC_STAT_INC(deferred_array_fallbacks); \
+        if(constant_color)                        \
+            GLDC_STAT_INC(deferred_color_array_fallbacks); \
+        GLDC_STAT_INC(counter);                   \
+        return GL_FALSE;                          \
+    } while(0)
 
 #if !GLDC_DEFERRED_P3T2BGRA
     (void)vertices;
+    (void)positions;
+    (void)texcoords;
+    (void)colors;
+    (void)constant_bgra;
     (void)count;
-    GLDC_STAT_INC(deferred_quad_fallbacks);
-    GLDC_STAT_INC(deferred_reject_disabled);
-    return GL_FALSE;
+    DEFERRED_REJECT(deferred_reject_disabled);
 #else
     /* Every rejection precedes matrix/header/list mutation. In particular,
        leave a pending capture armed so the caller's synchronous fallback is
        still the draw glKosCaptureArrays() promised to capture. */
     if(count < 4 || count % 4 != 0) {
-        GLDC_STAT_INC(deferred_quad_fallbacks);
-        GLDC_STAT_INC(deferred_reject_mode_or_count);
-        return GL_FALSE;
+        DEFERRED_REJECT(deferred_reject_mode_or_count);
     }
-    if(!vertices || ((uintptr_t)vertices & 3u) != 0) {
-        GLDC_STAT_INC(deferred_quad_fallbacks);
-        GLDC_STAT_INC(deferred_reject_alignment);
-        return GL_FALSE;
+    if(arrays) {
+        if(!positions || !texcoords || !colors ||
+           (constant_color && !constant_bgra) ||
+           ((((uintptr_t)positions) | ((uintptr_t)texcoords) |
+             ((uintptr_t)colors)) & 3u) != 0) {
+            DEFERRED_REJECT(deferred_reject_alignment);
+        }
+    } else if(!vertices || ((uintptr_t)vertices & 3u) != 0) {
+        DEFERRED_REJECT(deferred_reject_alignment);
     }
     if(CAPTURE_PENDING >= 0) {
-        GLDC_STAT_INC(deferred_quad_fallbacks);
-        GLDC_STAT_INC(deferred_reject_capture);
-        return GL_FALSE;
+        DEFERRED_REJECT(deferred_reject_capture);
     }
-    if(_glActivePolyList() != _glOpaquePolyList() ||
+    const GLint radial_mode = _glRadialVertexFog()->mode;
+    if((!constant_color && _glActivePolyList() != _glOpaquePolyList()) ||
        IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
        _glIsScissorTestEnabled() ||
-       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
-        GLDC_STAT_INC(deferred_quad_fallbacks);
-        GLDC_STAT_INC(deferred_reject_state);
-        return GL_FALSE;
+       (constant_color ? radial_mode != GL_KOS_VERTEX_FOG_OFF :
+        (radial_mode != GL_KOS_VERTEX_FOG_OFF &&
+        (!arrays ||
+         radial_mode != GL_KOS_VERTEX_FOG_BLEND_PRECOMPUTED)))) {
+        DEFERRED_REJECT(deferred_reject_state);
     }
     if(DEFERRED_P3T2BGRA_COUNT >= GLDC_DEFERRED_P3T2BGRA_CAPACITY ||
        (GLuint)count > UINT_MAX - DEFERRED_P3T2BGRA_VERTICES) {
-        GLDC_STAT_INC(deferred_quad_fallbacks);
-        GLDC_STAT_INC(deferred_reject_capacity);
-        return GL_FALSE;
+        DEFERRED_REJECT(deferred_reject_capacity);
     }
 
-    PolyList* const out = _glOpaquePolyList();
+    PolyList* const out = _glActivePolyList();
     const GLuint descriptor_index = DEFERRED_P3T2BGRA_COUNT;
     GLdcDeferredP3T2BGRA* const descriptor =
         &DEFERRED_P3T2BGRA[descriptor_index];
@@ -2153,9 +2200,31 @@ GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
        current PVR W-buffer offset before the caller may change either. */
     _glTnlLoadMatrix();
     DownloadMatrix4x4(&descriptor->mvp);
-    descriptor->vertices = vertices;
+    descriptor->arrays = arrays;
+    descriptor->constant_color = constant_color;
+    descriptor->constant_bgra = constant_color
+        ? ((uint32_t)constant_bgra[0] |
+           (uint32_t)constant_bgra[1] << 8 |
+           (uint32_t)constant_bgra[2] << 16 |
+           (uint32_t)constant_bgra[3] << 24)
+        : 0u;
+    if(arrays) {
+        descriptor->input.arrays.positions = positions;
+        descriptor->input.arrays.texcoords = texcoords;
+        descriptor->input.arrays.colors = colors;
+    } else {
+        descriptor->input.interleaved = vertices;
+    }
+    if(constant_color) {
+        GLDC_STAT_INC(deferred_color_array_hits);
+        GLDC_STAT_ADD(deferred_color_array_vertices, (GLuint)count);
+    }
     descriptor->count = (GLuint)count;
+    descriptor->strips = NULL;
+    descriptor->strip_count = 0;
     descriptor->polygon_offset_inv = 1.0f / _glPolygonOffsetMul;
+    descriptor->primitive = GLDC_DEFERRED_P3T2BGRA_QUADS;
+    descriptor->list = out;
 
     const GLuint vector_size = aligned_vector_size(&out->vector);
     const GLboolean header_required =
@@ -2185,6 +2254,10 @@ GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
     DEFERRED_P3T2BGRA_VERTICES += (GLuint)count;
     GLDC_STAT_INC(deferred_quad_hits);
     GLDC_STAT_ADD(deferred_quad_vertices, (GLuint)count);
+    if(arrays) {
+        GLDC_STAT_INC(deferred_array_hits);
+        GLDC_STAT_ADD(deferred_array_vertices, (GLuint)count);
+    }
     GLDC_STAT_INC(submit_vertices_calls);
     GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
     if(_glPolygonOffsetMul != 1.0f) {
@@ -2192,6 +2265,309 @@ GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
     }
     return GL_TRUE;
 #endif
+#undef DEFERRED_REJECT
+}
+
+GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
+        const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    return _glTryDeferQuadsP3T2BGRASwapStable(
+        vertices, NULL, NULL, NULL, NULL, count, GL_FALSE, GL_FALSE);
+}
+
+GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
+        const GLfloat* positions, const GLfloat* texcoords,
+        const GLubyte* bgra, GLsizei count) {
+    return _glTryDeferQuadsP3T2BGRASwapStable(
+        NULL, positions, texcoords, bgra, NULL, count, GL_TRUE, GL_FALSE);
+}
+
+GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
+        const GLfloat* positions, const GLfloat* texcoords,
+        const GLubyte* source_bgra, const GLubyte* constant_bgra,
+        GLsizei count) {
+    return _glTryDeferQuadsP3T2BGRASwapStable(
+        NULL, positions, texcoords, source_bgra, constant_bgra,
+        count, GL_TRUE, GL_TRUE);
+}
+
+/* Conservative object-space classifier used before an all-visible
+   interleaved try-call commits any list/header state. It mirrors N2's
+   drain-time quad guard: both the ordinary and polygon-offset near planes
+   must be comfortably visible, and scalar/FTRV cancellation ambiguity falls
+   back synchronously. */
+#if GLDC_DEFERRED_P3T2BGRA
+GL_FORCE_INLINE GLboolean _glDeferredVertexSafelyVisible(
+        const Matrix4x4* mvp, GLfloat offset_inv,
+        const GLKosVertexP3T2BGRA* in) {
+    const float* const m = *mvp;
+    const float x = in->x;
+    const float y = in->y;
+    const float z0 = in->z;
+    const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
+    const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
+    const float near_plain = z + w;
+    const float near_offset = z + w * offset_inv;
+    const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
+                        (1.0f + __builtin_fabsf(offset_inv)) + 1.0f;
+    const float margin = 32.0f * FLT_EPSILON * scale;
+    return near_plain > margin && near_offset > margin;
+}
+#endif
+
+GLboolean APIENTRY glKosTryDeferTrianglesP3T2BGRASwapStable(
+        const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    TRACE();
+    GLDC_STAT_INC(deferred_quad_attempts);
+    GLDC_STAT_INC(deferred_triangle_attempts);
+
+#define DEFERRED_TRIANGLE_REJECT(counter) do {       \
+        GLDC_STAT_INC(deferred_quad_fallbacks);      \
+        GLDC_STAT_INC(deferred_triangle_fallbacks);  \
+        GLDC_STAT_INC(counter);                      \
+        return GL_FALSE;                             \
+    } while(0)
+
+#if !GLDC_DEFERRED_P3T2BGRA
+    (void)vertices;
+    (void)count;
+    DEFERRED_TRIANGLE_REJECT(deferred_reject_disabled);
+#else
+    /* Every rejection precedes list/header/capture mutation. Loading and
+       downloading the current MVP refreshes only GLdc's matrix cache; keep
+       the candidate matrix local until the complete payload has passed the
+       conservative near-plane scan. */
+    if(count < 3 || count % 3 != 0) {
+        DEFERRED_TRIANGLE_REJECT(deferred_reject_mode_or_count);
+    }
+    if(!vertices || ((uintptr_t)vertices & 3u) != 0) {
+        DEFERRED_TRIANGLE_REJECT(deferred_reject_alignment);
+    }
+    if(CAPTURE_PENDING >= 0) {
+        DEFERRED_TRIANGLE_REJECT(deferred_reject_capture);
+    }
+    if(_glActivePolyList() != _glOpaquePolyList() ||
+       IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
+       _glIsScissorTestEnabled() ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
+        DEFERRED_TRIANGLE_REJECT(deferred_reject_state);
+    }
+    if(DEFERRED_P3T2BGRA_COUNT >= GLDC_DEFERRED_P3T2BGRA_CAPACITY ||
+       (GLuint)count > UINT_MAX - DEFERRED_P3T2BGRA_VERTICES) {
+        DEFERRED_TRIANGLE_REJECT(deferred_reject_capacity);
+    }
+
+    Matrix4x4 mvp;
+    _glTnlLoadMatrix();
+    DownloadMatrix4x4(&mvp);
+    const GLfloat offset_inv = 1.0f / _glPolygonOffsetMul;
+    for(GLsizei i = 0; i < count; ++i) {
+        if(!_glDeferredVertexSafelyVisible(&mvp, offset_inv, vertices + i)) {
+            GLDC_STAT_INC(deferred_triangle_near_fallbacks);
+            GLDC_STAT_INC(deferred_quad_fallbacks);
+            GLDC_STAT_INC(deferred_triangle_fallbacks);
+            return GL_FALSE;
+        }
+    }
+
+    const GLuint descriptor_index = DEFERRED_P3T2BGRA_COUNT;
+    GLdcDeferredP3T2BGRA* const descriptor =
+        &DEFERRED_P3T2BGRA[descriptor_index];
+    memcpy(&descriptor->mvp, &mvp, sizeof(mvp));
+    descriptor->input.interleaved = vertices;
+    descriptor->strips = NULL;
+    descriptor->count = (GLuint)count;
+    descriptor->strip_count = 0;
+    descriptor->polygon_offset_inv = offset_inv;
+    descriptor->arrays = GL_FALSE;
+    descriptor->constant_color = GL_FALSE;
+    descriptor->constant_bgra = 0u;
+    descriptor->primitive = GLDC_DEFERRED_P3T2BGRA_TRIANGLES;
+
+    PolyList* const out = _glOpaquePolyList();
+    descriptor->list = out;
+    const GLuint vector_size = aligned_vector_size(&out->vector);
+    const GLboolean header_required =
+        !out->header_emitted || _glGPUStateIsDirty();
+    aligned_vector_extend(&out->vector, 1u + (header_required ? 1u : 0u));
+
+    GLuint sentinel_offset = vector_size;
+    if(header_required) {
+        PolyHeader* const header =
+            (PolyHeader*)aligned_vector_at(&out->vector, vector_size);
+        apply_poly_header(header, GL_FALSE, out, 0);
+        _glGPUStateMarkClean();
+        out->header_emitted = GL_TRUE;
+        ++sentinel_offset;
+    }
+
+    Vertex* const sentinel =
+        (Vertex*)aligned_vector_at(&out->vector, sentinel_offset);
+    uint32_t* const words = (uint32_t*)sentinel;
+    memset(sentinel, 0, sizeof(*sentinel));
+    words[0] = GLDC_DEFERRED_P3T2BGRA_SENTINEL;
+    words[1] = descriptor_index;
+    words[2] = ~descriptor_index;
+    words[7] = GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index;
+
+    ++DEFERRED_P3T2BGRA_COUNT;
+    DEFERRED_P3T2BGRA_VERTICES += (GLuint)count;
+    GLDC_STAT_INC(deferred_quad_hits);
+    GLDC_STAT_ADD(deferred_quad_vertices, (GLuint)count);
+    GLDC_STAT_INC(deferred_triangle_hits);
+    GLDC_STAT_ADD(deferred_triangle_vertices, (GLuint)count);
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
+    if(_glPolygonOffsetMul != 1.0f) {
+        GLDC_STAT_ADD(polygon_offset_vertices, (GLuint)count);
+    }
+    return GL_TRUE;
+#endif
+#undef DEFERRED_TRIANGLE_REJECT
+}
+
+GLboolean APIENTRY glKosTryDeferMultiStripsP3T2BGRASwapStable(
+        const GLKosVertexP3T2BGRA* vertices,
+        GLsizei vertex_count,
+        const GLKosStripRange* strips, GLsizei strip_count) {
+    TRACE();
+    GLDC_STAT_INC(deferred_quad_attempts);
+    GLDC_STAT_INC(deferred_multistrip_attempts);
+
+#define DEFERRED_MULTISTRIP_REJECT(counter) do {       \
+        GLDC_STAT_INC(deferred_quad_fallbacks);         \
+        GLDC_STAT_INC(deferred_multistrip_fallbacks);  \
+        GLDC_STAT_INC(counter);                        \
+        return GL_FALSE;                               \
+    } while(0)
+
+#if !GLDC_DEFERRED_P3T2BGRA
+    (void)vertices;
+    (void)vertex_count;
+    (void)strips;
+    (void)strip_count;
+    DEFERRED_MULTISTRIP_REJECT(deferred_reject_disabled);
+#else
+    /* All rejections precede list/header/capture mutation. The matrix-cache
+       refresh used for conservative classification is semantically neutral. */
+    if(!vertices || vertex_count < 3 || !strips || strip_count <= 0) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_mode_or_count);
+    }
+    if(((uintptr_t)vertices & 3u) != 0) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_alignment);
+    }
+    if(CAPTURE_PENDING >= 0) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_capture);
+    }
+    if(_glActivePolyList() != _glOpaquePolyList() ||
+       IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
+       _glIsScissorTestEnabled() ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_state);
+    }
+    if(DEFERRED_P3T2BGRA_COUNT >= GLDC_DEFERRED_P3T2BGRA_CAPACITY ||
+       (GLuint)strip_count >
+           GLDC_DEFERRED_P3T2BGRA_STRIP_CAPACITY -
+               DEFERRED_P3T2BGRA_STRIP_COUNT) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_capacity);
+    }
+
+    GLuint total = 0;
+    for(GLsizei s = 0; s < strip_count; ++s) {
+        const GLuint first = strips[s].first;
+        const GLuint count = strips[s].count;
+        if(count < 3u || first >= (GLuint)vertex_count ||
+           count > (GLuint)vertex_count - first ||
+           total > (GLuint)INT_MAX - count) {
+            DEFERRED_MULTISTRIP_REJECT(deferred_reject_mode_or_count);
+        }
+        total += count;
+    }
+    if(total > UINT_MAX - DEFERRED_P3T2BGRA_VERTICES) {
+        DEFERRED_MULTISTRIP_REJECT(deferred_reject_capacity);
+    }
+
+    const GLuint descriptor_index = DEFERRED_P3T2BGRA_COUNT;
+    GLdcDeferredP3T2BGRA* const descriptor =
+        &DEFERRED_P3T2BGRA[descriptor_index];
+    _glTnlLoadMatrix();
+    DownloadMatrix4x4(&descriptor->mvp);
+    const GLfloat offset_inv = 1.0f / _glPolygonOffsetMul;
+
+    /* A try-call cannot discover a near strip after returning GL_TRUE: the
+       caller's exact synchronous fallback is no longer available then. Scan
+       every referenced vertex now, before copying metadata or touching the
+       active list. Immutable payload + snapshotted MVP makes this verdict
+       identical at drain. */
+    for(GLsizei s = 0; s < strip_count; ++s) {
+        const GLKosVertexP3T2BGRA* in = vertices + strips[s].first;
+        const GLKosVertexP3T2BGRA* const end = in + strips[s].count;
+        for(; in < end; ++in) {
+            if(!_glDeferredVertexSafelyVisible(
+                    &descriptor->mvp, offset_inv, in)) {
+                GLDC_STAT_INC(deferred_multistrip_near_fallbacks);
+                GLDC_STAT_INC(deferred_quad_fallbacks);
+                GLDC_STAT_INC(deferred_multistrip_fallbacks);
+                return GL_FALSE;
+            }
+        }
+    }
+
+    GLKosStripRange* const copied =
+        &DEFERRED_P3T2BGRA_STRIPS[DEFERRED_P3T2BGRA_STRIP_COUNT];
+    memcpy(copied, strips, (size_t)strip_count * sizeof(*copied));
+    DEFERRED_P3T2BGRA_STRIP_COUNT += (GLuint)strip_count;
+
+    descriptor->input.interleaved = vertices;
+    descriptor->strips = copied;
+    descriptor->count = total;
+    descriptor->strip_count = (GLuint)strip_count;
+    descriptor->polygon_offset_inv = offset_inv;
+    descriptor->arrays = GL_FALSE;
+    descriptor->constant_color = GL_FALSE;
+    descriptor->constant_bgra = 0u;
+    descriptor->primitive = GLDC_DEFERRED_P3T2BGRA_MULTISTRIPS;
+
+    PolyList* const out = _glOpaquePolyList();
+    descriptor->list = out;
+    const GLuint vector_size = aligned_vector_size(&out->vector);
+    const GLboolean header_required =
+        !out->header_emitted || _glGPUStateIsDirty();
+    aligned_vector_extend(&out->vector, 1u + (header_required ? 1u : 0u));
+
+    GLuint sentinel_offset = vector_size;
+    if(header_required) {
+        PolyHeader* const header =
+            (PolyHeader*)aligned_vector_at(&out->vector, vector_size);
+        apply_poly_header(header, GL_FALSE, out, 0);
+        _glGPUStateMarkClean();
+        out->header_emitted = GL_TRUE;
+        ++sentinel_offset;
+    }
+
+    Vertex* const sentinel =
+        (Vertex*)aligned_vector_at(&out->vector, sentinel_offset);
+    uint32_t* const words = (uint32_t*)sentinel;
+    memset(sentinel, 0, sizeof(*sentinel));
+    words[0] = GLDC_DEFERRED_P3T2BGRA_SENTINEL;
+    words[1] = descriptor_index;
+    words[2] = ~descriptor_index;
+    words[7] = GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index;
+
+    ++DEFERRED_P3T2BGRA_COUNT;
+    DEFERRED_P3T2BGRA_VERTICES += total;
+    GLDC_STAT_INC(deferred_quad_hits);
+    GLDC_STAT_ADD(deferred_quad_vertices, total);
+    GLDC_STAT_INC(deferred_multistrip_hits);
+    GLDC_STAT_ADD(deferred_multistrip_strips, (GLuint)strip_count);
+    GLDC_STAT_ADD(deferred_multistrip_vertices, total);
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, total);
+    if(_glPolygonOffsetMul != 1.0f) {
+        GLDC_STAT_ADD(polygon_offset_vertices, total);
+    }
+    return GL_TRUE;
+#endif
+#undef DEFERRED_MULTISTRIP_REJECT
 }
 
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH

@@ -121,16 +121,41 @@ typedef struct {
    before is_header() at finalization. */
 #define GLDC_DEFERRED_P3T2BGRA_SENTINEL 0xd3f20001u
 
+typedef enum GLdcDeferredP3T2BGRAPrimitive {
+    GLDC_DEFERRED_P3T2BGRA_QUADS = 0,
+    GLDC_DEFERRED_P3T2BGRA_MULTISTRIPS = 1,
+    GLDC_DEFERRED_P3T2BGRA_TRIANGLES = 2
+} GLdcDeferredP3T2BGRAPrimitive;
+
 typedef struct __attribute__((aligned(32))) GLdcDeferredP3T2BGRA {
     Matrix4x4 mvp;
-    const GLKosVertexP3T2BGRA* vertices;
+    /* Keep the proven interleaved road lane distinct from the SoA city lane:
+       both borrow immutable input, but their hot writers must not pay a
+       per-vertex layout branch. */
+    union {
+        const GLKosVertexP3T2BGRA* interleaved;
+        struct {
+            const GLfloat* positions;
+            const GLfloat* texcoords;
+            const GLubyte* colors;
+        } arrays;
+    } input;
+    const GLKosStripRange* strips;
     GLuint count;
+    GLuint strip_count;
     GLfloat polygon_offset_inv;
+    GLboolean arrays;
+    GLboolean constant_color;
+    GLuint constant_bgra;
+    GLdcDeferredP3T2BGRAPrimitive primitive;
+    PolyList* list;
 } GLdcDeferredP3T2BGRA;
 
 const GLdcDeferredP3T2BGRA* _glDeferredP3T2BGRAAt(GLuint index);
 GLuint _glDeferredP3T2BGRACount(void);
 GLuint _glDeferredP3T2BGRAVertexCount(void);
+GLuint _glDeferredP3T2BGRAListCount(const PolyList* list);
+GLuint _glDeferredP3T2BGRAListVertexCount(const PolyList* list);
 void _glResetDeferredP3T2BGRA(void);
 #endif
 

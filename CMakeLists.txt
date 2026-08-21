@@ -9,7 +9,7 @@ option(BUILD_TESTS   "Build test executables" ON)
 option(USE_SH4ZAM    "Use SH4ZAM optimized Dreamcast math" OFF)
 option(GLDC_ENABLE_STATS "Enable GLdc performance counters" OFF)
 option(GLDC_NATIVE_BENCH "Enable isolated N0/N1 native-PVR benchmark ABI" OFF)
-option(GLDC_DEFERRED_P3T2BGRA "Enable swap-stable deferred P3/T2/BGRA quads" OFF)
+option(GLDC_DEFERRED_P3T2BGRA "Enable swap-stable deferred P3/T2/BGRA submission lanes" OFF)
 
 # set the default backend
 if(PLATFORM_DREAMCAST)

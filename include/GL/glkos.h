@@ -12,12 +12,24 @@ extern const char* GLDC_VERSION;
 #define GL_KOS_FAST_PATH_ABI_VERSION 1u
 #define GL_KOS_HAS_INTERLEAVED_P3T2BGRA 1
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_QUADS 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_ARRAYS 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_ARRAY_COLOR 1
 #define GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA (1u << 0)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS (1u << 1)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAYS (1u << 2)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS (1u << 3)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES (1u << 4)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR (1u << 5)
 #if defined(GLDC_DEFERRED_P3T2BGRA) && GLDC_DEFERRED_P3T2BGRA
 #define GL_KOS_FAST_PATH_CAPABILITIES \
     (GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA | \
-     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS)
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAYS | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR)
 #else
 #define GL_KOS_FAST_PATH_CAPABILITIES GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA
 #endif
@@ -30,6 +42,14 @@ typedef struct GLKosVertexP3T2BGRA {
     GLfloat u, v;
     GLuint bgra;
 } GLKosVertexP3T2BGRA;
+
+/* Persistent strip topology for the deferred interleaved lane. The try-call
+ * copies these ranges before returning; only the vertex payload remains
+ * borrowed through the next drain. */
+typedef struct GLKosStripRange {
+    GLuint first;
+    GLuint count;
+} GLKosStripRange;
 
 /* Compile-time feature macros let an independently built adapter retain its
  * ordinary client-array fallback when paired with an older GLdc header. */
@@ -53,6 +73,46 @@ GLAPI GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
  * offset is snapshotted and reproduced exactly. */
 GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
     const GLKosVertexP3T2BGRA* vertices, GLsizei count);
+
+/* SoA form of the same deferred contract for persistent renderer-owned
+ * streams. Arrays are tightly packed P3F, T2F and four-byte BGRA records;
+ * every pointer must remain immutable through the next drain. OFF and
+ * BLEND_PRECOMPUTED radial fog are accepted, with the latter consuming the
+ * already-resolved fog amount from source color alpha. */
+GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
+    const GLfloat* positions, const GLfloat* texcoords,
+    const GLubyte* bgra, GLsizei count);
+
+/* Active-list constant-color sibling used by persistent two-material geometry.
+ * The source arrays remain borrowed through the next drain; the MVP and
+ * constant color are snapshotted before returning. Every emitted vertex
+ * receives `constant_bgra`. Unlike the opaque SoA entry above, this form may
+ * target OP, PT or TR; radial vertex fog must be OFF. Unsupported state returns
+ * GL_FALSE without list/header mutation. */
+GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
+    const GLfloat* positions, const GLfloat* texcoords,
+    const GLubyte* source_bgra, const GLubyte* constant_bgra, GLsizei count);
+
+/* Queue complete independent triangles from immutable interleaved storage.
+ * The payload is borrowed through the next swap/RTT drain. V1 accepts only
+ * opaque state with radial fog off and conservatively proves every vertex is
+ * clear of both the ordinary and polygon-offset near planes before changing
+ * list/header state. GL_FALSE leaves the caller's synchronous fallback live. */
+GLAPI GLboolean APIENTRY glKosTryDeferTrianglesP3T2BGRASwapStable(
+    const GLKosVertexP3T2BGRA* vertices, GLsizei count);
+
+/* Queue one or more complete triangle strips from immutable interleaved
+ * P3/T2/BGRA storage. GLdc synchronously copies every range, snapshots the
+ * MVP and polygon offset, and borrows only vertices until the next swap/RTT
+ * drain. V1 is deliberately opaque/all-visible: each referenced vertex is
+ * conservatively classified before list mutation. Near or ambiguous input,
+ * unsupported state, or capacity pressure returns GL_FALSE so the caller can
+ * take its exact synchronous clipping path. Every range must contain at least
+ * three vertices and address a contiguous part of the supplied array. */
+GLAPI GLboolean APIENTRY glKosTryDeferMultiStripsP3T2BGRASwapStable(
+    const GLKosVertexP3T2BGRA* vertices,
+    GLsizei vertex_count,
+    const GLKosStripRange* strips, GLsizei strip_count);
 
 /* Link-time configuration canary. Every Dreamcast consumer should call the
  * macro once: a normal object can then never silently link a benchmark GLdc
@@ -174,7 +234,7 @@ GLAPI void APIENTRY glKosNativeBenchResetQueued(void);
  * functions are always linkable; glKosGetStats() returns NULL when
  * GLDC_ENABLE_STATS is disabled. Append fields and bump this version when the
  * snapshot layout changes. */
-#define GL_KOS_STATS_ABI_VERSION 2u
+#define GL_KOS_STATS_ABI_VERSION 6u
 
 typedef struct {
     GLuint struct_size;
@@ -245,8 +305,9 @@ typedef struct {
     GLuint interleaved_fallback_immediate;
     GLuint interleaved_fallback_radial_fog;
 
-    /* Swap-stable deferred P3/T2/BGRA quad routing (N2). Queue counters are
-     * draw-time decisions; drain counters describe swap-time execution. */
+    /* Aggregate swap-stable deferred P3/T2/BGRA routing (N2; the historical
+     * quad names predate the multi-strip subset). Queue counters are draw-time
+     * decisions; drain counters describe swap-time execution. */
     GLuint deferred_quad_attempts;
     GLuint deferred_quad_hits;
     GLuint deferred_quad_vertices;
@@ -260,6 +321,46 @@ typedef struct {
     GLuint deferred_descriptors_submitted;
     GLuint deferred_direct_vertices;
     GLuint deferred_near_quads;
+
+    /* SoA subset of the aggregate N2 counters above. */
+    GLuint deferred_array_attempts;
+    GLuint deferred_array_hits;
+    GLuint deferred_array_vertices;
+    GLuint deferred_array_fallbacks;
+    GLuint deferred_array_descriptors_submitted;
+    GLuint deferred_array_direct_vertices;
+    GLuint deferred_array_near_quads;
+
+    /* Persistent interleaved multi-strip subset. Metadata is copied at the
+     * try-call; the vertex payload remains borrowed. */
+    GLuint deferred_multistrip_attempts;
+    GLuint deferred_multistrip_hits;
+    GLuint deferred_multistrip_fallbacks;
+    GLuint deferred_multistrip_strips;
+    GLuint deferred_multistrip_vertices;
+    GLuint deferred_multistrip_near_fallbacks;
+    GLuint deferred_multistrip_descriptors_submitted;
+    GLuint deferred_multistrip_direct_vertices;
+
+    /* Persistent interleaved independent-triangle subset. Every accepted
+     * payload was fully preclassified before the descriptor was committed. */
+    GLuint deferred_triangle_attempts;
+    GLuint deferred_triangle_hits;
+    GLuint deferred_triangle_fallbacks;
+    GLuint deferred_triangle_vertices;
+    GLuint deferred_triangle_near_fallbacks;
+    GLuint deferred_triangle_descriptors_submitted;
+    GLuint deferred_triangle_direct_vertices;
+
+    /* Constant-color active-list SoA subset, used by deferred second-material
+     * passes such as the city window overlay. */
+    GLuint deferred_color_array_attempts;
+    GLuint deferred_color_array_hits;
+    GLuint deferred_color_array_fallbacks;
+    GLuint deferred_color_array_vertices;
+    GLuint deferred_color_array_descriptors_submitted;
+    GLuint deferred_color_array_direct_vertices;
+    GLuint deferred_color_array_near_quads;
 } GLdcStats;
 
 GLAPI void APIENTRY glKosResetStats(void);

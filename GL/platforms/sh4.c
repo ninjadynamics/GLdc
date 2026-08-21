@@ -1292,6 +1292,15 @@ GL_FORCE_INLINE void _glDeferredPackPairSQ(
                             bxyz[0], bxyz[1], bxyz[2], bw, offset_inv);
 }
 
+GL_FORCE_INLINE void _glDeferredPackSingleSQ(
+        const GLKosVertexP3T2BGRA* in, uintptr_t destination,
+        uint32_t flags, float offset_inv) {
+    float xyz[3], w;
+    TransformVertex(in->x, in->y, in->z, 1.0f, xyz, &w);
+    _glDeferredFillRecordSQ(in, destination, flags,
+                            xyz[0], xyz[1], xyz[2], w, offset_inv);
+}
+
 static void _glDeferredSubmitVisibleQuads(
         const GLdcDeferredP3T2BGRA* descriptor,
         const GLKosVertexP3T2BGRA* in, int count) {
@@ -1342,18 +1351,16 @@ static void _glDeferredSubmitNearQuad(
     SceneListSubmitGeneric(quad, 4, vertex_fog);
 }
 
-static void _glSubmitDeferredP3T2BGRA(
-        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
-    const GLKosVertexP3T2BGRA* const vertices = descriptor->vertices;
+static void _glSubmitDeferredInterleavedP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor) {
+    const GLKosVertexP3T2BGRA* const vertices =
+        descriptor->input.interleaved;
     const int count = (int)descriptor->count;
     int run_first = 0;
     int run_count = 0;
 
-    UploadMatrix4x4(&descriptor->mvp);
-    GLDC_STAT_INC(deferred_descriptors_submitted);
-
     for(int first = 0; first < count; first += 4) {
-        const bool all_visible = !vertex_fog &&
+        const bool all_visible =
             _glDeferredQuadAllVisible(descriptor, vertices + first);
         if(all_visible) {
             if(run_count == 0) run_first = first;
@@ -1371,8 +1378,321 @@ static void _glSubmitDeferredP3T2BGRA(
         }
         if(!all_visible) {
             _glDeferredSubmitNearQuad(
-                descriptor, vertices + first, vertex_fog);
+                descriptor, vertices + first, false);
         }
+    }
+}
+
+/* Independent triangles use the N1 fixed-six schedule: two complete
+   triangles per hot-loop iteration, with EOL baked into records 2 and 5.
+   Because count is divisible by three, the only possible tail is one exact
+   three-record triangle. The try-call has already proven every vertex clear
+   of both near planes, so this path never stages or invokes the clipper. */
+static void _glSubmitDeferredTrianglesP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor) {
+    const GLKosVertexP3T2BGRA* const in =
+        descriptor->input.interleaved;
+    const int count = (int)descriptor->count;
+    uintptr_t d = sq_dest_addr;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    int i = 0;
+
+    gl_assert(in && count >= 3 && count % 3 == 0);
+    GLDC_STAT_INC(deferred_triangle_descriptors_submitted);
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_STAT_ADD(deferred_triangle_direct_vertices, (GLuint)count);
+
+    for(; count - i >= 6; i += 6, d += 6 * 32) {
+        PREFETCH(in + i + 2);
+        _glDeferredPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+        PREFETCH(in + i + 4);
+        _glDeferredPackPairSQ(
+            in + i + 2, in + i + 3, d + 64, d + 96,
+            GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX, offset_inv);
+        _glDeferredPackPairSQ(
+            in + i + 4, in + i + 5, d + 128, d + 160,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, offset_inv);
+    }
+
+    if(i < count) {
+        gl_assert(count - i == 3);
+        PREFETCH(in + i + 2);
+        _glDeferredPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+        _glDeferredPackSingleSQ(
+            in + i + 2, d + 64, GPU_CMD_VERTEX_EOL, offset_inv);
+    }
+}
+
+/* Drain one strip whose complete referenced payload was conservatively proven
+   all-visible by the side-effect-free try-call. This is the hardware-tested
+   N1 fixed-six schedule adapted to the production descriptor's snapshotted
+   polygon offset. EOL is decided only in the bounded tail. */
+static void _glDeferredSubmitVisibleStrip(
+        const GLdcDeferredP3T2BGRA* descriptor,
+        const GLKosVertexP3T2BGRA* in, int count,
+        uintptr_t* destination) {
+    uintptr_t d = *destination;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    int i = 0;
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_STAT_ADD(deferred_multistrip_direct_vertices, (GLuint)count);
+
+    for(; count - i >= 8; i += 6, d += 6 * 32) {
+        PREFETCH(in + i + 2);
+        _glDeferredPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+        PREFETCH(in + i + 4);
+        _glDeferredPackPairSQ(
+            in + i + 2, in + i + 3, d + 64, d + 96,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+        PREFETCH(in + i + 6);
+        _glDeferredPackPairSQ(
+            in + i + 4, in + i + 5, d + 128, d + 160,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+    }
+
+    for(; count - i > 2; i += 2, d += 64) {
+        PREFETCH(in + i + 2);
+        _glDeferredPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
+    }
+
+    if(count - i == 2) {
+        _glDeferredPackPairSQ(
+            in + i, in + i + 1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, offset_inv);
+        d += 64;
+    } else {
+        gl_assert(count - i == 1);
+        _glDeferredPackSingleSQ(
+            in + i, d, GPU_CMD_VERTEX_EOL, offset_inv);
+        d += 32;
+    }
+    *destination = d;
+}
+
+static void _glSubmitDeferredMultiStripsP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor) {
+    const GLKosVertexP3T2BGRA* const vertices =
+        descriptor->input.interleaved;
+    const GLKosStripRange* const strips = descriptor->strips;
+    uintptr_t destination = sq_dest_addr;
+
+    gl_assert(vertices && strips && descriptor->strip_count > 0);
+    GLDC_STAT_INC(deferred_multistrip_descriptors_submitted);
+    for(GLuint s = 0; s < descriptor->strip_count; ++s) {
+        gl_assert(strips[s].count >= 3u && strips[s].count <= INT_MAX);
+        _glDeferredSubmitVisibleStrip(
+            descriptor, vertices + strips[s].first,
+            (int)strips[s].count, &destination);
+    }
+}
+
+GL_FORCE_INLINE bool _glDeferredArrayQuadAllVisible(
+        const GLdcDeferredP3T2BGRA* descriptor, int first) {
+    const float* const m = descriptor->mvp;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    const float* p = descriptor->input.arrays.positions + first * 3;
+
+    for(int i = 0; i < 4; ++i, p += 3) {
+        const float x = p[0];
+        const float y = p[1];
+        const float z0 = p[2];
+        const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
+        const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
+        const float near_plain = z + w;
+        const float near_offset = z + w * offset_inv;
+        const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
+                            (1.0f + __builtin_fabsf(offset_inv)) + 1.0f;
+        const float margin = 32.0f * FLT_EPSILON * scale;
+        if(!(near_plain > margin) || !(near_offset > margin)) return false;
+    }
+    return true;
+}
+
+GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
+        const float* uv, uint32_t bgra, uintptr_t destination,
+        uint32_t flags, float x, float y, float z, float w,
+        float offset_inv, bool vertex_fog) {
+    if(unlikely(w != 1.0f && offset_inv != 1.0f)) {
+        x *= offset_inv;
+        y *= offset_inv;
+        w *= offset_inv;
+    }
+
+    const float f = _glFastInvert(w);
+    uint32_t* const q = (uint32_t*)destination;
+    q[0] = flags;
+    ((float*)q)[1] = x * f;
+    ((float*)q)[2] = y * f;
+    ((float*)q)[3] = unlikely(w == 1.0f)
+        ? _glFastInvert(1.0001f + z) : f;
+    ((float*)q)[4] = uv[0];
+    ((float*)q)[5] = uv[1];
+    if(unlikely(vertex_fog)) {
+        q[6] = (bgra & 0x00ffffffu) | 0xff000000u;
+        q[7] = bgra & 0xff000000u;
+    } else {
+        q[6] = bgra;
+        ((float*)q)[7] = w;
+    }
+    __asm__ __volatile__("pref @%0" : : "r"(destination) : "memory");
+}
+
+GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
+        const float* pa, const float* pb,
+        const float* ua, const float* ub,
+        uint32_t ca, uint32_t cb,
+        uintptr_t da, uintptr_t db, uint32_t fa, uint32_t fb,
+        float offset_inv, bool vertex_fog) {
+    float axyz[3], bxyz[3], aw, bw;
+    TransformVertex2(pa[0], pa[1], pa[2], axyz, &aw,
+                     pb[0], pb[1], pb[2], bxyz, &bw);
+    _glDeferredFillArrayRecordSQ(ua, ca, da, fa,
+                                 axyz[0], axyz[1], axyz[2], aw,
+                                 offset_inv, vertex_fog);
+    _glDeferredFillArrayRecordSQ(ub, cb, db, fb,
+                                 bxyz[0], bxyz[1], bxyz[2], bw,
+                                 offset_inv, vertex_fog);
+}
+
+static void _glDeferredSubmitVisibleArrayQuads(
+        const GLdcDeferredP3T2BGRA* descriptor,
+        int first, int count, bool vertex_fog) {
+    const float* p = descriptor->input.arrays.positions + first * 3;
+    const float* u = descriptor->input.arrays.texcoords + first * 2;
+    const uint32_t* c = (const uint32_t*)(
+        descriptor->input.arrays.colors + first * 4);
+    uintptr_t d = sq_dest_addr;
+    const float offset_inv = descriptor->polygon_offset_inv;
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
+    if(descriptor->constant_color)
+        GLDC_STAT_ADD(deferred_color_array_direct_vertices, (GLuint)count);
+    for(int i = 0; i < count;
+        i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
+        /* Classify-ahead has already warmed positions. Prime the next quad's
+           three source lines without reading beyond the borrowed extents on
+           the final quad. */
+        if(i + 4 < count) {
+            PREFETCH(p + 12);
+            PREFETCH(u + 8);
+            if(!descriptor->constant_color) PREFETCH(c + 4);
+        }
+        const uint32_t c0 = descriptor->constant_color ? descriptor->constant_bgra : c[0];
+        const uint32_t c1 = descriptor->constant_color ? descriptor->constant_bgra : c[1];
+        const uint32_t c2 = descriptor->constant_color ? descriptor->constant_bgra : c[2];
+        const uint32_t c3 = descriptor->constant_color ? descriptor->constant_bgra : c[3];
+        _glDeferredPackArrayPairSQ(
+            p, p + 3, u, u + 2, c0, c1, d, d + 32,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv, vertex_fog);
+        _glDeferredPackArrayPairSQ(
+            p + 9, p + 6, u + 6, u + 4, c3, c2, d + 64, d + 96,
+            GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, offset_inv, vertex_fog);
+    }
+}
+
+static void _glDeferredSubmitNearArrayQuad(
+        const GLdcDeferredP3T2BGRA* descriptor,
+        int first, bool vertex_fog) {
+    const float* const p = descriptor->input.arrays.positions + first * 3;
+    const float* const u = descriptor->input.arrays.texcoords + first * 2;
+    const uint32_t* const c = (const uint32_t*)(
+        descriptor->input.arrays.colors + first * 4);
+    Vertex __attribute__((aligned(32))) quad[4];
+    VERTEX_CACHE_ALLOC(&quad[0]);
+    VERTEX_CACHE_ALLOC(&quad[1]);
+    VERTEX_CACHE_ALLOC(&quad[2]);
+    VERTEX_CACHE_ALLOC(&quad[3]);
+
+    TransformVertex2(p[0], p[1], p[2], quad[0].xyz, &quad[0].w,
+                     p[3], p[4], p[5], quad[1].xyz, &quad[1].w);
+    TransformVertex2(p[9], p[10], p[11], quad[2].xyz, &quad[2].w,
+                     p[6], p[7], p[8], quad[3].xyz, &quad[3].w);
+
+    static const uint8_t source_index[4] = {0, 1, 3, 2};
+    for(int i = 0; i < 4; ++i) {
+        const int source = source_index[i];
+        quad[i].flags = i == 3 ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+        quad[i].uv[0] = u[source * 2];
+        quad[i].uv[1] = u[source * 2 + 1];
+        *((uint32_t*)quad[i].bgra) = descriptor->constant_color
+            ? descriptor->constant_bgra : c[source];
+        if(quad[i].w != 1.0f && descriptor->polygon_offset_inv != 1.0f) {
+            quad[i].xyz[0] *= descriptor->polygon_offset_inv;
+            quad[i].xyz[1] *= descriptor->polygon_offset_inv;
+            quad[i].w *= descriptor->polygon_offset_inv;
+        }
+    }
+
+    GLDC_STAT_INC(deferred_near_quads);
+    GLDC_STAT_INC(deferred_array_near_quads);
+    if(descriptor->constant_color)
+        GLDC_STAT_INC(deferred_color_array_near_quads);
+    SceneListSubmitGeneric(quad, 4, vertex_fog);
+}
+
+static void _glSubmitDeferredArrayP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
+    const int count = (int)descriptor->count;
+    int run_first = 0;
+    int run_count = 0;
+
+    for(int first = 0; first < count; first += 4) {
+        const bool all_visible =
+            _glDeferredArrayQuadAllVisible(descriptor, first);
+        if(all_visible) {
+            if(run_count == 0) run_first = first;
+            run_count += 4;
+            if(run_count < GLDC_DEFERRED_CLASSIFY_RECORDS &&
+               first + 4 < count) {
+                continue;
+            }
+        }
+
+        if(run_count > 0) {
+            _glDeferredSubmitVisibleArrayQuads(
+                descriptor, run_first, run_count, vertex_fog);
+            run_count = 0;
+        }
+        if(!all_visible) {
+            _glDeferredSubmitNearArrayQuad(
+                descriptor, first, vertex_fog);
+        }
+    }
+}
+
+static void _glSubmitDeferredP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
+    UploadMatrix4x4(&descriptor->mvp);
+    GLDC_STAT_INC(deferred_descriptors_submitted);
+    if(descriptor->primitive == GLDC_DEFERRED_P3T2BGRA_TRIANGLES) {
+        gl_assert(!descriptor->arrays && !vertex_fog);
+        _glSubmitDeferredTrianglesP3T2BGRA(descriptor);
+    } else if(descriptor->primitive == GLDC_DEFERRED_P3T2BGRA_MULTISTRIPS) {
+        gl_assert(!descriptor->arrays && !vertex_fog);
+        _glSubmitDeferredMultiStripsP3T2BGRA(descriptor);
+    } else if(descriptor->arrays) {
+        GLDC_STAT_INC(deferred_array_descriptors_submitted);
+        if(descriptor->constant_color) {
+            gl_assert(!vertex_fog);
+            GLDC_STAT_INC(deferred_color_array_descriptors_submitted);
+        }
+        _glSubmitDeferredArrayP3T2BGRA(descriptor, vertex_fog);
+    } else {
+        gl_assert(!vertex_fog);
+        _glSubmitDeferredInterleavedP3T2BGRA(descriptor);
     }
 }
 #endif
@@ -1404,8 +1724,8 @@ void SceneListSubmit(Vertex* vertices, int n) {
 #if GLDC_DEFERRED_P3T2BGRA
     if(n < 4) {
         /* The descriptor table is frame-global but this call owns one list.
-           An OP descriptor must not accidentally relax the minimum for a
-           separate short PT/TR stream. */
+           A descriptor queued in another list must not accidentally relax the
+           minimum for this short stream. */
         GLboolean has_local_deferred = GL_FALSE;
         for(int i = 0; i < n; ++i) {
             if(is_deferred_p3t2bgra(vertices + i)) {
