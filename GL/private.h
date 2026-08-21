@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "gl_assert.h"
+#include "config.h"
 #include "platform.h"
 #include "types.h"
 
@@ -113,6 +114,25 @@ typedef struct {
        scissor-enabled frames (AUD-001-OPA-08). Reset by clear_lists(). */
     GLboolean header_emitted;
 } PolyList;
+
+#if GLDC_DEFERRED_P3T2BGRA
+/* A command value that can never be a submitted TA vertex/header. It lives in
+   the ordinary list vector solely to preserve chronology and is intercepted
+   before is_header() at finalization. */
+#define GLDC_DEFERRED_P3T2BGRA_SENTINEL 0xd3f20001u
+
+typedef struct __attribute__((aligned(32))) GLdcDeferredP3T2BGRA {
+    Matrix4x4 mvp;
+    const GLKosVertexP3T2BGRA* vertices;
+    GLuint count;
+    GLfloat polygon_offset_inv;
+} GLdcDeferredP3T2BGRA;
+
+const GLdcDeferredP3T2BGRA* _glDeferredP3T2BGRAAt(GLuint index);
+GLuint _glDeferredP3T2BGRACount(void);
+GLuint _glDeferredP3T2BGRAVertexCount(void);
+void _glResetDeferredP3T2BGRA(void);
+#endif
 
 typedef struct {
     /* Palette data is always stored in RAM as RGBA8888 and packed as ARGB8888

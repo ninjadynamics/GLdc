@@ -111,6 +111,26 @@ void APIENTRY glKosPrintStats(void) {
         }
     }
 
+    if(s->deferred_quad_attempts > 0 ||
+       s->deferred_descriptors_submitted > 0) {
+        printf("[GLdc F#%u] n2: try=%u hit=%u fall=%u queued=%u "
+               "drain=%u direct=%u nearq=%u reject=%u/%u/%u/%u/%u/%u\n",
+               s->frame_no,
+               s->deferred_quad_attempts,
+               s->deferred_quad_hits,
+               s->deferred_quad_fallbacks,
+               s->deferred_quad_vertices,
+               s->deferred_descriptors_submitted,
+               s->deferred_direct_vertices,
+               s->deferred_near_quads,
+               s->deferred_reject_disabled,
+               s->deferred_reject_mode_or_count,
+               s->deferred_reject_alignment,
+               s->deferred_reject_state,
+               s->deferred_reject_capture,
+               s->deferred_reject_capacity);
+    }
+
     /* Line 5: Immediate mode (if any — should be near zero with batcher) */
     if (s->immediate_begin_calls > 0) {
         printf("[GLdc F#%u] imm: begin=%u end=%u vtx=%u\n",

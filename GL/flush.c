@@ -78,7 +78,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.21-1006-stats0-nbench1]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.21-1130-stats0-nbench0-n21]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -135,6 +135,9 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
        capacity anyway, so reserving it up front costs the same RAM and never
        copies. (Bruno 2026-08-04 lamp-budget dissection.) */
     aligned_vector_reserve(&TR_LIST.sprites, 3072);  /* the glow lane lives on TR */
+#if GLDC_DEFERRED_P3T2BGRA
+    _glResetDeferredP3T2BGRA();
+#endif
 }
 
 extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
@@ -157,6 +160,9 @@ void APIENTRY glKosShutdown() {
     OP_LIST.header_emitted = GL_FALSE;
     PT_LIST.header_emitted = GL_FALSE;
     TR_LIST.header_emitted = GL_FALSE;
+#if GLDC_DEFERRED_P3T2BGRA
+    _glResetDeferredP3T2BGRA();
+#endif
 
     _glShutdownImmediateMode();
 
@@ -209,7 +215,13 @@ static int _gt_frames;
    general guarantee. Begin/finish are the caller's — it decides whether the
    list opens at all. */
 static void submit_list(PolyList* l) {
-    if(aligned_vector_header(&l->vector)->size > 2) {
+    const GLboolean has_deferred =
+#if GLDC_DEFERRED_P3T2BGRA
+        l == &OP_LIST && _glDeferredP3T2BGRACount() > 0;
+#else
+        GL_FALSE;
+#endif
+    if(aligned_vector_header(&l->vector)->size > 2 || has_deferred) {
         SceneListSubmit((Vertex*) aligned_vector_front(&l->vector), aligned_vector_size(&l->vector));
     }
     const uint32_t sn = aligned_vector_size(&l->sprites);
@@ -219,7 +231,12 @@ static void submit_list(PolyList* l) {
 }
 
 static GLboolean list_has_content(PolyList* l) {
-    return aligned_vector_header(&l->vector)->size > 2 || aligned_vector_size(&l->sprites) > 0;
+    if(aligned_vector_header(&l->vector)->size > 2 ||
+       aligned_vector_size(&l->sprites) > 0) return GL_TRUE;
+#if GLDC_DEFERRED_P3T2BGRA
+    if(l == &OP_LIST && _glDeferredP3T2BGRACount() > 0) return GL_TRUE;
+#endif
+    return GL_FALSE;
 }
 
 static void clear_lists(void) {
@@ -232,6 +249,9 @@ static void clear_lists(void) {
     OP_LIST.header_emitted = GL_FALSE;
     PT_LIST.header_emitted = GL_FALSE;
     TR_LIST.header_emitted = GL_FALSE;
+#if GLDC_DEFERRED_P3T2BGRA
+    _glResetDeferredP3T2BGRA();
+#endif
 }
 
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
@@ -318,6 +338,12 @@ void APIENTRY glKosSwapBuffers() {
 
 #if GLDC_SWAP_TELEMETRY
     _gt_op_verts += aligned_vector_size(&OP_LIST.vector);
+#if GLDC_DEFERRED_P3T2BGRA
+    /* Replace each physical sentinel with the logical vertices transformed at
+       swap so op ns/v remains an honest denominator. */
+    _gt_op_verts += _glDeferredP3T2BGRAVertexCount() -
+                    _glDeferredP3T2BGRACount();
+#endif
     _gt_tr_verts += aligned_vector_size(&TR_LIST.vector);
 #endif
 

@@ -1981,6 +1981,33 @@ typedef char GLKosP3T2BGRAUvMustStartAt12[
 typedef char GLKosP3T2BGRAColorMustStartAt20[
     offsetof(GLKosVertexP3T2BGRA, bgra) == 20 ? 1 : -1];
 
+#if GLDC_DEFERRED_P3T2BGRA
+#define GLDC_DEFERRED_P3T2BGRA_CAPACITY 64u
+
+static GLdcDeferredP3T2BGRA __attribute__((aligned(32)))
+    DEFERRED_P3T2BGRA[GLDC_DEFERRED_P3T2BGRA_CAPACITY];
+static GLuint DEFERRED_P3T2BGRA_COUNT;
+static GLuint DEFERRED_P3T2BGRA_VERTICES;
+
+const GLdcDeferredP3T2BGRA* _glDeferredP3T2BGRAAt(GLuint index) {
+    return index < DEFERRED_P3T2BGRA_COUNT
+        ? &DEFERRED_P3T2BGRA[index] : NULL;
+}
+
+GLuint _glDeferredP3T2BGRACount(void) {
+    return DEFERRED_P3T2BGRA_COUNT;
+}
+
+GLuint _glDeferredP3T2BGRAVertexCount(void) {
+    return DEFERRED_P3T2BGRA_VERTICES;
+}
+
+void _glResetDeferredP3T2BGRA(void) {
+    DEFERRED_P3T2BGRA_COUNT = 0;
+    DEFERRED_P3T2BGRA_VERTICES = 0;
+}
+#endif
+
 GLuint APIENTRY glKosGetFastPathCapabilities(void) {
     return GL_KOS_FAST_PATH_CAPABILITIES;
 }
@@ -1992,6 +2019,12 @@ GLuint APIENTRY glKosGetFastPathCapabilities(void) {
 void APIENTRY glKosRequireNativeBenchArchive1(void) {}
 #else
 void APIENTRY glKosRequireNativeBenchArchive0(void) {}
+#endif
+
+#if GLDC_DEFERRED_P3T2BGRA
+void APIENTRY glKosRequireDeferredP3T2BGRAArchive1(void) {}
+#else
+void APIENTRY glKosRequireDeferredP3T2BGRAArchive0(void) {}
 #endif
 
 GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
@@ -2064,6 +2097,101 @@ GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
     }
     _glEndFusedDraw();
     return GL_TRUE;
+}
+
+GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
+        const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    TRACE();
+    GLDC_STAT_INC(deferred_quad_attempts);
+
+#if !GLDC_DEFERRED_P3T2BGRA
+    (void)vertices;
+    (void)count;
+    GLDC_STAT_INC(deferred_quad_fallbacks);
+    GLDC_STAT_INC(deferred_reject_disabled);
+    return GL_FALSE;
+#else
+    /* Every rejection precedes matrix/header/list mutation. In particular,
+       leave a pending capture armed so the caller's synchronous fallback is
+       still the draw glKosCaptureArrays() promised to capture. */
+    if(count < 4 || count % 4 != 0) {
+        GLDC_STAT_INC(deferred_quad_fallbacks);
+        GLDC_STAT_INC(deferred_reject_mode_or_count);
+        return GL_FALSE;
+    }
+    if(!vertices || ((uintptr_t)vertices & 3u) != 0) {
+        GLDC_STAT_INC(deferred_quad_fallbacks);
+        GLDC_STAT_INC(deferred_reject_alignment);
+        return GL_FALSE;
+    }
+    if(CAPTURE_PENDING >= 0) {
+        GLDC_STAT_INC(deferred_quad_fallbacks);
+        GLDC_STAT_INC(deferred_reject_capture);
+        return GL_FALSE;
+    }
+    if(_glActivePolyList() != _glOpaquePolyList() ||
+       IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
+       _glIsScissorTestEnabled() ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
+        GLDC_STAT_INC(deferred_quad_fallbacks);
+        GLDC_STAT_INC(deferred_reject_state);
+        return GL_FALSE;
+    }
+    if(DEFERRED_P3T2BGRA_COUNT >= GLDC_DEFERRED_P3T2BGRA_CAPACITY ||
+       (GLuint)count > UINT_MAX - DEFERRED_P3T2BGRA_VERTICES) {
+        GLDC_STAT_INC(deferred_quad_fallbacks);
+        GLDC_STAT_INC(deferred_reject_capacity);
+        return GL_FALSE;
+    }
+
+    PolyList* const out = _glOpaquePolyList();
+    const GLuint descriptor_index = DEFERRED_P3T2BGRA_COUNT;
+    GLdcDeferredP3T2BGRA* const descriptor =
+        &DEFERRED_P3T2BGRA[descriptor_index];
+
+    /* Snapshot the exact combined viewport/projection/modelview matrix and
+       current PVR W-buffer offset before the caller may change either. */
+    _glTnlLoadMatrix();
+    DownloadMatrix4x4(&descriptor->mvp);
+    descriptor->vertices = vertices;
+    descriptor->count = (GLuint)count;
+    descriptor->polygon_offset_inv = 1.0f / _glPolygonOffsetMul;
+
+    const GLuint vector_size = aligned_vector_size(&out->vector);
+    const GLboolean header_required =
+        !out->header_emitted || _glGPUStateIsDirty();
+    aligned_vector_extend(&out->vector, 1u + (header_required ? 1u : 0u));
+
+    GLuint sentinel_offset = vector_size;
+    if(header_required) {
+        PolyHeader* const header =
+            (PolyHeader*)aligned_vector_at(&out->vector, vector_size);
+        apply_poly_header(header, GL_FALSE, out, 0);
+        _glGPUStateMarkClean();
+        out->header_emitted = GL_TRUE;
+        ++sentinel_offset;
+    }
+
+    Vertex* const sentinel =
+        (Vertex*)aligned_vector_at(&out->vector, sentinel_offset);
+    uint32_t* const words = (uint32_t*)sentinel;
+    memset(sentinel, 0, sizeof(*sentinel));
+    words[0] = GLDC_DEFERRED_P3T2BGRA_SENTINEL;
+    words[1] = descriptor_index;
+    words[2] = ~descriptor_index;
+    words[7] = GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index;
+
+    ++DEFERRED_P3T2BGRA_COUNT;
+    DEFERRED_P3T2BGRA_VERTICES += (GLuint)count;
+    GLDC_STAT_INC(deferred_quad_hits);
+    GLDC_STAT_ADD(deferred_quad_vertices, (GLuint)count);
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
+    if(_glPolygonOffsetMul != 1.0f) {
+        GLDC_STAT_ADD(polygon_offset_vertices, (GLuint)count);
+    }
+    return GL_TRUE;
+#endif
 }
 
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH

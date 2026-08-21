@@ -11,8 +11,16 @@ extern const char* GLDC_VERSION;
  * changes incompatibly; it is deliberately independent of GLDC_VERSION. */
 #define GL_KOS_FAST_PATH_ABI_VERSION 1u
 #define GL_KOS_HAS_INTERLEAVED_P3T2BGRA 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_QUADS 1
 #define GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA (1u << 0)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS (1u << 1)
+#if defined(GLDC_DEFERRED_P3T2BGRA) && GLDC_DEFERRED_P3T2BGRA
+#define GL_KOS_FAST_PATH_CAPABILITIES \
+    (GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS)
+#else
 #define GL_KOS_FAST_PATH_CAPABILITIES GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA
+#endif
 
 /* Borrowed, synchronous fast-lane input shared with paired adapters such as
  * raylib-dc. The implementation consumes/copies every vertex before return;
@@ -36,6 +44,16 @@ GLAPI GLuint APIENTRY glKosGetFastPathCapabilities(void);
 GLAPI GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
     GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
 
+/* Queue complete GL_QUADS from immutable borrowed storage for transform and
+ * submission at the next glKosSwapBuffers()/glKosFlushToTexture(). GL_TRUE
+ * transfers the draw to GLdc; the caller must not modify or release the input
+ * before that drain. GL_FALSE changes no list/header/capture state and the
+ * caller must draw synchronously. N2 accepts opaque, aligned P3/T2/BGRA input
+ * with no active immediate/TnL/radial-fog/scissor/capture state. Polygon
+ * offset is snapshotted and reproduced exactly. */
+GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
+    const GLKosVertexP3T2BGRA* vertices, GLsizei count);
+
 /* Link-time configuration canary. Every Dreamcast consumer should call the
  * macro once: a normal object can then never silently link a benchmark GLdc
  * archive (or vice versa). Exactly one of the suffixed symbols exists in a
@@ -46,6 +64,19 @@ GLAPI void APIENTRY glKosRequireNativeBenchArchive1(void);
 #define glKosRequireNativeBenchArchive() glKosRequireNativeBenchArchive1()
 #else
 #define glKosRequireNativeBenchArchive() glKosRequireNativeBenchArchive0()
+#endif
+
+/* The deferred-lane option also changes which implementation is present in a
+ * prebuilt archive. Keep the game header and GLdc archive paired in both
+ * directions instead of silently accepting an always-false try-call. */
+GLAPI void APIENTRY glKosRequireDeferredP3T2BGRAArchive0(void);
+GLAPI void APIENTRY glKosRequireDeferredP3T2BGRAArchive1(void);
+#if defined(GLDC_DEFERRED_P3T2BGRA) && GLDC_DEFERRED_P3T2BGRA
+#define glKosRequireDeferredP3T2BGRAArchive() \
+    glKosRequireDeferredP3T2BGRAArchive1()
+#else
+#define glKosRequireDeferredP3T2BGRAArchive() \
+    glKosRequireDeferredP3T2BGRAArchive0()
 #endif
 
 /* N0/N1 hardware-lab ABI. This is deliberately absent from ordinary builds:
@@ -143,7 +174,7 @@ GLAPI void APIENTRY glKosNativeBenchResetQueued(void);
  * functions are always linkable; glKosGetStats() returns NULL when
  * GLDC_ENABLE_STATS is disabled. Append fields and bump this version when the
  * snapshot layout changes. */
-#define GL_KOS_STATS_ABI_VERSION 1u
+#define GL_KOS_STATS_ABI_VERSION 2u
 
 typedef struct {
     GLuint struct_size;
@@ -181,9 +212,9 @@ typedef struct {
     GLuint scene_generic_records;
     GLuint scene_sprite_records;
 
-    /* Records that paid the ordinary post-transform polygon-offset bake.
-     * Direct TA sprites are intentionally excluded because they do not pay
-     * that pass. */
+    /* Records whose submitted depth includes the per-draw polygon offset.
+     * This includes the ordinary post-transform bake and N2's equivalent
+     * snapshotted direct bake. Direct TA sprites are intentionally excluded. */
     GLuint polygon_offset_vertices;
 
     /* glKos fast-lane routing. A hit means the specialized lane accepted the
@@ -213,6 +244,22 @@ typedef struct {
     GLuint interleaved_fallback_tnl;
     GLuint interleaved_fallback_immediate;
     GLuint interleaved_fallback_radial_fog;
+
+    /* Swap-stable deferred P3/T2/BGRA quad routing (N2). Queue counters are
+     * draw-time decisions; drain counters describe swap-time execution. */
+    GLuint deferred_quad_attempts;
+    GLuint deferred_quad_hits;
+    GLuint deferred_quad_vertices;
+    GLuint deferred_quad_fallbacks;
+    GLuint deferred_reject_disabled;
+    GLuint deferred_reject_mode_or_count;
+    GLuint deferred_reject_alignment;
+    GLuint deferred_reject_state;
+    GLuint deferred_reject_capture;
+    GLuint deferred_reject_capacity;
+    GLuint deferred_descriptors_submitted;
+    GLuint deferred_direct_vertices;
+    GLuint deferred_near_quads;
 } GLdcStats;
 
 GLAPI void APIENTRY glKosResetStats(void);
