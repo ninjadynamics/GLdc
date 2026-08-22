@@ -22,7 +22,7 @@ extern const char* GLDC_VERSION;
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS (1u << 3)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES (1u << 4)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR (1u << 5)
-#if defined(GLDC_DEFERRED_P3T2BGRA) && GLDC_DEFERRED_P3T2BGRA
+#if defined(_arch_dreamcast)
 #define GL_KOS_FAST_PATH_CAPABILITIES \
     (GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA | \
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS | \
@@ -126,18 +126,9 @@ GLAPI void APIENTRY glKosRequireNativeBenchArchive1(void);
 #define glKosRequireNativeBenchArchive() glKosRequireNativeBenchArchive0()
 #endif
 
-/* The deferred-lane option also changes which implementation is present in a
- * prebuilt archive. Keep the game header and GLdc archive paired in both
- * directions instead of silently accepting an always-false try-call. */
-GLAPI void APIENTRY glKosRequireDeferredP3T2BGRAArchive0(void);
-GLAPI void APIENTRY glKosRequireDeferredP3T2BGRAArchive1(void);
-#if defined(GLDC_DEFERRED_P3T2BGRA) && GLDC_DEFERRED_P3T2BGRA
-#define glKosRequireDeferredP3T2BGRAArchive() \
-    glKosRequireDeferredP3T2BGRAArchive1()
-#else
-#define glKosRequireDeferredP3T2BGRAArchive() \
-    glKosRequireDeferredP3T2BGRAArchive0()
-#endif
+/* Permanent-N2 link canary. Older option-built archives do not export this
+ * symbol, so a stale synchronous-only libGL fails at link time. */
+GLAPI void APIENTRY glKosRequireDeferredP3T2BGRA(void);
 
 /* N0/N1 hardware-lab ABI. This is deliberately absent from ordinary builds:
  * it exposes final 32-byte TA records solely so an exclusive microbenchmark

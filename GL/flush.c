@@ -78,7 +78,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [N2 deferred lanes]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.22-1547-stats0-glt0-nbench0-n2]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -135,7 +135,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
        capacity anyway, so reserving it up front costs the same RAM and never
        copies. (Bruno 2026-08-04 lamp-budget dissection.) */
     aligned_vector_reserve(&TR_LIST.sprites, 3072);  /* the glow lane lives on TR */
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
 #endif
 }
@@ -160,7 +160,7 @@ void APIENTRY glKosShutdown() {
     OP_LIST.header_emitted = GL_FALSE;
     PT_LIST.header_emitted = GL_FALSE;
     TR_LIST.header_emitted = GL_FALSE;
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
 #endif
 
@@ -216,7 +216,7 @@ static int _gt_frames;
    list opens at all. */
 static void submit_list(PolyList* l) {
     const GLboolean has_deferred =
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
         _glDeferredP3T2BGRAListCount(l) > 0;
 #else
         GL_FALSE;
@@ -233,7 +233,7 @@ static void submit_list(PolyList* l) {
 static GLboolean list_has_content(PolyList* l) {
     if(aligned_vector_header(&l->vector)->size > 2 ||
        aligned_vector_size(&l->sprites) > 0) return GL_TRUE;
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     if(_glDeferredP3T2BGRAListCount(l) > 0) return GL_TRUE;
 #endif
     return GL_FALSE;
@@ -249,7 +249,7 @@ static void clear_lists(void) {
     OP_LIST.header_emitted = GL_FALSE;
     PT_LIST.header_emitted = GL_FALSE;
     TR_LIST.header_emitted = GL_FALSE;
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
 #endif
 }
@@ -338,7 +338,7 @@ void APIENTRY glKosSwapBuffers() {
 
 #if GLDC_SWAP_TELEMETRY
     _gt_op_verts += aligned_vector_size(&OP_LIST.vector);
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     /* Replace each physical sentinel with the logical vertices transformed at
        swap so OP ns/v and the reported TR volume keep honest denominators. */
     _gt_op_verts += _glDeferredP3T2BGRAListVertexCount(&OP_LIST) -

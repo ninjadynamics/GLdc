@@ -115,7 +115,7 @@ typedef struct {
     GLboolean header_emitted;
 } PolyList;
 
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
 /* A command value that can never be a submitted TA vertex/header. It lives in
    the ordinary list vector solely to preserve chronology and is intercepted
    before is_header() at finalization. */

@@ -963,7 +963,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
     sq_wait();
 }
 
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
 static inline bool is_deferred_p3t2bgra(const Vertex* v) {
     return v->flags == GLDC_DEFERRED_P3T2BGRA_SENTINEL;
 }
@@ -1215,7 +1215,7 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
     }
 }
 
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
 /* Keep the classify-ahead window inside the SH4's data cache. The input side
    is 24 bytes/record, so 128 records occupy 3 KiB and are still hot when the
    direct writer immediately consumes the accepted run. */
@@ -1721,7 +1721,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
     if(n < 2) {
         return;
     }
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
     if(n < 4) {
         /* The descriptor table is frame-global but this call owns one list.
            A descriptor queued in another list must not accidentally relax the
@@ -1755,7 +1755,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
     bool run_start_fog = false;
 
     while(v < vend) {
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
         if(is_deferred_p3t2bgra(v)) {
             if(v > run_start) {
                 _glDivideSubmitRun(run_start, (int)(v - run_start),

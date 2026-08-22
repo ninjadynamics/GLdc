@@ -9,7 +9,6 @@ option(BUILD_TESTS   "Build test executables" ON)
 option(USE_SH4ZAM    "Use SH4ZAM optimized Dreamcast math" OFF)
 option(GLDC_ENABLE_STATS "Enable GLdc performance counters" OFF)
 option(GLDC_NATIVE_BENCH "Enable isolated N0/N1 native-PVR benchmark ABI" OFF)
-option(GLDC_DEFERRED_P3T2BGRA "Enable swap-stable deferred P3/T2/BGRA submission lanes" OFF)
 
 # set the default backend
 if(PLATFORM_DREAMCAST)
@@ -152,13 +151,6 @@ if(GLDC_NATIVE_BENCH)
         message(FATAL_ERROR "GLDC_NATIVE_BENCH is Dreamcast-only")
     endif()
     target_compile_definitions(GL PUBLIC GLDC_NATIVE_BENCH=1)
-endif()
-
-if(GLDC_DEFERRED_P3T2BGRA)
-    if(NOT PLATFORM_DREAMCAST)
-        message(FATAL_ERROR "GLDC_DEFERRED_P3T2BGRA is Dreamcast-only")
-    endif()
-    target_compile_definitions(GL PUBLIC GLDC_DEFERRED_P3T2BGRA=1)
 endif()
 
 if(PLATFORM_DREAMCAST AND USE_SH4ZAM)

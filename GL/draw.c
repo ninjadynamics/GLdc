@@ -1988,7 +1988,7 @@ typedef char GLKosStripRangeFirstMustStartAt0[
 typedef char GLKosStripRangeCountMustStartAt4[
     offsetof(GLKosStripRange, count) == 4 ? 1 : -1];
 
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
 #define GLDC_DEFERRED_P3T2BGRA_CAPACITY 64u
 #define GLDC_DEFERRED_P3T2BGRA_STRIP_CAPACITY 4096u
 
@@ -2050,11 +2050,7 @@ void APIENTRY glKosRequireNativeBenchArchive1(void) {}
 void APIENTRY glKosRequireNativeBenchArchive0(void) {}
 #endif
 
-#if GLDC_DEFERRED_P3T2BGRA
-void APIENTRY glKosRequireDeferredP3T2BGRAArchive1(void) {}
-#else
-void APIENTRY glKosRequireDeferredP3T2BGRAArchive0(void) {}
-#endif
+void APIENTRY glKosRequireDeferredP3T2BGRA(void) {}
 
 GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
@@ -2148,7 +2144,7 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
         return GL_FALSE;                          \
     } while(0)
 
-#if !GLDC_DEFERRED_P3T2BGRA
+#ifndef _arch_dreamcast
     (void)vertices;
     (void)positions;
     (void)texcoords;
@@ -2295,7 +2291,7 @@ GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
    drain-time quad guard: both the ordinary and polygon-offset near planes
    must be comfortably visible, and scalar/FTRV cancellation ambiguity falls
    back synchronously. */
-#if GLDC_DEFERRED_P3T2BGRA
+#ifdef _arch_dreamcast
 GL_FORCE_INLINE GLboolean _glDeferredVertexSafelyVisible(
         const Matrix4x4* mvp, GLfloat offset_inv,
         const GLKosVertexP3T2BGRA* in) {
@@ -2327,7 +2323,7 @@ GLboolean APIENTRY glKosTryDeferTrianglesP3T2BGRASwapStable(
         return GL_FALSE;                             \
     } while(0)
 
-#if !GLDC_DEFERRED_P3T2BGRA
+#ifndef _arch_dreamcast
     (void)vertices;
     (void)count;
     DEFERRED_TRIANGLE_REJECT(deferred_reject_disabled);
@@ -2440,7 +2436,7 @@ GLboolean APIENTRY glKosTryDeferMultiStripsP3T2BGRASwapStable(
         return GL_FALSE;                               \
     } while(0)
 
-#if !GLDC_DEFERRED_P3T2BGRA
+#ifndef _arch_dreamcast
     (void)vertices;
     (void)vertex_count;
     (void)strips;

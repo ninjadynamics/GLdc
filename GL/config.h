@@ -20,16 +20,10 @@
 #define GLDC_S3_SEGMENTED_OP 0
 #endif
 
-/* N2: swap-time object-space descriptors for explicitly swap-stable
-   P3F/T2F/BGRA quad storage. The regular build keeps this opt-in until the
-   whole-city hardware A/B is accepted. S3 owns an open OP list mid-frame and
-   cannot preserve descriptor chronology, so the two experiments are mutually
-   exclusive. */
-#ifndef GLDC_DEFERRED_P3T2BGRA
-#define GLDC_DEFERRED_P3T2BGRA 0
-#endif
-#if GLDC_DEFERRED_P3T2BGRA && GLDC_S3_SEGMENTED_OP
-#error "GLDC_DEFERRED_P3T2BGRA and GLDC_S3_SEGMENTED_OP cannot be combined"
+/* N2 swap-stable descriptors are now part of every Dreamcast build. S3 owns
+   an open OP list mid-frame and cannot preserve descriptor chronology. */
+#if defined(_arch_dreamcast) && GLDC_S3_SEGMENTED_OP
+#error "Permanent N2 descriptors and GLDC_S3_SEGMENTED_OP cannot be combined"
 #endif
 
 /* B2 GOLD-BLOCK quad writer (2026-07-24, HyperSolar perf ledger B2): the city
