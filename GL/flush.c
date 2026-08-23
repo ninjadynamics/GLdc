@@ -2,6 +2,7 @@
 #include "../containers/aligned_vector.h"
 #include "private.h"
 #include "config.h"
+#include "gldc_stats.h"
 
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 #include <dc/pvr.h>
@@ -78,7 +79,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.22-1547-stats0-glt0-nbench0-n2]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.23-2112-stats0-glt1-nbench0-n3]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -137,6 +138,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
     aligned_vector_reserve(&TR_LIST.sprites, 3072);  /* the glow lane lives on TR */
 #ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
+    _glInitPvrPackets();
 #endif
 }
 
@@ -162,6 +164,7 @@ void APIENTRY glKosShutdown() {
     TR_LIST.header_emitted = GL_FALSE;
 #ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
+    _glShutdownPvrPackets();
 #endif
 
     _glShutdownImmediateMode();
@@ -217,7 +220,8 @@ static int _gt_frames;
 static void submit_list(PolyList* l) {
     const GLboolean has_deferred =
 #ifdef _arch_dreamcast
-        _glDeferredP3T2BGRAListCount(l) > 0;
+        _glDeferredP3T2BGRAListCount(l) > 0 ||
+        _glPvrPacketListCount(l) > 0;
 #else
         GL_FALSE;
 #endif
@@ -235,6 +239,7 @@ static GLboolean list_has_content(PolyList* l) {
        aligned_vector_size(&l->sprites) > 0) return GL_TRUE;
 #ifdef _arch_dreamcast
     if(_glDeferredP3T2BGRAListCount(l) > 0) return GL_TRUE;
+    if(_glPvrPacketListCount(l) > 0) return GL_TRUE;
 #endif
     return GL_FALSE;
 }
@@ -251,6 +256,123 @@ static void clear_lists(void) {
     TR_LIST.header_emitted = GL_FALSE;
 #ifdef _arch_dreamcast
     _glResetDeferredP3T2BGRA();
+    _glResetPvrPackets();
+#endif
+}
+
+static void finish_exclusive_state(GLboolean successful_scene) {
+    clear_lists();
+#if GLDC_S3_SEGMENTED_OP
+    _glS3SwapReset();
+#endif
+    _glApplyScissor(true);
+    if(successful_scene) {
+        _glProcessDeferredFrees();
+    }
+    _glInvalidateCapturedArrays();
+    _glGPUStateMarkDirty();
+}
+
+GLint APIENTRY glKosPvrSubmitExclusiveScene(
+        const GLKosPvrExclusiveScene* scene) {
+#ifndef _arch_dreamcast
+    (void)scene;
+    return GL_KOS_PVR_UNSUPPORTED_STATE;
+#else
+    if(!scene) return GL_KOS_PVR_BAD_ARGUMENT;
+    if(!_initialized) return GL_KOS_PVR_UNSUPPORTED_STATE;
+
+    const GLint op = _glPvrValidateExclusiveList(
+        &scene->opaque, GPU_LIST_OP_POLY);
+    const GLint pt = _glPvrValidateExclusiveList(
+        &scene->punch_through, GPU_LIST_PT_POLY);
+    const GLint tr = _glPvrValidateExclusiveList(
+        &scene->translucent, GPU_LIST_TR_POLY);
+    if(op != GL_KOS_PVR_OK || pt != GL_KOS_PVR_OK ||
+       tr != GL_KOS_PVR_OK) {
+        GLDC_STAT_INC(pvr_exclusive_rejects);
+        if(op != GL_KOS_PVR_OK) return op;
+        if(pt != GL_KOS_PVR_OK) return pt;
+        return tr;
+    }
+    if(scene->opaque.record_count == 0 &&
+       scene->punch_through.record_count == 0 &&
+       scene->translucent.record_count == 0) {
+        GLDC_STAT_INC(pvr_exclusive_rejects);
+        return GL_KOS_PVR_BAD_ARGUMENT;
+    }
+
+#if GLDC_S3_SEGMENTED_OP
+    if(_glS3SceneOpen()) {
+        GLDC_STAT_INC(pvr_exclusive_rejects);
+        return GL_KOS_PVR_QUEUE_NOT_EMPTY;
+    }
+#endif
+    if(!_glPvrPacketExclusiveReady() ||
+       aligned_vector_size(&OP_LIST.vector) != 0 ||
+       aligned_vector_size(&PT_LIST.vector) != 0 ||
+       aligned_vector_size(&TR_LIST.vector) != 0 ||
+       aligned_vector_size(&OP_LIST.sprites) != 0 ||
+       aligned_vector_size(&PT_LIST.sprites) != 0 ||
+       aligned_vector_size(&TR_LIST.sprites) != 0 ||
+       _glDeferredP3T2BGRACount() != 0 || _glPvrPacketCount() != 0) {
+        GLDC_STAT_INC(pvr_exclusive_rejects);
+        return GL_KOS_PVR_QUEUE_NOT_EMPTY;
+    }
+
+    if(SceneBeginChecked() < 0) {
+        GLDC_STAT_INC(pvr_exclusive_rejects);
+        return GL_KOS_PVR_PVR_ERROR;
+    }
+    GLboolean scene_started = GL_TRUE;
+    GLuint lists = 0;
+    GLuint records = 0;
+    if(scene->opaque.record_count > 0) {
+        if(SceneListBeginChecked(GPU_LIST_OP_POLY) < 0) goto pvr_error;
+        SceneListSubmitFinal(
+            scene->opaque.records, scene->opaque.record_count);
+        if(SceneListFinishChecked() < 0) goto pvr_error;
+        ++lists;
+        records += (GLuint)scene->opaque.record_count;
+    }
+    if(scene->punch_through.record_count > 0) {
+        if(SceneListBeginChecked(GPU_LIST_PT_POLY) < 0) goto pvr_error;
+        SceneListSubmitFinal(
+            scene->punch_through.records,
+            scene->punch_through.record_count);
+        if(SceneListFinishChecked() < 0) goto pvr_error;
+        ++lists;
+        records += (GLuint)scene->punch_through.record_count;
+    }
+    if(scene->translucent.record_count > 0) {
+        if(SceneListBeginChecked(GPU_LIST_TR_POLY) < 0) goto pvr_error;
+        SceneListSubmitFinal(
+            scene->translucent.records,
+            scene->translucent.record_count);
+        if(SceneListFinishChecked() < 0) goto pvr_error;
+        ++lists;
+        records += (GLuint)scene->translucent.record_count;
+    }
+    {
+        const int finish_result = SceneFinishChecked();
+        scene_started = GL_FALSE;
+        if(finish_result < 0) goto pvr_error;
+    }
+
+    GLDC_STAT_INC(pvr_exclusive_scenes);
+    GLDC_STAT_ADD(pvr_exclusive_lists, lists);
+    GLDC_STAT_ADD(pvr_exclusive_records, records);
+    finish_exclusive_state(GL_TRUE);
+    return GL_KOS_PVR_OK;
+
+pvr_error:
+    /* A failed list begin/finish still leaves a begun scene to close. Match
+       KOS's checked raw-packet pattern: attempt scene finish, then invalidate
+       every GLdc shadow before the caller can fall back or retry. */
+    if(scene_started) (void)SceneFinishChecked();
+    finish_exclusive_state(GL_FALSE);
+    GLDC_STAT_INC(pvr_exclusive_rejects);
+    return GL_KOS_PVR_PVR_ERROR;
 #endif
 }
 
@@ -345,6 +467,10 @@ void APIENTRY glKosSwapBuffers() {
                     _glDeferredP3T2BGRAListCount(&OP_LIST);
     _gt_tr_verts += _glDeferredP3T2BGRAListVertexCount(&TR_LIST) -
                     _glDeferredP3T2BGRAListCount(&TR_LIST);
+    _gt_op_verts += _glPvrPacketListRecordCount(&OP_LIST) -
+                    _glPvrPacketListCount(&OP_LIST);
+    _gt_tr_verts += _glPvrPacketListRecordCount(&TR_LIST) -
+                    _glPvrPacketListCount(&TR_LIST);
 #endif
     _gt_tr_verts += aligned_vector_size(&TR_LIST.vector);
 #endif

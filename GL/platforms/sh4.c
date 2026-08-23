@@ -237,13 +237,13 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
     }
 }
 
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-/* N1's RAM-sink form. It deliberately lives beside the production SH4
-   transform/finalizer so the experiment uses the same FTRV and reciprocal
-   primitives. The persistent GLdc lists are not touched. */
-typedef char NativeBenchInputSizeMustBe24[
+/* N1 proved this RAM finalizer byte-exact against the classic path. N3 makes
+   that kernel permanent: transient callers write final records into GLdc-owned
+   packet RAM, while the benchmark and production lane share this one body. */
+typedef char FinalP3T2BGRAInputSizeMustBe24[
     sizeof(GLKosVertexP3T2BGRA) == 24 ? 1 : -1];
 
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 /* Conservative input-side guard for this fixed packed-color benchmark. KOS's
    current non-DMA close sequence adds eight TA input records with InitGPU's
    OP/TR/PT configuration: pvr_list_finish(OP) appends a blank header + EOL,
@@ -255,11 +255,169 @@ typedef char NativeBenchInputSizeMustBe24[
 #define NATIVE_BENCH_INPUT_RECORD_LIMIT \
     ((PVR_VERTEX_BUF_SIZE / (int)sizeof(Vertex)) - \
      NATIVE_BENCH_TA_CLOSE_RECORDS)
+#endif
 
 /* The sole final-record fill body. RAM and store-queue sinks differ only in
    cache-line allocation / queue firing around this function, keeping every
    word and every SH4 reciprocal operation identical. */
-GL_FORCE_INLINE bool _glNativeBenchFillRecord(
+GL_FORCE_INLINE uint32_t _glFinalFloatWord(float value) {
+    uint32_t bits;
+    __builtin_memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+GL_FORCE_INLINE bool _glFinalWordFinite(uint32_t bits) {
+    return (bits & 0x7f800000u) != 0x7f800000u;
+}
+
+GL_FORCE_INLINE bool _glFinalFloatFinite(float value) {
+    return _glFinalWordFinite(_glFinalFloatWord(value));
+}
+
+GL_FORCE_INLINE bool _glFinalWordPositiveFinite(uint32_t bits) {
+    const uint32_t magnitude = bits & 0x7fffffffu;
+    return ((bits >> 31) == 0u) & (magnitude != 0u) &
+           ((magnitude & 0x7f800000u) != 0x7f800000u);
+}
+
+GL_FORCE_INLINE int _glFinalFillRecord(
+        const GLKosVertexP3T2BGRA* in, uint32_t* q, uint32_t flags,
+        float x, float y, float z, float w) {
+    int result = (z >= -w) ? SCENE_FINAL_BUILD_OK
+                           : SCENE_FINAL_BUILD_NEAR;
+    const float f = _glFastInvert(w);
+    q[0] = flags;
+    ((float*)q)[1] = x * f;
+    ((float*)q)[2] = y * f;
+    ((float*)q)[3] = unlikely(w == 1.0f)
+        ? _glFastInvert(1.0001f + z)
+        : f;
+    ((float*)q)[4] = in->u;
+    ((float*)q)[5] = in->v;
+    q[6] = in->bgra;
+    ((float*)q)[7] = w;
+
+    /* These are exactly the finite fields the TA consumes and the public raw
+       packet API validates.  z is also checked because it owns near-plane
+       classification but is not otherwise retained in the final record.
+       Bitwise OR keeps one cold INVALID decision under -ffast-math. */
+    const bool invalid =
+        !_glFinalFloatFinite(z) |
+        !_glFinalWordFinite(q[1]) |
+        !_glFinalWordFinite(q[2]) |
+        !_glFinalWordPositiveFinite(q[3]) |
+        !_glFinalWordFinite(q[4]) |
+        !_glFinalWordFinite(q[5]);
+    result |= ((int)invalid << 1);
+    return result;
+}
+
+GL_FORCE_INLINE int _glFinalPack(
+        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags,
+        float x, float y, float z, float w) {
+    VERTEX_CACHE_ALLOC(out);
+    return _glFinalFillRecord(in, (uint32_t*)out, flags, x, y, z, w);
+}
+
+GL_FORCE_INLINE int _glFinalPackPair(
+        const GLKosVertexP3T2BGRA* a, const GLKosVertexP3T2BGRA* b,
+        Vertex* da, Vertex* db, uint32_t fa, uint32_t fb) {
+    float axyz[3], bxyz[3], aw, bw;
+    TransformVertex2(a->x, a->y, a->z, axyz, &aw,
+                     b->x, b->y, b->z, bxyz, &bw);
+    const int ar = _glFinalPack(
+        a, da, fa, axyz[0], axyz[1], axyz[2], aw);
+    const int br = _glFinalPack(
+        b, db, fb, bxyz[0], bxyz[1], bxyz[2], bw);
+    return ar | br;
+}
+
+GL_FORCE_INLINE int _glFinalPackSingle(
+        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags) {
+    float xyz[3], w;
+    TransformVertex(in->x, in->y, in->z, 1.0f, xyz, &w);
+    return _glFinalPack(in, out, flags, xyz[0], xyz[1], xyz[2], w);
+}
+
+int SceneBuildFinalP3T2BGRA(
+        unsigned int mode, const void* vertices, int count, Vertex* output) {
+    const GLKosVertexP3T2BGRA* in =
+        (const GLKosVertexP3T2BGRA*)vertices;
+
+    if(mode == GL_TRIANGLES) {
+        int i = 0;
+        /* Six records = two complete triangles. Fixed flags eliminate the
+           old loop-carried modulo/EOL decision and retain dual-FTRV issue. */
+        for(; count - i >= 6; i += 6) {
+            if(count - i > 2) PREFETCH(in + i + 2);
+            const int r0 = _glFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            const int r1 = _glFinalPackPair(
+                in + i + 2, in + i + 3, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+            const int r2 = _glFinalPackPair(
+                in + i + 4, in + i + 5, output + i + 4, output + i + 5,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+            /* A rejected reservation is cancelled wholesale.  Stop at the
+               first complete unrolled block whose records cannot be queued;
+               later output would be unobservable and only delays F1. */
+            const int block_result = r0 | r1 | r2;
+            if(unlikely(block_result != SCENE_FINAL_BUILD_OK))
+                return block_result;
+        }
+        if(i < count) {  /* valid triangle input leaves exactly three */
+            if(count - i > 2) PREFETCH(in + i + 2);
+            const int pair_result = _glFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            return pair_result | _glFinalPackSingle(
+                in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
+        }
+        return SCENE_FINAL_BUILD_OK;
+    }
+
+    if(mode == GL_QUADS) {
+        for(int i = 0; i < count; i += 4) {
+            if(count - i > 4) PREFETCH(in + i + 4);
+            const int r0 = _glFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            const int r1 = _glFinalPackPair(
+                in + i + 3, in + i + 2, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+            const int block_result = r0 | r1;
+            if(unlikely(block_result != SCENE_FINAL_BUILD_OK))
+                return block_result;
+        }
+        return SCENE_FINAL_BUILD_OK;
+    }
+
+    /* Long strips are their own benchmark topology. One EOL is stamped on
+       the final record, matching _glWriteFusedVertices(GL_FALSE). */
+    int i = 0;
+    for(; count - i >= 2; i += 2) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        const uint32_t fb = (count - i == 2)
+            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+        const int pair_result = _glFinalPackPair(
+            in + i, in + i + 1, output + i, output + i + 1,
+            GPU_CMD_VERTEX, fb);
+        if(unlikely(pair_result != SCENE_FINAL_BUILD_OK))
+            return pair_result;
+    }
+    if(i < count) {
+        return _glFinalPackSingle(in + i, output + i, GPU_CMD_VERTEX_EOL);
+    }
+    return SCENE_FINAL_BUILD_OK;
+}
+
+/* Trusted N3 record writer shared by production and the retained N1 hardware
+   control. It intentionally omits the checked constructor's per-record finite
+   scan: callers own the documented finite-input/matrix/depth contract. Near
+   classification remains inside this writer so an ambiguous batch can cancel
+   its private reservation and take the exact clipping fallback. */
+GL_FORCE_INLINE bool _glTrustedFinalFillRecord(
         const GLKosVertexP3T2BGRA* in, uint32_t* q, uint32_t flags,
         float x, float y, float z, float w) {
     const bool visible = z >= -w;
@@ -277,35 +435,36 @@ GL_FORCE_INLINE bool _glNativeBenchFillRecord(
     return visible;
 }
 
-GL_FORCE_INLINE bool _glNativeBenchPack(
+GL_FORCE_INLINE bool _glTrustedFinalPack(
         const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags,
         float x, float y, float z, float w) {
     VERTEX_CACHE_ALLOC(out);
-    return _glNativeBenchFillRecord(
+    return _glTrustedFinalFillRecord(
         in, (uint32_t*)out, flags, x, y, z, w);
 }
 
-GL_FORCE_INLINE bool _glNativeBenchPackPair(
+GL_FORCE_INLINE bool _glTrustedFinalPackPair(
         const GLKosVertexP3T2BGRA* a, const GLKosVertexP3T2BGRA* b,
         Vertex* da, Vertex* db, uint32_t fa, uint32_t fb) {
     float axyz[3], bxyz[3], aw, bw;
     TransformVertex2(a->x, a->y, a->z, axyz, &aw,
                      b->x, b->y, b->z, bxyz, &bw);
-    const bool av = _glNativeBenchPack(a, da, fa,
+    const bool av = _glTrustedFinalPack(a, da, fa,
                                        axyz[0], axyz[1], axyz[2], aw);
-    const bool bv = _glNativeBenchPack(b, db, fb,
+    const bool bv = _glTrustedFinalPack(b, db, fb,
                                        bxyz[0], bxyz[1], bxyz[2], bw);
     return av && bv;
 }
 
-GL_FORCE_INLINE bool _glNativeBenchPackSingle(
+GL_FORCE_INLINE bool _glTrustedFinalPackSingle(
         const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags) {
     float xyz[3], w;
     TransformVertex(in->x, in->y, in->z, 1.0f, xyz, &w);
-    return _glNativeBenchPack(in, out, flags,
+    return _glTrustedFinalPack(in, out, flags,
                               xyz[0], xyz[1], xyz[2], w);
 }
 
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 int SceneNativeBenchBuildP3T2BGRA(
         unsigned int mode, const void* vertices, int count, Vertex* output) {
     const GLKosVertexP3T2BGRA* in =
@@ -314,52 +473,133 @@ int SceneNativeBenchBuildP3T2BGRA(
     if(mode == GL_TRIANGLES) {
         bool all_visible = true;
         int i = 0;
-        /* Six records = two complete triangles. Fixed flags eliminate the
-           old loop-carried modulo/EOL decision and retain dual-FTRV issue. */
         for(; count - i >= 6; i += 6) {
             if(count - i > 2) PREFETCH(in + i + 2);
-            all_visible &= _glNativeBenchPackPair(
+            all_visible &= _glTrustedFinalPackPair(
                 in + i, in + i + 1, output + i, output + i + 1,
                 GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            all_visible &= _glNativeBenchPackPair(
+            all_visible &= _glTrustedFinalPackPair(
                 in + i + 2, in + i + 3, output + i + 2, output + i + 3,
                 GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
-            all_visible &= _glNativeBenchPackPair(
+            all_visible &= _glTrustedFinalPackPair(
                 in + i + 4, in + i + 5, output + i + 4, output + i + 5,
                 GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
         }
-        if(i < count) {  /* valid triangle input leaves exactly three */
+        if(i < count) {
             if(count - i > 2) PREFETCH(in + i + 2);
-            all_visible &= _glNativeBenchPackPair(
+            all_visible &= _glTrustedFinalPackPair(
                 in + i, in + i + 1, output + i, output + i + 1,
                 GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            all_visible &= _glNativeBenchPackSingle(
+            all_visible &= _glTrustedFinalPackSingle(
                 in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
         }
         return all_visible ? GL_KOS_NATIVE_BENCH_OK
                            : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
     }
 
-    /* Long strips are their own benchmark topology. One EOL is stamped on
-       the final record, matching _glWriteFusedVertices(GL_FALSE). */
+    if(mode == GL_QUADS) {
+        bool all_visible = true;
+        for(int i = 0; i < count; i += 4) {
+            if(count - i > 4) PREFETCH(in + i + 4);
+            all_visible &= _glTrustedFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            all_visible &= _glTrustedFinalPackPair(
+                in + i + 3, in + i + 2, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+        }
+        return all_visible ? GL_KOS_NATIVE_BENCH_OK
+                           : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+    }
+
     bool all_visible = true;
     int i = 0;
     for(; count - i >= 2; i += 2) {
         if(count - i > 2) PREFETCH(in + i + 2);
         const uint32_t fb = (count - i == 2)
             ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
-        all_visible &= _glNativeBenchPackPair(
+        all_visible &= _glTrustedFinalPackPair(
             in + i, in + i + 1, output + i, output + i + 1,
             GPU_CMD_VERTEX, fb);
     }
     if(i < count) {
-        all_visible &= _glNativeBenchPackSingle(
+        all_visible &= _glTrustedFinalPackSingle(
             in + i, output + i, GPU_CMD_VERTEX_EOL);
     }
     return all_visible ? GL_KOS_NATIVE_BENCH_OK
                        : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
 }
+#endif
 
+/* Production trusted N3 writer. It retains complete-block early near
+   rejection so a declined transient batch does not pay a second full
+   transform before the exact F1 fallback. Partial output is private
+   reservation RAM and is discarded by the caller on rejection. */
+int SceneBuildTrustedFinalP3T2BGRA(
+        unsigned int mode, const void* vertices, int count, Vertex* output) {
+    const GLKosVertexP3T2BGRA* in =
+        (const GLKosVertexP3T2BGRA*)vertices;
+
+    if(mode == GL_TRIANGLES) {
+        int i = 0;
+        for(; count - i >= 6; i += 6) {
+            if(count - i > 2) PREFETCH(in + i + 2);
+            const bool r0 = _glTrustedFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            const bool r1 = _glTrustedFinalPackPair(
+                in + i + 2, in + i + 3, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
+            const bool r2 = _glTrustedFinalPackPair(
+                in + i + 4, in + i + 5, output + i + 4, output + i + 5,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+            if(unlikely(!(r0 & r1 & r2))) return SCENE_FINAL_BUILD_NEAR;
+        }
+        if(i < count) {
+            if(count - i > 2) PREFETCH(in + i + 2);
+            const bool r0 = _glTrustedFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            const bool r1 = _glTrustedFinalPackSingle(
+                in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
+            if(unlikely(!(r0 & r1))) return SCENE_FINAL_BUILD_NEAR;
+        }
+        return SCENE_FINAL_BUILD_OK;
+    }
+
+    if(mode == GL_QUADS) {
+        for(int i = 0; i < count; i += 4) {
+            if(count - i > 4) PREFETCH(in + i + 4);
+            const bool r0 = _glTrustedFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
+            const bool r1 = _glTrustedFinalPackPair(
+                in + i + 3, in + i + 2, output + i + 2, output + i + 3,
+                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
+            if(unlikely(!(r0 & r1))) return SCENE_FINAL_BUILD_NEAR;
+        }
+        return SCENE_FINAL_BUILD_OK;
+    }
+
+    int i = 0;
+    for(; count - i >= 2; i += 2) {
+        if(count - i > 2) PREFETCH(in + i + 2);
+        const uint32_t fb = (count - i == 2)
+            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
+        if(unlikely(!_glTrustedFinalPackPair(
+                in + i, in + i + 1, output + i, output + i + 1,
+                GPU_CMD_VERTEX, fb))) {
+            return SCENE_FINAL_BUILD_NEAR;
+        }
+    }
+    if(i < count && unlikely(!_glTrustedFinalPackSingle(
+            in + i, output + i, GPU_CMD_VERTEX_EOL))) {
+        return SCENE_FINAL_BUILD_NEAR;
+    }
+    return SCENE_FINAL_BUILD_OK;
+}
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 int SceneNativeBenchFinalizeClassic(Vertex* vertices, int count) {
     /* Scan before mutation: a rejected near-plane case leaves the classic
        clip-space records intact for the ordinary clipper/fallback. */
@@ -375,7 +615,7 @@ int SceneNativeBenchFinalizeClassic(Vertex* vertices, int count) {
 GL_FORCE_INLINE bool _glNativeBenchPackSQ(
         const GLKosVertexP3T2BGRA* in, uintptr_t d, uint32_t flags,
         float x, float y, float z, float w) {
-    const bool visible = _glNativeBenchFillRecord(
+    const bool visible = _glTrustedFinalFillRecord(
         in, (uint32_t*)d, flags, x, y, z, w);
     __asm__ __volatile__("pref @%0" : : "r"(d) : "memory");
     return visible;
@@ -964,7 +1204,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
 }
 
 #ifdef _arch_dreamcast
-static inline bool is_deferred_p3t2bgra(const Vertex* v) {
+static inline bool is_internal_segment(const Vertex* v) {
     return v->flags == GLDC_DEFERRED_P3T2BGRA_SENTINEL;
 }
 #endif
@@ -1695,6 +1935,51 @@ static void _glSubmitDeferredP3T2BGRA(
         _glSubmitDeferredInterleavedP3T2BGRA(descriptor);
     }
 }
+
+/* Segment decoding is deliberately out of line.  Ordinary F1 records only
+   pay the one unlikely marker comparison in SceneListSubmit; the descriptor
+   validation/copy machinery does not inflate that strip scanner's hot body. */
+static GL_NO_INLINE void _glSubmitPvrPacketSegment(
+        const uint32_t* words, bool* vertex_fog) {
+    const GLuint descriptor_index = words[1];
+    const GLdcPvrPacket* const packet = _glPvrPacketAt(descriptor_index);
+    const GLKosPvrRecord* const records = _glPvrPacketRecords(packet);
+    const bool sentinel_valid = packet && records &&
+        words[2] == ~descriptor_index && words[3] == packet->token &&
+        words[7] == (GLDC_PVR_PACKET_SENTINEL ^
+                     descriptor_index ^ packet->token) &&
+        packet->record_count >= (packet->has_header ? 4u : 3u);
+    gl_assert(sentinel_valid);
+    if(!sentinel_valid) return;
+
+    /* Header + already-final records are contiguous/aligned;
+       pvr_list_begin has already armed QACR for TA input. */
+    sq_fast_cpy((void*)sq_dest_addr, records, (size_t)packet->record_count);
+    GLDC_STAT_ADD(scene_records_in, packet->record_count - 1u);
+    if(packet->has_header) {
+        GLDC_STAT_INC(scene_headers_seen);
+        *vertex_fog = _glHeaderUsesVertexFog((const Vertex*)records);
+    }
+    GLDC_STAT_INC(pvr_packet_segments_submitted);
+    GLDC_STAT_ADD(pvr_packet_records_submitted, packet->record_count);
+}
+
+static GL_NO_INLINE void _glSubmitDeferredSegment(
+        const uint32_t* words, bool vertex_fog) {
+    const GLuint descriptor_index = words[1];
+    const GLdcDeferredP3T2BGRA* const descriptor =
+        _glDeferredP3T2BGRAAt(descriptor_index);
+    const bool sentinel_valid = descriptor &&
+        words[2] == ~descriptor_index &&
+        words[7] == (GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index);
+    gl_assert(sentinel_valid);
+    if(!sentinel_valid) return;
+
+    /* Replace the physical marker counted by the prologue with the
+       object-space records it represents. */
+    GLDC_STAT_ADD(scene_records_in, descriptor->count - 1u);
+    _glSubmitDeferredP3T2BGRA(descriptor, vertex_fog);
+}
 #endif
 
 /* Keep the scan -> fused divide handoff inside the SH4's 16 KiB data cache.
@@ -1717,23 +2002,19 @@ static void _glSubmitDeferredP3T2BGRA(
 void SceneListSubmit(Vertex* vertices, int n) {
     TRACE();
 
-    /* You need at least a header, and 3 vertices to render anything */
-    if(n < 2) {
-        return;
-    }
+    if(n <= 0) return;
 #ifdef _arch_dreamcast
     if(n < 4) {
-        /* The descriptor table is frame-global but this call owns one list.
-           A descriptor queued in another list must not accidentally relax the
-           minimum for this short stream. */
-        GLboolean has_local_deferred = GL_FALSE;
+        /* Descriptor tables are frame-global but this call owns one list. A
+           sentinel queued elsewhere must not relax this short stream. */
+        GLboolean has_local_segment = GL_FALSE;
         for(int i = 0; i < n; ++i) {
-            if(is_deferred_p3t2bgra(vertices + i)) {
-                has_local_deferred = GL_TRUE;
+            if(is_internal_segment(vertices + i)) {
+                has_local_segment = GL_TRUE;
                 break;
             }
         }
-        if(!has_local_deferred) return;
+        if(!has_local_segment) return;
     }
 #else
     if(n < 4) return;
@@ -1756,26 +2037,17 @@ void SceneListSubmit(Vertex* vertices, int n) {
 
     while(v < vend) {
 #ifdef _arch_dreamcast
-        if(is_deferred_p3t2bgra(v)) {
+        if(unlikely(is_internal_segment(v))) {
             if(v > run_start) {
                 _glDivideSubmitRun(run_start, (int)(v - run_start),
                                    run_start_fog);
             }
 
             const uint32_t* const words = (const uint32_t*)v;
-            const GLuint descriptor_index = words[1];
-            const GLdcDeferredP3T2BGRA* const descriptor =
-                _glDeferredP3T2BGRAAt(descriptor_index);
-            const bool sentinel_valid = descriptor &&
-                words[2] == ~descriptor_index &&
-                words[7] ==
-                    (GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index);
-            gl_assert(sentinel_valid);
-            if(sentinel_valid) {
-                /* Replace the one physical sentinel counted by the prologue
-                   with the logical object-space records it represents. */
-                GLDC_STAT_ADD(scene_records_in, descriptor->count - 1u);
-                _glSubmitDeferredP3T2BGRA(descriptor, vertex_fog);
+            if(words[3] != 0u) {
+                _glSubmitPvrPacketSegment(words, &vertex_fog);
+            } else {
+                _glSubmitDeferredSegment(words, vertex_fog);
             }
 
             ++v;
@@ -2360,10 +2632,28 @@ void SceneSpritesSubmit(void* blob, int blocks32) {
     sq_wait();
 }
 
-void SceneBegin() {
-    pvr_wait_ready();
+/* Submit a validated list-major final command stream. Scene/list ownership
+   stays with flush.c; this helper only performs the TA register setup and one
+   contiguous store-queue copy. */
+void SceneListSubmitFinal(const void* records, int record_count) {
+    if(!records || record_count <= 0) return;
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+    sq_fast_cpy(SQ_MASK_DEST(PVR_TA_INPUT), records,
+                (size_t)record_count);
+    sq_wait();
+}
+
+int SceneBeginChecked(void) {
+    if(pvr_wait_ready() < 0) return -1;
     ApplyDeferredFogTable();
     pvr_scene_begin();
+    return 0;
+}
+
+void SceneBegin() {
+    (void)SceneBeginChecked();
 }
 
 /* Like SceneBegin, but renders this scene into a texture in VRAM instead of the
@@ -2378,18 +2668,31 @@ void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
     pvr_scene_begin_rtt((pvr_ptr_t) tex, w, h, w);
 }
 
-void SceneListBegin(GPUList list) {
-    pvr_list_begin(list);
+int SceneListBeginChecked(GPUList list) {
+    const int result = pvr_list_begin(list);
     /* pvr_list_begin acquires the store queues and programs QACR for TA input.
        pvr_dr_init is a deprecated no-op in current KOS. */
+    return result;
+}
+
+void SceneListBegin(GPUList list) {
+    (void)SceneListBeginChecked(list);
+}
+
+int SceneListFinishChecked(void) {
+    return pvr_list_finish();
 }
 
 void SceneListFinish() {
-    pvr_list_finish();
+    (void)SceneListFinishChecked();
+}
+
+int SceneFinishChecked(void) {
+    return pvr_scene_finish();
 }
 
 void SceneFinish() {
-    pvr_scene_finish();
+    (void)SceneFinishChecked();
 }
 
 const VideoMode* GetVideoMode() {

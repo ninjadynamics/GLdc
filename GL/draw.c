@@ -1987,6 +1987,12 @@ typedef char GLKosStripRangeFirstMustStartAt0[
     offsetof(GLKosStripRange, first) == 0 ? 1 : -1];
 typedef char GLKosStripRangeCountMustStartAt4[
     offsetof(GLKosStripRange, count) == 4 ? 1 : -1];
+typedef char GLKosPvrRecordSizeMustBe32[
+    sizeof(GLKosPvrRecord) == 32 ? 1 : -1];
+typedef char GLKosPvrVertexCommandMustMatch[
+    GL_KOS_PVR_CMD_VERTEX == GPU_CMD_VERTEX ? 1 : -1];
+typedef char GLKosPvrVertexEolCommandMustMatch[
+    GL_KOS_PVR_CMD_VERTEX_EOL == GPU_CMD_VERTEX_EOL ? 1 : -1];
 
 #ifdef _arch_dreamcast
 #define GLDC_DEFERRED_P3T2BGRA_CAPACITY 64u
@@ -1999,6 +2005,24 @@ static GLKosStripRange __attribute__((aligned(32)))
 static GLuint DEFERRED_P3T2BGRA_COUNT;
 static GLuint DEFERRED_P3T2BGRA_VERTICES;
 static GLuint DEFERRED_P3T2BGRA_STRIP_COUNT;
+
+#define GLDC_PVR_PACKET_SEGMENT_CAPACITY 256u
+#define GLDC_PVR_PACKET_RECORD_LIMIT     65536u
+#define GLDC_PVR_PACKET_INITIAL_RECORDS  8192u
+
+static AlignedVector PVR_PACKET_RECORDS;
+static GLdcPvrPacket PVR_PACKETS[GLDC_PVR_PACKET_SEGMENT_CAPACITY];
+static GLuint PVR_PACKET_COUNT;
+static GLuint PVR_PACKET_NEXT_TOKEN = 1u;
+static GLboolean PVR_PACKET_INITIALIZED;
+static struct {
+    GLboolean active;
+    GLuint token;
+    GLuint first_record;
+    GLuint capacity;
+    GLuint list_size;
+    PolyList* list;
+} PVR_PACKET_RESERVATION;
 
 const GLdcDeferredP3T2BGRA* _glDeferredP3T2BGRAAt(GLuint index) {
     return index < DEFERRED_P3T2BGRA_COUNT
@@ -2035,6 +2059,455 @@ void _glResetDeferredP3T2BGRA(void) {
     DEFERRED_P3T2BGRA_VERTICES = 0;
     DEFERRED_P3T2BGRA_STRIP_COUNT = 0;
 }
+
+static void _glPvrClearPublicReservation(
+        GLKosPvrPacketReservation* reservation) {
+    if(!reservation) return;
+    reservation->vertices = NULL;
+    reservation->capacity = 0;
+    reservation->token = 0;
+}
+
+static void _glPvrCompileCurrentHeader(PolyHeader* header, PolyList* list) {
+    PolyContext ctx;
+    _glBuildPolyContext(&ctx, list, 0);
+    CompilePolyHeader(header, &ctx);
+    header->cmd |= 0xC0000;
+}
+
+static GLint _glPvrReservationState(void) {
+    if(CAPTURE_PENDING >= 0 || IMMEDIATE_MODE_ACTIVE ||
+       _glTnlEffectsActive() || _glIsScissorTestEnabled() ||
+       _glPolygonOffsetMul != 1.0f ||
+       _glRadialVertexFog()->mode != GL_KOS_VERTEX_FOG_OFF) {
+        return GL_KOS_PVR_UNSUPPORTED_STATE;
+    }
+    return GL_KOS_PVR_OK;
+}
+
+static GLboolean _glPvrWordFinite(GLuint word) {
+    return (word & 0x7f800000u) != 0x7f800000u;
+}
+
+static GLboolean _glPvrWordPositiveFinite(GLuint word) {
+    return (word & 0x80000000u) == 0u &&
+           (word & 0x7fffffffu) != 0u && _glPvrWordFinite(word);
+}
+
+static GLboolean _glPvrRecordFinite(const GLKosPvrRecord* record) {
+    /* Integer exponent tests remain real checks under GLdc's -ffast-math;
+       __builtin_isfinite may be folded away by -ffinite-math-only. */
+    return _glPvrWordFinite(record->word[1]) &&
+           _glPvrWordFinite(record->word[2]) &&
+           _glPvrWordPositiveFinite(record->word[3]) &&
+           _glPvrWordFinite(record->word[4]) &&
+           _glPvrWordFinite(record->word[5]);
+}
+
+static GLint _glPvrValidateVertexStream(
+        const GLKosPvrRecord* records, GLuint count) {
+    if(!records || count < 3u) return GL_KOS_PVR_INVALID_PACKET;
+
+    GLuint strip_vertices = 0;
+    for(GLuint i = 0; i < count; ++i) {
+        const GLuint command = records[i].word[0];
+        if(command != GPU_CMD_VERTEX && command != GPU_CMD_VERTEX_EOL)
+            return GL_KOS_PVR_INVALID_PACKET;
+        if(!_glPvrRecordFinite(records + i))
+            return GL_KOS_PVR_INVALID_PACKET;
+        ++strip_vertices;
+        if(command == GPU_CMD_VERTEX_EOL) {
+            if(strip_vertices < 3u) return GL_KOS_PVR_INVALID_PACKET;
+            strip_vertices = 0;
+        }
+    }
+    return strip_vertices == 0u ? GL_KOS_PVR_OK
+                                : GL_KOS_PVR_INVALID_PACKET;
+}
+
+static GLboolean _glPvrPolyHeaderMatchesList(
+        const GLKosPvrRecord* record, GPUList expected_list) {
+    const GLuint command = record->word[0];
+    return (command & 0xf0800000u) == 0x80800000u &&
+           (command & GPU_TA_CMD_USERCLIP_MASK) == 0u &&
+           ((command & GPU_TA_CMD_TYPE_MASK) >> GPU_TA_CMD_TYPE_SHIFT) ==
+               (GLuint)expected_list;
+}
+
+void _glInitPvrPackets(void) {
+    if(PVR_PACKET_INITIALIZED) return;
+    aligned_vector_init(&PVR_PACKET_RECORDS, sizeof(GLKosPvrRecord));
+    aligned_vector_reserve(
+        &PVR_PACKET_RECORDS, GLDC_PVR_PACKET_INITIAL_RECORDS);
+    PVR_PACKET_INITIALIZED = GL_TRUE;
+    _glResetPvrPackets();
+}
+
+void _glShutdownPvrPackets(void) {
+    if(!PVR_PACKET_INITIALIZED) return;
+    gl_assert(!PVR_PACKET_RESERVATION.active);
+    aligned_vector_cleanup(&PVR_PACKET_RECORDS);
+    memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
+    PVR_PACKET_COUNT = 0;
+    PVR_PACKET_INITIALIZED = GL_FALSE;
+}
+
+void _glResetPvrPackets(void) {
+    if(!PVR_PACKET_INITIALIZED) return;
+    gl_assert(!PVR_PACKET_RESERVATION.active);
+    if(PVR_PACKET_RESERVATION.active) {
+        aligned_vector_resize(
+            &PVR_PACKET_RECORDS, PVR_PACKET_RESERVATION.first_record);
+    }
+    memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
+    aligned_vector_clear(&PVR_PACKET_RECORDS);
+    PVR_PACKET_COUNT = 0;
+}
+
+const GLdcPvrPacket* _glPvrPacketAt(GLuint index) {
+    return index < PVR_PACKET_COUNT ? &PVR_PACKETS[index] : NULL;
+}
+
+const GLKosPvrRecord* _glPvrPacketRecords(const GLdcPvrPacket* packet) {
+    if(!packet || packet->first_record >=
+                  aligned_vector_size(&PVR_PACKET_RECORDS) ||
+       packet->record_count > aligned_vector_size(&PVR_PACKET_RECORDS) -
+                                  packet->first_record) {
+        return NULL;
+    }
+    return (const GLKosPvrRecord*)aligned_vector_at(
+        &PVR_PACKET_RECORDS, packet->first_record);
+}
+
+GLuint _glPvrPacketCount(void) {
+    return PVR_PACKET_COUNT;
+}
+
+GLuint _glPvrPacketListCount(const PolyList* list) {
+    GLuint count = 0;
+    for(GLuint i = 0; i < PVR_PACKET_COUNT; ++i)
+        if(PVR_PACKETS[i].list == list) ++count;
+    return count;
+}
+
+GLuint _glPvrPacketListRecordCount(const PolyList* list) {
+    GLuint count = 0;
+    for(GLuint i = 0; i < PVR_PACKET_COUNT; ++i)
+        if(PVR_PACKETS[i].list == list) count += PVR_PACKETS[i].record_count;
+    return count;
+}
+
+GLboolean _glPvrPacketExclusiveReady(void) {
+    return !PVR_PACKET_RESERVATION.active && CAPTURE_PENDING < 0 &&
+           !IMMEDIATE_MODE_ACTIVE && !_glIsScissorTestEnabled();
+}
+
+GLint _glPvrValidateExclusiveList(
+        const GLKosPvrListPacket* packet, GPUList expected_list) {
+    if(!packet) return GL_KOS_PVR_BAD_ARGUMENT;
+    if(packet->record_count == 0) return GL_KOS_PVR_OK;
+    if(packet->record_count < 4 ||
+       packet->record_count > (GLsizei)GLDC_PVR_PACKET_RECORD_LIMIT ||
+       !packet->records || ((uintptr_t)packet->records & 31u) != 0) {
+        return GL_KOS_PVR_BAD_ARGUMENT;
+    }
+
+    GLboolean have_header = GL_FALSE;
+    GLboolean header_has_strip = GL_FALSE;
+    GLuint strip_vertices = 0;
+    for(GLsizei i = 0; i < packet->record_count; ++i) {
+        const GLKosPvrRecord* const record = packet->records + i;
+        const GLuint command = record->word[0];
+        if(_glPvrPolyHeaderMatchesList(record, expected_list)) {
+            if(strip_vertices != 0u || (have_header && !header_has_strip))
+                return GL_KOS_PVR_INVALID_PACKET;
+            have_header = GL_TRUE;
+            header_has_strip = GL_FALSE;
+            continue;
+        }
+        if(command != GPU_CMD_VERTEX && command != GPU_CMD_VERTEX_EOL)
+            return GL_KOS_PVR_INVALID_PACKET;
+        if(!have_header || !_glPvrRecordFinite(record))
+            return GL_KOS_PVR_INVALID_PACKET;
+        ++strip_vertices;
+        if(command == GPU_CMD_VERTEX_EOL) {
+            if(strip_vertices < 3u) return GL_KOS_PVR_INVALID_PACKET;
+            strip_vertices = 0;
+            header_has_strip = GL_TRUE;
+        }
+    }
+    return have_header && header_has_strip && strip_vertices == 0u
+        ? GL_KOS_PVR_OK : GL_KOS_PVR_INVALID_PACKET;
+}
+
+GL_FORCE_INLINE GLuint _glPvrNextToken(void) {
+    GLuint token = PVR_PACKET_NEXT_TOKEN++;
+    if(PVR_PACKET_NEXT_TOKEN == 0u) PVR_PACKET_NEXT_TOKEN = 1u;
+    if(token == 0u) token = PVR_PACKET_NEXT_TOKEN++;
+    return token;
+}
+
+/* Publish an already-sized, GLdc-owned packet span into list chronology. The
+   strict public transaction and the monolithic typed producer share this one
+   descriptor/sentinel epilogue; validation policy stays in their callers. */
+GL_FORCE_INLINE void _glPvrPublishPacket(
+        GLuint first_record, GLuint record_count, GLuint vertex_count,
+        GLuint token, GLboolean has_header, PolyList* list) {
+    const GLuint descriptor_index = PVR_PACKET_COUNT;
+    GLdcPvrPacket* const packet = &PVR_PACKETS[descriptor_index];
+    packet->first_record = first_record;
+    packet->record_count = record_count;
+    packet->token = token;
+    packet->has_header = has_header;
+    packet->list = list;
+
+    Vertex* const sentinel = (Vertex*)aligned_vector_extend(&list->vector, 1u);
+    uint32_t* const words = (uint32_t*)sentinel;
+    words[0] = GLDC_PVR_PACKET_SENTINEL;
+    words[1] = descriptor_index;
+    words[2] = ~descriptor_index;
+    gl_assert(token != 0u);
+    words[3] = token;
+    words[4] = 0u;
+    words[5] = 0u;
+    words[6] = 0u;
+    words[7] = GLDC_PVR_PACKET_SENTINEL ^ descriptor_index ^ token;
+
+    ++PVR_PACKET_COUNT;
+    if(has_header) {
+        list->header_emitted = GL_TRUE;
+        _glGPUStateMarkClean();
+        GLDC_STAT_INC(headers_emitted);
+    }
+    GLDC_STAT_INC(pvr_packet_commits);
+    GLDC_STAT_ADD(pvr_packet_vertices, vertex_count);
+}
+
+GLint APIENTRY glKosPvrPacketReserve(
+        GLsizei capacity, GLKosPvrPacketReservation* reservation) {
+    GLDC_STAT_INC(pvr_packet_reserve_attempts);
+    if(!reservation) return GL_KOS_PVR_BAD_ARGUMENT;
+    if(!PVR_PACKET_INITIALIZED)
+        return GL_KOS_PVR_UNSUPPORTED_STATE;
+    if(PVR_PACKET_RESERVATION.active) {
+        /* Leave the caller's object untouched: it may be the live handle
+           itself, accidentally reused for a nested reservation attempt. */
+        GLDC_STAT_INC(pvr_packet_reject_busy);
+        return GL_KOS_PVR_BUSY;
+    }
+    _glPvrClearPublicReservation(reservation);
+    if(capacity < 3) return GL_KOS_PVR_BAD_ARGUMENT;
+    const GLint state = _glPvrReservationState();
+    if(state != GL_KOS_PVR_OK) {
+        GLDC_STAT_INC(pvr_packet_reject_state);
+        return state;
+    }
+    const GLuint arena_size = aligned_vector_size(&PVR_PACKET_RECORDS);
+    if(PVR_PACKET_COUNT >= GLDC_PVR_PACKET_SEGMENT_CAPACITY ||
+       (GLuint)capacity > GLDC_PVR_PACKET_RECORD_LIMIT - 1u ||
+       arena_size > GLDC_PVR_PACKET_RECORD_LIMIT - 1u - (GLuint)capacity) {
+        GLDC_STAT_INC(pvr_packet_reject_capacity);
+        return GL_KOS_PVR_CAPACITY;
+    }
+
+    PolyList* const list = _glActivePolyList();
+    GLKosPvrRecord* const block = (GLKosPvrRecord*)aligned_vector_extend(
+        &PVR_PACKET_RECORDS, 1u + (GLuint)capacity);
+    _glPvrCompileCurrentHeader((PolyHeader*)block, list);
+
+    const GLuint token = _glPvrNextToken();
+    PVR_PACKET_RESERVATION.active = GL_TRUE;
+    PVR_PACKET_RESERVATION.token = token;
+    PVR_PACKET_RESERVATION.first_record = arena_size;
+    PVR_PACKET_RESERVATION.capacity = (GLuint)capacity;
+    PVR_PACKET_RESERVATION.list_size = aligned_vector_size(&list->vector);
+    PVR_PACKET_RESERVATION.list = list;
+
+    reservation->vertices = block + 1;
+    reservation->capacity = capacity;
+    reservation->token = token;
+    GLDC_STAT_INC(pvr_packet_reserve_hits);
+    return GL_KOS_PVR_OK;
+}
+
+static GLboolean _glPvrReservationMatches(
+        const GLKosPvrPacketReservation* reservation) {
+    if(!reservation || !PVR_PACKET_RESERVATION.active ||
+       reservation->token == 0u ||
+       reservation->token != PVR_PACKET_RESERVATION.token ||
+       reservation->capacity != (GLsizei)PVR_PACKET_RESERVATION.capacity) {
+        return GL_FALSE;
+    }
+    const GLKosPvrRecord* const header =
+        (const GLKosPvrRecord*)aligned_vector_at(
+            &PVR_PACKET_RECORDS, PVR_PACKET_RESERVATION.first_record);
+    return reservation->vertices == header + 1;
+}
+
+static GLint _glPvrPacketCommitChecked(
+        GLKosPvrPacketReservation* reservation, GLsizei used,
+        GLboolean validate_stream) {
+    if(!_glPvrReservationMatches(reservation) || used < 3 ||
+       used > reservation->capacity) {
+        return GL_KOS_PVR_BAD_ARGUMENT;
+    }
+    if(_glPvrReservationState() != GL_KOS_PVR_OK ||
+       _glActivePolyList() != PVR_PACKET_RESERVATION.list ||
+       aligned_vector_size(&PVR_PACKET_RESERVATION.list->vector) !=
+           PVR_PACKET_RESERVATION.list_size) {
+        GLDC_STAT_INC(pvr_packet_reject_state);
+        return GL_KOS_PVR_STATE_CHANGED;
+    }
+
+    PolyHeader __attribute__((aligned(32))) current_header;
+    _glPvrCompileCurrentHeader(&current_header, PVR_PACKET_RESERVATION.list);
+    const GLKosPvrRecord* const saved_header =
+        (const GLKosPvrRecord*)aligned_vector_at(
+            &PVR_PACKET_RECORDS, PVR_PACKET_RESERVATION.first_record);
+    if(memcmp(&current_header, saved_header, sizeof(current_header)) != 0) {
+        GLDC_STAT_INC(pvr_packet_reject_state);
+        return GL_KOS_PVR_STATE_CHANGED;
+    }
+
+    if(validate_stream) {
+        const GLint validation = _glPvrValidateVertexStream(
+            reservation->vertices, (GLuint)used);
+        if(validation != GL_KOS_PVR_OK) {
+            GLDC_STAT_INC(pvr_packet_reject_validation);
+            return validation;
+        }
+    }
+
+    const GLboolean header_required =
+        !PVR_PACKET_RESERVATION.list->header_emitted || _glGPUStateIsDirty();
+    aligned_vector_resize(
+        &PVR_PACKET_RECORDS,
+        PVR_PACKET_RESERVATION.first_record + 1u + (GLuint)used);
+    _glPvrPublishPacket(
+        PVR_PACKET_RESERVATION.first_record +
+            (header_required ? 0u : 1u),
+        (GLuint)used + (header_required ? 1u : 0u),
+        (GLuint)used, PVR_PACKET_RESERVATION.token, header_required,
+        PVR_PACKET_RESERVATION.list);
+    memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
+    _glPvrClearPublicReservation(reservation);
+    return GL_KOS_PVR_OK;
+}
+
+GLint APIENTRY glKosPvrPacketCommit(
+        GLKosPvrPacketReservation* reservation, GLsizei used) {
+    return _glPvrPacketCommitChecked(reservation, used, GL_TRUE);
+}
+
+GLint APIENTRY glKosPvrPacketCancel(
+        GLKosPvrPacketReservation* reservation) {
+    if(!_glPvrReservationMatches(reservation))
+        return GL_KOS_PVR_BAD_ARGUMENT;
+    aligned_vector_resize(
+        &PVR_PACKET_RECORDS, PVR_PACKET_RESERVATION.first_record);
+    memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
+    _glPvrClearPublicReservation(reservation);
+    GLDC_STAT_INC(pvr_packet_cancels);
+    return GL_KOS_PVR_OK;
+}
+
+typedef struct GLdcPvrInternalBuild {
+    PolyList* list;
+    Vertex* vertices;
+    GLuint first_record;
+    GLboolean has_header;
+} GLdcPvrInternalBuild;
+
+/* Internal typed producers cannot call back into GL between construction and
+   publication. Reserve exactly the records they need and keep the strict
+   public transaction completely out of this hot path. Header compilation is
+   deferred until a successful build, so a near rejection only rolls back RAM.
+   Public reserve/commit/cancel semantics remain unchanged above. */
+GL_FORCE_INLINE GLint _glPvrBeginInternalPacket(
+        GLsizei capacity, GLdcPvrInternalBuild* build) {
+    GLDC_STAT_INC(pvr_packet_reserve_attempts);
+    if(!PVR_PACKET_INITIALIZED)
+        return GL_KOS_PVR_UNSUPPORTED_STATE;
+    if(PVR_PACKET_RESERVATION.active) {
+        GLDC_STAT_INC(pvr_packet_reject_busy);
+        return GL_KOS_PVR_BUSY;
+    }
+    if(capacity < 3) return GL_KOS_PVR_BAD_ARGUMENT;
+
+    const GLint state = _glPvrReservationState();
+    if(state != GL_KOS_PVR_OK) {
+        GLDC_STAT_INC(pvr_packet_reject_state);
+        return state;
+    }
+
+    PolyList* const list = _glActivePolyList();
+    const GLboolean has_header =
+        !list->header_emitted || _glGPUStateIsDirty();
+    const GLuint header_records = has_header ? 1u : 0u;
+    const GLuint arena_size = aligned_vector_size(&PVR_PACKET_RECORDS);
+    if(PVR_PACKET_COUNT >= GLDC_PVR_PACKET_SEGMENT_CAPACITY ||
+       (GLuint)capacity > GLDC_PVR_PACKET_RECORD_LIMIT - header_records ||
+       arena_size > GLDC_PVR_PACKET_RECORD_LIMIT - header_records -
+                        (GLuint)capacity) {
+        GLDC_STAT_INC(pvr_packet_reject_capacity);
+        return GL_KOS_PVR_CAPACITY;
+    }
+
+    GLKosPvrRecord* const block = (GLKosPvrRecord*)aligned_vector_extend(
+        &PVR_PACKET_RECORDS, header_records + (GLuint)capacity);
+
+    build->list = list;
+    build->vertices = (Vertex*)(block + header_records);
+    build->first_record = arena_size;
+    build->has_header = has_header;
+    GLDC_STAT_INC(pvr_packet_reserve_hits);
+    return GL_KOS_PVR_OK;
+}
+
+GL_FORCE_INLINE void _glPvrCancelInternalPacket(
+        const GLdcPvrInternalBuild* build) {
+    aligned_vector_resize(&PVR_PACKET_RECORDS, build->first_record);
+    GLDC_STAT_INC(pvr_packet_cancels);
+}
+
+GL_FORCE_INLINE void _glPvrCommitInternalPacket(
+        const GLdcPvrInternalBuild* build, GLuint vertices) {
+    const GLuint header_records = build->has_header ? 1u : 0u;
+    if(build->has_header) {
+        PolyHeader* const header = (PolyHeader*)aligned_vector_at(
+            &PVR_PACKET_RECORDS, build->first_record);
+        _glPvrCompileCurrentHeader(header, build->list);
+    }
+    _glPvrPublishPacket(
+        build->first_record, header_records + vertices, vertices,
+        _glPvrNextToken(), build->has_header, build->list);
+}
+#endif
+
+#ifndef _arch_dreamcast
+GLint APIENTRY glKosPvrPacketReserve(
+        GLsizei capacity, GLKosPvrPacketReservation* reservation) {
+    (void)capacity;
+    if(reservation) {
+        reservation->vertices = NULL;
+        reservation->capacity = 0;
+        reservation->token = 0;
+    }
+    return GL_KOS_PVR_UNSUPPORTED_STATE;
+}
+
+GLint APIENTRY glKosPvrPacketCommit(
+        GLKosPvrPacketReservation* reservation, GLsizei used) {
+    (void)reservation;
+    (void)used;
+    return GL_KOS_PVR_UNSUPPORTED_STATE;
+}
+
+GLint APIENTRY glKosPvrPacketCancel(
+        GLKosPvrPacketReservation* reservation) {
+    (void)reservation;
+    return GL_KOS_PVR_UNSUPPORTED_STATE;
+}
 #endif
 
 GLuint APIENTRY glKosGetFastPathCapabilities(void) {
@@ -2051,6 +2524,94 @@ void APIENTRY glKosRequireNativeBenchArchive0(void) {}
 #endif
 
 void APIENTRY glKosRequireDeferredP3T2BGRA(void) {}
+void APIENTRY glKosRequirePvrPackets(void) {}
+
+#ifdef _arch_dreamcast
+GL_FORCE_INLINE GLboolean _glTryQueueInternalFinalP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
+        GLboolean trusted) {
+    const GLboolean triangles =
+        mode == GL_TRIANGLES && count >= 3 && count % 3 == 0;
+    const GLboolean quads =
+        mode == GL_QUADS && count >= 4 && count % 4 == 0;
+    if((!triangles && !quads) || !vertices ||
+       ((uintptr_t)vertices & 3u) != 0) {
+        GLDC_STAT_INC(pvr_typed_fallbacks);
+        return GL_FALSE;
+    }
+
+    GLdcPvrInternalBuild build;
+    if(_glPvrBeginInternalPacket(count, &build) != GL_KOS_PVR_OK) {
+        GLDC_STAT_INC(pvr_typed_fallbacks);
+        return GL_FALSE;
+    }
+
+    _glTnlLoadMatrix();
+    const int result = trusted
+        ? SceneBuildTrustedFinalP3T2BGRA(
+              (unsigned int)mode, vertices, (int)count, build.vertices)
+        : SceneBuildFinalP3T2BGRA(
+              (unsigned int)mode, vertices, (int)count, build.vertices);
+    if(result != SCENE_FINAL_BUILD_OK) {
+        if(result & SCENE_FINAL_BUILD_NEAR)
+            GLDC_STAT_INC(pvr_typed_near_fallbacks);
+        _glPvrCancelInternalPacket(&build);
+        GLDC_STAT_INC(pvr_typed_fallbacks);
+        return GL_FALSE;
+    }
+
+    /* No external GL call exists inside this monolithic transaction, so the
+       preflight state/header is still current. The builder owns final-record
+       grammar and classification; publish only the completed private span. */
+    _glPvrCommitInternalPacket(&build, (GLuint)count);
+    GLDC_STAT_INC(pvr_typed_hits);
+    GLDC_STAT_INC(submit_vertices_calls);
+    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
+    return GL_TRUE;
+}
+#endif
+
+GLboolean APIENTRY glKosTryQueueFinalInterleavedP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    TRACE();
+    GLDC_STAT_INC(pvr_typed_attempts);
+
+#ifndef _arch_dreamcast
+    (void)mode;
+    (void)vertices;
+    (void)count;
+    GLDC_STAT_INC(pvr_typed_fallbacks);
+    return GL_FALSE;
+#else
+    return _glTryQueueInternalFinalP3T2BGRA(
+        mode, vertices, count, GL_FALSE);
+#endif
+}
+
+GLboolean APIENTRY glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    TRACE();
+    GLDC_STAT_INC(pvr_typed_attempts);
+
+#ifndef _arch_dreamcast
+    (void)mode;
+    (void)vertices;
+    (void)count;
+    GLDC_STAT_INC(pvr_typed_fallbacks);
+    return GL_FALSE;
+#else
+    return _glTryQueueInternalFinalP3T2BGRA(
+        mode, vertices, count, GL_TRUE);
+#endif
+}
+
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+GLboolean APIENTRY glKosNativeBenchTryQueueTrustedFinalP3T2BGRA(
+        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
+    return glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
+        mode, vertices, count);
+}
+#endif
 
 GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
@@ -2574,13 +3135,24 @@ GLuint APIENTRY glKosNativeBenchArchiveAbiVersion(void) {
     return GL_KOS_NATIVE_BENCH_ABI_VERSION;
 }
 
+static GLint _glNativeBenchMapFinalBuild(int result) {
+    if(result & SCENE_FINAL_BUILD_INVALID)
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    if(result & SCENE_FINAL_BUILD_NEAR)
+        return GL_KOS_NATIVE_BENCH_NEAR_CLIP;
+    return GL_KOS_NATIVE_BENCH_OK;
+}
+
 static GLint _glNativeBenchCheck(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
         const GLKosNativeBenchRecord* output) {
     const GLboolean triangles =
         mode == GL_TRIANGLES && count >= 3 && count % 3 == 0;
+    const GLboolean quads =
+        mode == GL_QUADS && count >= 4 && count % 4 == 0;
     const GLboolean strip = mode == GL_TRIANGLE_STRIP && count >= 3;
-    if(!triangles && !strip) return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
+    if(!triangles && !quads && !strip)
+        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
     if(!vertices || !output || ((uintptr_t)vertices & 3u) != 0 ||
        ((uintptr_t)output & 31u) != 0) {
         return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
@@ -2684,41 +3256,88 @@ GLint APIENTRY glKosNativeBenchValidateP3T2BGRA(
 
     _glTnlLoadMatrix();
     check = SceneNativeBenchBuildP3T2BGRA(
-        (unsigned int)mode, vertices, (int)count, (Vertex*)candidate);
+        (unsigned int)mode, vertices, (int)count,
+        (Vertex*)candidate);
     if(check != GL_KOS_NATIVE_BENCH_OK) return check;
 
     _glTnlLoadMatrix();
-    const GLubyte* const base = (const GLubyte*)vertices;
-    _glWriteFusedVertices(
-        (Vertex*)classic,
-        base + offsetof(GLKosVertexP3T2BGRA, x),
-        base + offsetof(GLKosVertexP3T2BGRA, u),
-        base + offsetof(GLKosVertexP3T2BGRA, bgra),
-        sizeof(GLKosVertexP3T2BGRA), sizeof(GLKosVertexP3T2BGRA),
-        sizeof(GLKosVertexP3T2BGRA), count,
-        mode == GL_TRIANGLES ? GL_TRUE : GL_FALSE);
+    if(mode == GL_QUADS) {
+        /* Production PUC quads consume source 0,1,2,3 but write PVR strip
+           order 0,1,3,2 with source 2 carrying EOL. Reorder the untimed
+           classic oracle explicitly; the ordinary strip writer otherwise
+           preserves source order and would compare the wrong packet. */
+        Vertex* out = (Vertex*)classic;
+        for(GLsizei i = 0; i < count; i += 4) {
+            GLKosVertexP3T2BGRA ordered[4] __attribute__((aligned(32)));
+            ordered[0] = vertices[i];
+            ordered[1] = vertices[i + 1];
+            ordered[2] = vertices[i + 3];
+            ordered[3] = vertices[i + 2];
+            const GLubyte* const base = (const GLubyte*)ordered;
+            _glWriteFusedVertices(
+                out, base + offsetof(GLKosVertexP3T2BGRA, x),
+                base + offsetof(GLKosVertexP3T2BGRA, u),
+                base + offsetof(GLKosVertexP3T2BGRA, bgra),
+                sizeof(GLKosVertexP3T2BGRA), sizeof(GLKosVertexP3T2BGRA),
+                sizeof(GLKosVertexP3T2BGRA), 4, GL_FALSE);
+            out += 4;
+        }
+    } else {
+        const GLubyte* const base = (const GLubyte*)vertices;
+        _glWriteFusedVertices(
+            (Vertex*)classic,
+            base + offsetof(GLKosVertexP3T2BGRA, x),
+            base + offsetof(GLKosVertexP3T2BGRA, u),
+            base + offsetof(GLKosVertexP3T2BGRA, bgra),
+            sizeof(GLKosVertexP3T2BGRA), sizeof(GLKosVertexP3T2BGRA),
+            sizeof(GLKosVertexP3T2BGRA), count,
+            mode == GL_TRIANGLES ? GL_TRUE : GL_FALSE);
+    }
     check = SceneNativeBenchFinalizeClassic((Vertex*)classic, (int)count);
     if(check != GL_KOS_NATIVE_BENCH_OK) return check;
 
+    const size_t bytes = (size_t)count * sizeof(*candidate);
     const GLuint words = (GLuint)count * 8u;
-    if(memcmp(candidate, classic, (size_t)count * sizeof(*candidate)) == 0) {
-        if(mismatch_word) *mismatch_word = words;
-        return GL_KOS_NATIVE_BENCH_OK;
-    }
-    const GLubyte* a = (const GLubyte*)candidate;
-    const GLubyte* b = (const GLubyte*)classic;
-    for(GLuint i = 0; i < words; ++i) {
-        GLuint aw, bw;
-        memcpy(&aw, a + i * sizeof(GLuint), sizeof(aw));
-        memcpy(&bw, b + i * sizeof(GLuint), sizeof(bw));
-        if(aw != bw) {
-            if(mismatch_word) *mismatch_word = i;
+    for(int kernel = 0; kernel < 3; ++kernel) {
+        if(memcmp(candidate, classic, bytes) != 0) {
+            const GLubyte* a = (const GLubyte*)candidate;
+            const GLubyte* b = (const GLubyte*)classic;
+            for(GLuint i = 0; i < words; ++i) {
+                GLuint aw, bw;
+                memcpy(&aw, a + i * sizeof(GLuint), sizeof(aw));
+                memcpy(&bw, b + i * sizeof(GLuint), sizeof(bw));
+                if(aw != bw) {
+                    if(mismatch_word) *mismatch_word = i;
+                    return GL_KOS_NATIVE_BENCH_MISMATCH;
+                }
+            }
+            /* Full memcmp differed but no full word did: impossible for
+               32-byte records, retained as a defensive mismatch result. */
             return GL_KOS_NATIVE_BENCH_MISMATCH;
         }
+
+        if(kernel == 0) {
+            /* The first pass validates the retained N1 control kernel.  Reuse
+               its scratch for checked production N3. */
+            _glTnlLoadMatrix();
+            check = _glNativeBenchMapFinalBuild(SceneBuildFinalP3T2BGRA(
+                (unsigned int)mode, vertices, (int)count,
+                (Vertex*)candidate));
+            if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+        } else if(kernel == 1) {
+            /* The third pass validates the trusted A/B writer independently.
+               All three kernels must remain byte-exact against the ordinary
+               classic finalizer for visible input. */
+            _glTnlLoadMatrix();
+            check = _glNativeBenchMapFinalBuild(
+                SceneBuildTrustedFinalP3T2BGRA(
+                    (unsigned int)mode, vertices, (int)count,
+                    (Vertex*)candidate));
+            if(check != GL_KOS_NATIVE_BENCH_OK) return check;
+        }
     }
-    /* Full memcmp differed but no full word did: impossible for 32-byte
-       records, retained as a defensive mismatch result. */
-    return GL_KOS_NATIVE_BENCH_MISMATCH;
+    if(mismatch_word) *mismatch_word = words;
+    return GL_KOS_NATIVE_BENCH_OK;
 }
 
 GLint APIENTRY glKosNativeBenchBuildTrianglePacketP3T2BGRA(

@@ -12,6 +12,7 @@
 #include "../include/GL/gl.h"
 #include "../include/GL/glext.h"
 #include "../include/GL/glkos.h"
+#include "../include/GL/glkos_pvr.h"
 
 #include "../containers/aligned_vector.h"
 #include "../containers/named_array.h"
@@ -119,7 +120,13 @@ typedef struct {
 /* A command value that can never be a submitted TA vertex/header. It lives in
    the ordinary list vector solely to preserve chronology and is intercepted
    before is_header() at finalization. */
+/* Both deferred object-space draws and final-record packet segments use the
+   same rare in-list marker.  word[3] is the discriminator: legacy/N2
+   descriptors are zero-filled there, while an N3 packet carries its non-zero
+   reservation token.  Keeping one marker preserves the ordinary F1 drain's
+   single per-record sentinel comparison. */
 #define GLDC_DEFERRED_P3T2BGRA_SENTINEL 0xd3f20001u
+#define GLDC_PVR_PACKET_SENTINEL        GLDC_DEFERRED_P3T2BGRA_SENTINEL
 
 typedef enum GLdcDeferredP3T2BGRAPrimitive {
     GLDC_DEFERRED_P3T2BGRA_QUADS = 0,
@@ -157,6 +164,29 @@ GLuint _glDeferredP3T2BGRAVertexCount(void);
 GLuint _glDeferredP3T2BGRAListCount(const PolyList* list);
 GLuint _glDeferredP3T2BGRAListVertexCount(const PolyList* list);
 void _glResetDeferredP3T2BGRA(void);
+
+/* One committed, self-contained GLdc-owned header + final-vertex segment.
+   Offsets survive arena reallocations; the public reservation never exposes
+   the header slot. */
+typedef struct GLdcPvrPacket {
+    GLuint first_record;
+    GLuint record_count;
+    GLuint token;
+    GLboolean has_header;
+    PolyList* list;
+} GLdcPvrPacket;
+
+void _glInitPvrPackets(void);
+void _glShutdownPvrPackets(void);
+void _glResetPvrPackets(void);
+const GLdcPvrPacket* _glPvrPacketAt(GLuint index);
+const GLKosPvrRecord* _glPvrPacketRecords(const GLdcPvrPacket* packet);
+GLuint _glPvrPacketCount(void);
+GLuint _glPvrPacketListCount(const PolyList* list);
+GLuint _glPvrPacketListRecordCount(const PolyList* list);
+GLboolean _glPvrPacketExclusiveReady(void);
+GLint _glPvrValidateExclusiveList(
+    const GLKosPvrListPacket* packet, GPUList expected_list);
 #endif
 
 typedef struct {
