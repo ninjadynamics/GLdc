@@ -1034,6 +1034,8 @@ GLboolean APIENTRY glIsEnabled(GLenum cap) {
         return GPUState.culling_enabled;
     case GL_LIGHTING:
         return GPUState.lighting_enabled;
+    case GL_FOG:
+        return GPUState.fog_enabled;
     case GL_BLEND:
         return GPUState.blend_enabled;
     case GL_POLYGON_OFFSET_POINT:
