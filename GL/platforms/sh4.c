@@ -1,5 +1,7 @@
 #include <float.h>
 #include <limits.h>
+#include <malloc.h>
+#include <stdlib.h>
 
 #include <dc/sq.h>
 #include <arch/timer.h>
@@ -171,16 +173,181 @@ static void ApplyDeferredFogTable(void) {
     deferredFog.mode = DEFERRED_FOG_NONE;
 }
 
+static void __attribute__((noreturn)) _glSubmissionFatal(void) {
+    /* Keep opt-in submission failures on HyperSolar's resolvable guru path;
+       plain abort()/exit() may drop silently back to firmware on hardware. */
+    gl_assert(false);
+    __builtin_unreachable();
+}
+
+#if GLDC_N4_VERTEX_DMA
+/* ---- N4: GLdc-owned direct KOS vertex-DMA buffers -----------------------
+
+   KOS splits every registered list buffer into two equal frame halves.  GLdc
+   grows each list independently from the conservative record budget computed
+   before scene begin, then writes final TA records directly into the inactive
+   half.  The buffers never shrink, so ordinary frames stop touching the heap
+   once the scene's high-water marks have been learned.
+
+   Two records are kept beyond GLdc's payload. Current KOS appends a blank
+   header to a DMA list at scene finish and then its zero/EOL marker; retaining
+   both also remains safe if KOS later starts marking explicitly-finished DMA
+   lists closed and needs only the marker. */
+#define GLDC_N4_KOS_TAIL_RECORDS 2u
+#define GLDC_N4_GROW_GRANULARITY 4096u
+
+typedef struct GLdcN4DmaBuffer {
+    void* allocation;
+    size_t frame_bytes;
+} GLdcN4DmaBuffer;
+
+static GLdcN4DmaBuffer n4_dma_buffers[3];
+static GPUList n4_output_list = GPU_LIST_OP_POLY;
+static uintptr_t n4_output_cursor;
+static uintptr_t n4_output_limit;
+static uintptr_t n4_output_start;
+static bool n4_output_open;
+static bool n4_submission_registers_initialized;
+
+static const GPUList n4_dma_lists[3] = {
+    GPU_LIST_OP_POLY,
+    GPU_LIST_PT_POLY,
+    GPU_LIST_TR_POLY
+};
+
+static int _glN4ListSlot(GPUList list) {
+    if(list == GPU_LIST_OP_POLY) return 0;
+    if(list == GPU_LIST_PT_POLY) return 1;
+    if(list == GPU_LIST_TR_POLY) return 2;
+    return -1;
+}
+
+static size_t _glN4RoundFrameBytes(size_t payload_records) {
+    if(payload_records > (SIZE_MAX / sizeof(Vertex)) -
+                         GLDC_N4_KOS_TAIL_RECORDS) {
+        fprintf(stderr, "GLdc N4: record budget overflow\n");
+        _glSubmissionFatal();
+    }
+
+    size_t bytes = (payload_records + GLDC_N4_KOS_TAIL_RECORDS) *
+                   sizeof(Vertex);
+    if(bytes < 64u) bytes = 64u;
+    const size_t remainder = bytes & (GLDC_N4_GROW_GRANULARITY - 1u);
+    if(remainder) {
+        const size_t add = GLDC_N4_GROW_GRANULARITY - remainder;
+        if(bytes > SIZE_MAX - add) {
+            fprintf(stderr, "GLdc N4: byte budget overflow\n");
+            _glSubmissionFatal();
+        }
+        bytes += add;
+    }
+    return bytes;
+}
+
+static bool _glN4BuffersNeedGrowth(
+        size_t op_records, size_t pt_records, size_t tr_records) {
+    const size_t records[3] = {op_records, pt_records, tr_records};
+    for(int i = 0; i < 3; ++i) {
+        if(_glN4RoundFrameBytes(records[i]) >
+           n4_dma_buffers[i].frame_bytes) return true;
+    }
+    return false;
+}
+
+/* Must run only after the previous TA registration has completed. Grow one
+   list at a time and free its prior pair immediately; retaining every old and
+   replacement buffer until an atomic commit would create a multi-megabyte
+   transient heap peak on 16 MiB hardware. Allocation failure is fatal in this
+   opt-in lane: silently mixing a too-small DMA list with SQ submission would
+   corrupt list ownership and is strictly worse than stopping at the cause. */
+static void _glN4EnsureBuffers(
+        size_t op_records, size_t pt_records, size_t tr_records) {
+    const size_t records[3] = {op_records, pt_records, tr_records};
+    bool changed = false;
+
+    for(int i = 0; i < 3; ++i) {
+        const GPUList list = n4_dma_lists[i];
+        const size_t required = _glN4RoundFrameBytes(records[i]);
+        if(required <= n4_dma_buffers[i].frame_bytes) continue;
+
+        size_t grown = required;
+        if(n4_dma_buffers[i].frame_bytes) {
+            const size_t old = n4_dma_buffers[i].frame_bytes;
+            const size_t geometric = old <= SIZE_MAX - old / 2u
+                ? old + old / 2u : SIZE_MAX;
+            if(geometric > grown) grown = geometric;
+            if(grown > SIZE_MAX - (GLDC_N4_GROW_GRANULARITY - 1u)) {
+                fprintf(stderr, "GLdc N4: DMA growth size overflow\n");
+                _glSubmissionFatal();
+            }
+            const size_t remainder = grown &
+                (GLDC_N4_GROW_GRANULARITY - 1u);
+            if(remainder) grown += GLDC_N4_GROW_GRANULARITY - remainder;
+        }
+        if(grown > SIZE_MAX / 2u) {
+            fprintf(stderr, "GLdc N4: DMA allocation size overflow\n");
+            _glSubmissionFatal();
+        }
+
+        void* const replacement = memalign(32u, grown * 2u);
+        if(!replacement) {
+            fprintf(stderr,
+                    "GLdc N4: unable to allocate %lu-byte double DMA buffer"
+                    " for list %d\n",
+                    (unsigned long)(grown * 2u), (int)list);
+            _glSubmissionFatal();
+        }
+        void* const old = pvr_set_vertbuf(
+            (pvr_list_t)list, replacement, grown * 2u);
+        gl_assert(old == n4_dma_buffers[i].allocation);
+        free(old);
+        n4_dma_buffers[i].allocation = replacement;
+        n4_dma_buffers[i].frame_bytes = grown;
+        changed = true;
+    }
+
+    if(changed) {
+        const size_t op = n4_dma_buffers[0].frame_bytes;
+        const size_t pt = n4_dma_buffers[1].frame_bytes;
+        const size_t tr = n4_dma_buffers[2].frame_bytes;
+        fprintf(stderr,
+                "[GLDC-N4] DMA KiB/frame op=%lu pt=%lu tr=%lu"
+                " (double-buffered total=%lu KiB)\n",
+                (unsigned long)(op >> 10),
+                (unsigned long)(pt >> 10),
+                (unsigned long)(tr >> 10),
+                (unsigned long)((2u * (op + pt + tr)) >> 10));
+    }
+}
+
+static bool _glN4FogPending(void) {
+    return deferredFog.vertex_color_dirty ||
+           deferredFog.mode != DEFERRED_FOG_NONE;
+}
+
+static void _glN4ShutdownBuffers(void) {
+    for(int i = 0; i < 3; ++i) {
+        free(n4_dma_buffers[i].allocation);
+        n4_dma_buffers[i].allocation = NULL;
+        n4_dma_buffers[i].frame_bytes = 0u;
+    }
+    n4_output_cursor = n4_output_limit = n4_output_start = 0u;
+    n4_output_open = false;
+    n4_submission_registers_initialized = false;
+}
+#endif
+
 void InitGPU(_Bool autosort, _Bool fsaa) {
     pvr_init_params_t params = {
         /* Bin sizes: opaque, op_modifier, translucent, tr_modifier, punch-through.
            KOS caps bin size at _32. */
         {PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32},
         PVR_VERTEX_BUF_SIZE, /* Vertex buffer size */
-        0, /* No DMA */
+        GLDC_N4_VERTEX_DMA, /* N4: KOS list-major vertex DMA */
         fsaa, /* No FSAA */
         (autosort) ? 0 : 1, /* Disable translucent auto-sorting to match traditional GL */
-        PVR_OPB_COUNT /* Number of tile object pointer overflow bins. */
+        PVR_OPB_COUNT, /* Number of tile object pointer overflow bins. */
+        0 /* Keep KOS's generated vertex buffer double-buffered. */
     };
 
     pvr_init(&params);
@@ -204,6 +371,9 @@ void InitGPU(_Bool autosort, _Bool fsaa) {
 
 void ShutdownGPU() {
     pvr_shutdown();
+#if GLDC_N4_VERTEX_DMA
+    _glN4ShutdownBuffers();
+#endif
 }
 
 GL_FORCE_INLINE float _glFastInvert(float x) {
@@ -726,6 +896,65 @@ static uintptr_t sq_dest_addr = 0;
 static bool submit_vertex_fog = false;
 static inline bool is_header(const Vertex* v);
 
+/* One final-record sink shared by F1, N2, N3 packets, clipped geometry and
+   sprite sidecars. The production build retains the original TA-bound store
+   queues exactly. N4 reserves aligned cached RAM in the active KOS list half;
+   SceneListFinishChecked publishes the aggregate byte count once. */
+GL_FORCE_INLINE uintptr_t _glOutputReserveRecords(size_t count) {
+#if GLDC_N4_VERTEX_DMA
+    gl_assert(n4_output_open);
+    const size_t available = n4_output_open &&
+                             n4_output_cursor <= n4_output_limit
+        ? (size_t)((n4_output_limit - n4_output_cursor) / sizeof(Vertex))
+        : 0u;
+    if(unlikely(!n4_output_open || count > available)) {
+        fprintf(stderr,
+                "GLdc N4: list %d payload overflow (%lu records requested,"
+                " %lu available)\n",
+                (int)n4_output_list, (unsigned long)count,
+                (unsigned long)available);
+        _glSubmissionFatal();
+    }
+    const uintptr_t destination = n4_output_cursor;
+    n4_output_cursor += count * sizeof(Vertex);
+    return destination;
+#else
+    (void)count;
+    return sq_dest_addr;
+#endif
+}
+
+GL_FORCE_INLINE void _glOutputCopyRecords(
+        uintptr_t destination, const void* source, size_t count) {
+#if GLDC_N4_VERTEX_DMA
+    memcpy_fast((void*)destination, source, count * sizeof(Vertex));
+#else
+    sq_fast_cpy((void*)destination, source, count);
+#endif
+}
+
+GL_FORCE_INLINE void _glOutputAllocateRecord(uintptr_t destination) {
+#if GLDC_N4_VERTEX_DMA
+    VERTEX_CACHE_ALLOC((void*)destination);
+#else
+    (void)destination;
+#endif
+}
+
+GL_FORCE_INLINE void _glOutputCommitRecord(uintptr_t destination) {
+#if GLDC_N4_VERTEX_DMA
+    (void)destination;
+#else
+    __asm__ __volatile__("pref @%0" : : "r"(destination) : "memory");
+#endif
+}
+
+GL_FORCE_INLINE void _glOutputWait(void) {
+#if !GLDC_N4_VERTEX_DMA
+    sq_wait();
+#endif
+}
+
 GL_FORCE_INLINE bool _glHeaderUsesVertexFog(const Vertex* v) {
     const uint32_t mode2 = ((const uint32_t*)v)[2];
     return ((mode2 & GPU_TA_PM2_FOG_MASK) >> GPU_TA_PM2_FOG_SHIFT) ==
@@ -758,9 +987,11 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
        following records in the strip. */
     if(count == 1 && is_header(v)) {
         submit_vertex_fog = _glHeaderUsesVertexFog(v);
-        sq_fast_cpy((void *)sq_dest_addr, v, 1);
+        const uintptr_t destination = _glOutputReserveRecords(1u);
+        _glOutputCopyRecords(destination, v, 1u);
     } else if(likely(!submit_vertex_fog)) {
-        sq_fast_cpy((void *)sq_dest_addr, v, count);
+        const uintptr_t destination = _glOutputReserveRecords(count);
+        _glOutputCopyRecords(destination, v, count);
     } else {
         /* Generic clipping submits groups of at most two records. Preserve the
            source: a clipped strip may queue one of these vertices again as the
@@ -777,7 +1008,8 @@ static inline void _glPushHeaderOrVertex(Vertex* v, size_t count)  {
                 _glApplyVertexFog(&fogged[i]);
             }
         }
-        sq_fast_cpy((void *)sq_dest_addr, fogged, count);
+        const uintptr_t destination = _glOutputReserveRecords(count);
+        _glOutputCopyRecords(destination, fogged, count);
     }
 }
 
@@ -829,6 +1061,18 @@ static inline void _glClipEdge(const Vertex* const v1, const Vertex* const v2, V
 static volatile uint32_t* PVR_LMMODE0 = (uint32_t*) 0xA05F6884;
 static volatile uint32_t *PVR_LMMODE1 = (uint32_t*) 0xA05F6888;
 
+static inline void _glPrepareSubmissionRegisters(void) {
+#if GLDC_N4_VERTEX_DMA
+    if(n4_submission_registers_initialized) return;
+#endif
+    PVR_SET(SPAN_SORT_CFG, 0x0);
+    *PVR_LMMODE0 = 0;
+    *PVR_LMMODE1 = 0;
+#if GLDC_N4_VERTEX_DMA
+    n4_submission_registers_initialized = true;
+#endif
+}
+
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 static bool _glNativeBenchIsOpaquePolyHeader(const void* record) {
     const uint32_t cmd = ((const uint32_t*)record)[0];
@@ -855,13 +1099,11 @@ GLint APIENTRY glKosNativeBenchSubmitFinalPacket(
         pvr_scene_finish();
         return GL_KOS_NATIVE_BENCH_PVR_ERROR;
     }
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
+    _glPrepareSubmissionRegisters();
 
     sq_fast_cpy((void*)SQ_MASK_DEST(PVR_TA_INPUT), packet,
                 (size_t)packet_records);
-    sq_wait();
+    _glOutputWait();
 
     const int list_result = pvr_list_finish();
     const int scene_result = pvr_scene_finish();
@@ -890,9 +1132,7 @@ int SceneNativeBenchSubmitP3T2BGRAAllVisible(
         pvr_scene_finish();
         return GL_KOS_NATIVE_BENCH_PVR_ERROR;
     }
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
+    _glPrepareSubmissionRegisters();
     const uintptr_t ta = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
     sq_fast_cpy((void*)ta, header, 1);
     /* The header occupied SQ0. Begin vertices at SQ1, then carry this address
@@ -916,7 +1156,7 @@ int SceneNativeBenchSubmitP3T2BGRAAllVisible(
             first += counts[s];
         }
     }
-    sq_wait();
+    _glOutputWait();
 
     const int list_result = pvr_list_finish();
     const int scene_result = pvr_scene_finish();
@@ -1200,7 +1440,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
     SUBMIT_QUEUED_VERTEX(GPU_CMD_VERTEX_EOL);
     submit_vertex_fog = false;
 
-    sq_wait();
+    _glOutputWait();
 }
 
 #ifdef _arch_dreamcast
@@ -1416,10 +1656,11 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
     /* One input record becomes exactly one TA record on this all-visible
        path, so the run length is also its actual output count. */
     GLDC_STAT_ADD(scene_divided_records, (GLuint)n);
-    uintptr_t d = sq_dest_addr;
+    uintptr_t d = _glOutputReserveRecords((size_t)n);
     bool vertex_fog = initial_vertex_fog;
     for(; n--; ++v, d += 32) {
         uint32_t* q = (uint32_t*)d;
+        _glOutputAllocateRecord(d);
         PREFETCH(v + 2);
         if(unlikely(is_header(v))) {
             const uint32_t* s = (const uint32_t*)v;
@@ -1451,7 +1692,7 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
                 q[7] = ((const uint32_t*)v)[7];
             }
         }
-        __asm__ __volatile__("pref @%0" : : "r"(d) : "memory");   /* fire the 32B burst */
+        _glOutputCommitRecord(d);   /* fire SQ, or retain cached N4 RAM */
     }
 }
 
@@ -1506,6 +1747,7 @@ GL_FORCE_INLINE void _glDeferredFillRecordSQ(
 
     const float f = _glFastInvert(w);
     uint32_t* const q = (uint32_t*)destination;
+    _glOutputAllocateRecord(destination);
     q[0] = flags;
     ((float*)q)[1] = x * f;
     ((float*)q)[2] = y * f;
@@ -1515,7 +1757,7 @@ GL_FORCE_INLINE void _glDeferredFillRecordSQ(
     ((float*)q)[5] = in->v;
     q[6] = in->bgra;
     ((float*)q)[7] = w;
-    __asm__ __volatile__("pref @%0" : : "r"(destination) : "memory");
+    _glOutputCommitRecord(destination);
 }
 
 GL_FORCE_INLINE void _glDeferredPackPairSQ(
@@ -1544,7 +1786,7 @@ GL_FORCE_INLINE void _glDeferredPackSingleSQ(
 static void _glDeferredSubmitVisibleQuads(
         const GLdcDeferredP3T2BGRA* descriptor,
         const GLKosVertexP3T2BGRA* in, int count) {
-    uintptr_t d = sq_dest_addr;
+    uintptr_t d = _glOutputReserveRecords((size_t)count);
     const float offset_inv = descriptor->polygon_offset_inv;
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
@@ -1633,7 +1875,7 @@ static void _glSubmitDeferredTrianglesP3T2BGRA(
     const GLKosVertexP3T2BGRA* const in =
         descriptor->input.interleaved;
     const int count = (int)descriptor->count;
-    uintptr_t d = sq_dest_addr;
+    uintptr_t d = _glOutputReserveRecords((size_t)count);
     const float offset_inv = descriptor->polygon_offset_inv;
     int i = 0;
 
@@ -1725,7 +1967,8 @@ static void _glSubmitDeferredMultiStripsP3T2BGRA(
     const GLKosVertexP3T2BGRA* const vertices =
         descriptor->input.interleaved;
     const GLKosStripRange* const strips = descriptor->strips;
-    uintptr_t destination = sq_dest_addr;
+    uintptr_t destination =
+        _glOutputReserveRecords((size_t)descriptor->count);
 
     gl_assert(vertices && strips && descriptor->strip_count > 0);
     GLDC_STAT_INC(deferred_multistrip_descriptors_submitted);
@@ -1771,6 +2014,7 @@ GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
 
     const float f = _glFastInvert(w);
     uint32_t* const q = (uint32_t*)destination;
+    _glOutputAllocateRecord(destination);
     q[0] = flags;
     ((float*)q)[1] = x * f;
     ((float*)q)[2] = y * f;
@@ -1785,7 +2029,7 @@ GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
         q[6] = bgra;
         ((float*)q)[7] = w;
     }
-    __asm__ __volatile__("pref @%0" : : "r"(destination) : "memory");
+    _glOutputCommitRecord(destination);
 }
 
 GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
@@ -1812,7 +2056,7 @@ static void _glDeferredSubmitVisibleArrayQuads(
     const float* u = descriptor->input.arrays.texcoords + first * 2;
     const uint32_t* c = (const uint32_t*)(
         descriptor->input.arrays.colors + first * 4);
-    uintptr_t d = sq_dest_addr;
+    uintptr_t d = _glOutputReserveRecords((size_t)count);
     const float offset_inv = descriptor->polygon_offset_inv;
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
@@ -1954,7 +2198,9 @@ static GL_NO_INLINE void _glSubmitPvrPacketSegment(
 
     /* Header + already-final records are contiguous/aligned;
        pvr_list_begin has already armed QACR for TA input. */
-    sq_fast_cpy((void*)sq_dest_addr, records, (size_t)packet->record_count);
+    const uintptr_t destination =
+        _glOutputReserveRecords((size_t)packet->record_count);
+    _glOutputCopyRecords(destination, records, (size_t)packet->record_count);
     GLDC_STAT_ADD(scene_records_in, packet->record_count - 1u);
     if(packet->has_header) {
         GLDC_STAT_INC(scene_headers_seen);
@@ -1980,6 +2226,108 @@ static GL_NO_INLINE void _glSubmitDeferredSegment(
     GLDC_STAT_ADD(scene_records_in, descriptor->count - 1u);
     _glSubmitDeferredP3T2BGRA(descriptor, vertex_fog);
 }
+
+#if GLDC_N4_VERTEX_DMA
+/* Saturating helpers keep a corrupt descriptor from wrapping a small DMA
+   allocation. The eventual SIZE_MAX request stops explicitly in the buffer
+   sizing guard instead of allowing a record write outside the list half. */
+static size_t _glN4BudgetAdd(size_t total, size_t amount) {
+    return amount > SIZE_MAX - total ? SIZE_MAX : total + amount;
+}
+
+static size_t _glN4BudgetMultiply(size_t count, size_t multiplier) {
+    return count > SIZE_MAX / multiplier ? SIZE_MAX : count * multiplier;
+}
+
+/* One-plane generic clipping can emit at most five records per source record:
+   each input triangle produces no more than a clipped quad plus its queued
+   continuation. That intentionally loose bound is used only for the rare
+   strip/quad that fails the same conservative near-plane classifier used by
+   the submitter. Fully-visible spans retain their exact one-for-one count, so
+   ordinary city capacity tracks real traffic rather than reserving 5x RAM. */
+size_t SceneListRecordBudget(
+        const Vertex* vertices, int n, int sprite_records) {
+    size_t budget = sprite_records > 0 ? (size_t)sprite_records : 0u;
+    if(!vertices || n <= 0) return budget;
+
+    const Vertex* v = vertices;
+    const Vertex* const end = vertices + n;
+    while(v < end) {
+        if(unlikely(is_internal_segment(v))) {
+            const uint32_t* const words = (const uint32_t*)v;
+            const GLuint descriptor_index = words[1];
+            if(words[3] != 0u) {
+                const GLdcPvrPacket* const packet =
+                    _glPvrPacketAt(descriptor_index);
+                const GLKosPvrRecord* const records =
+                    _glPvrPacketRecords(packet);
+                const bool valid = packet && records &&
+                    words[2] == ~descriptor_index &&
+                    words[3] == packet->token &&
+                    words[7] == (GLDC_PVR_PACKET_SENTINEL ^
+                                 descriptor_index ^ packet->token);
+                gl_assert(valid);
+                if(!valid) return SIZE_MAX;
+                budget = _glN4BudgetAdd(
+                    budget, (size_t)packet->record_count);
+            } else {
+                const GLdcDeferredP3T2BGRA* const descriptor =
+                    _glDeferredP3T2BGRAAt(descriptor_index);
+                const bool valid = descriptor &&
+                    words[2] == ~descriptor_index &&
+                    words[7] == (GLDC_DEFERRED_P3T2BGRA_SENTINEL ^
+                                 descriptor_index);
+                gl_assert(valid);
+                if(!valid) return SIZE_MAX;
+
+                if(descriptor->primitive != GLDC_DEFERRED_P3T2BGRA_QUADS) {
+                    budget = _glN4BudgetAdd(
+                        budget, (size_t)descriptor->count);
+                } else {
+                    for(GLuint first = 0; first < descriptor->count;
+                        first += 4u) {
+                        const bool visible = descriptor->arrays
+                            ? _glDeferredArrayQuadAllVisible(
+                                  descriptor, (int)first)
+                            : _glDeferredQuadAllVisible(
+                                  descriptor,
+                                  descriptor->input.interleaved + first);
+                        budget = _glN4BudgetAdd(
+                            budget, visible ? 4u : 20u);
+                    }
+                }
+            }
+            ++v;
+            continue;
+        }
+
+        if(is_header(v)) {
+            budget = _glN4BudgetAdd(budget, 1u);
+            ++v;
+            continue;
+        }
+
+        const Vertex* const first = v;
+        bool all_visible = true;
+        bool terminated = false;
+        while(v < end && !is_header(v) && !is_internal_segment(v)) {
+            all_visible &= v->xyz[2] >= -v->w;
+            ++v;
+            if(v[-1].flags == GPU_CMD_VERTEX_EOL) {
+                terminated = true;
+                break;
+            }
+        }
+
+        const size_t count = (size_t)(v - first);
+        budget = _glN4BudgetAdd(
+            budget, all_visible && terminated
+                ? count : _glN4BudgetMultiply(count, 5u));
+    }
+
+    return budget;
+}
+#endif
 #endif
 
 /* Keep the scan -> fused divide handoff inside the SH4's 16 KiB data cache.
@@ -2023,9 +2371,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
     GLDC_STAT_INC(scene_list_submits);
     GLDC_STAT_ADD(scene_records_in, n);
 
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
+    _glPrepareSubmissionRegisters();
 
     sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
 
@@ -2110,7 +2456,7 @@ void SceneListSubmit(Vertex* vertices, int n) {
                            run_start_fog);
     }
 
-    sq_wait();
+    _glOutputWait();
 }
 
 /* ---- TA sprite quads (2026-07-16, the glow lane) ----
@@ -2623,13 +2969,13 @@ void SceneSpritesSubmit(void* blob, int blocks32) {
 
     GLDC_STAT_ADD(scene_sprite_records, (GLuint)blocks32);
 
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
+    _glPrepareSubmissionRegisters();
 
     sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
-    sq_fast_cpy((void*) sq_dest_addr, blob, (size_t) blocks32);
-    sq_wait();
+    const uintptr_t destination =
+        _glOutputReserveRecords((size_t)blocks32);
+    _glOutputCopyRecords(destination, blob, (size_t)blocks32);
+    _glOutputWait();
 }
 
 /* Submit a validated list-major final command stream. Scene/list ownership
@@ -2637,23 +2983,75 @@ void SceneSpritesSubmit(void* blob, int blocks32) {
    contiguous store-queue copy. */
 void SceneListSubmitFinal(const void* records, int record_count) {
     if(!records || record_count <= 0) return;
-    PVR_SET(SPAN_SORT_CFG, 0x0);
-    *PVR_LMMODE0 = 0;
-    *PVR_LMMODE1 = 0;
-    sq_fast_cpy(SQ_MASK_DEST(PVR_TA_INPUT), records,
-                (size_t)record_count);
-    sq_wait();
+    _glPrepareSubmissionRegisters();
+    sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
+    const uintptr_t destination =
+        _glOutputReserveRecords((size_t)record_count);
+    _glOutputCopyRecords(destination, records, (size_t)record_count);
+    _glOutputWait();
 }
 
-int SceneBeginChecked(void) {
+static int _glScenePrepare(
+        size_t op_records, size_t pt_records, size_t tr_records) {
+#if GLDC_N4_VERTEX_DMA
+    /* Stable-capacity N4 frames intentionally do NOT wait here. CPU final-
+       record construction proceeds in KOS's inactive RAM half while the TA
+       consumes the previous one; pvr_scene_finish() performs the readiness
+       wait immediately before launching this scene's DMA chain. Buffer growth
+       and global fog-register updates are the two operations that still need
+       an explicit safe TA boundary. */
+    const bool growth = _glN4BuffersNeedGrowth(
+        op_records, pt_records, tr_records);
+    if((growth || _glN4FogPending()) && pvr_wait_ready() < 0) return -1;
+    if(growth) _glN4EnsureBuffers(op_records, pt_records, tr_records);
+    /* The first N4 scene necessarily grows from zero and therefore just
+       crossed a safe TA boundary. Program GLdc's stable TA input mode once;
+       later list writers only build RAM and never touch live PVR registers. */
+    _glPrepareSubmissionRegisters();
+#else
+    (void)op_records;
+    (void)pt_records;
+    (void)tr_records;
     if(pvr_wait_ready() < 0) return -1;
+#endif
     ApplyDeferredFogTable();
+    return 0;
+}
+
+int SceneBeginSizedChecked(
+        size_t op_records, size_t pt_records, size_t tr_records) {
+    if(_glScenePrepare(op_records, pt_records, tr_records) < 0) return -1;
     pvr_scene_begin();
     return 0;
 }
 
+int SceneBeginChecked(void) {
+#if GLDC_N4_VERTEX_DMA
+    fprintf(stderr,
+            "GLdc N4: unsized SceneBeginChecked is not a valid DMA scene"
+            " boundary\n");
+    _glSubmissionFatal();
+#else
+    return SceneBeginSizedChecked(0u, 0u, 0u);
+#endif
+}
+
+void SceneBeginSized(
+        size_t op_records, size_t pt_records, size_t tr_records) {
+    if(SceneBeginSizedChecked(op_records, pt_records, tr_records) < 0) {
+        fprintf(stderr, "GLdc: PVR scene preparation failed\n");
+        _glSubmissionFatal();
+    }
+}
+
 void SceneBegin() {
-    (void)SceneBeginChecked();
+#if GLDC_N4_VERTEX_DMA
+    fprintf(stderr,
+            "GLdc N4: unsized SceneBegin is not a valid DMA scene boundary\n");
+    _glSubmissionFatal();
+#else
+    SceneBeginSized(0u, 0u, 0u);
+#endif
 }
 
 /* Like SceneBegin, but renders this scene into a texture in VRAM instead of the
@@ -2661,17 +3059,60 @@ void SceneBegin() {
    two-pass HUD overlay: pass 1 renders the world into a texture, pass 2 draws
    that texture + the HUD to the screen so the HUD composites on top of
    everything. w/h are the (power-of-two) target dimensions. */
-void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
-    pvr_wait_ready();
-    ApplyDeferredFogTable();
+void SceneBeginToTextureSized(
+        void* tex, unsigned int w, unsigned int h,
+        size_t op_records, size_t pt_records, size_t tr_records) {
+    if(_glScenePrepare(op_records, pt_records, tr_records) < 0) {
+        fprintf(stderr, "GLdc: PVR render-to-texture preparation failed\n");
+        _glSubmissionFatal();
+    }
     /* stride == w: the target is a tightly-packed power-of-two texture */
-    pvr_scene_begin_rtt((pvr_ptr_t) tex, w, h, w);
+    if(pvr_scene_begin_rtt((pvr_ptr_t)tex, w, h, w) < 0) {
+        fprintf(stderr, "GLdc: invalid render-to-texture scene target\n");
+        _glSubmissionFatal();
+    }
+}
+
+void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h) {
+#if GLDC_N4_VERTEX_DMA
+    (void)tex;
+    (void)w;
+    (void)h;
+    fprintf(stderr,
+            "GLdc N4: unsized SceneBeginToTexture is not a valid DMA scene"
+            " boundary\n");
+    _glSubmissionFatal();
+#else
+    SceneBeginToTextureSized(tex, w, h, 0u, 0u, 0u);
+#endif
 }
 
 int SceneListBeginChecked(GPUList list) {
     const int result = pvr_list_begin(list);
+#if GLDC_N4_VERTEX_DMA
+    if(result == 0) {
+        gl_assert(!n4_output_open);
+        gl_assert(list == GPU_LIST_OP_POLY ||
+                  list == GPU_LIST_PT_POLY ||
+                  list == GPU_LIST_TR_POLY);
+        const int slot = _glN4ListSlot(list);
+        gl_assert(slot >= 0);
+        if(unlikely(slot < 0)) {
+            fprintf(stderr, "GLdc N4: unsupported DMA list %d\n", (int)list);
+            _glSubmissionFatal();
+        }
+        n4_output_list = list;
+        n4_output_start = (uintptr_t)pvr_vertbuf_tail((pvr_list_t)list);
+        n4_output_cursor = n4_output_start;
+        n4_output_limit = n4_output_start +
+            n4_dma_buffers[slot].frame_bytes -
+            GLDC_N4_KOS_TAIL_RECORDS * sizeof(Vertex);
+        n4_output_open = true;
+    }
+#endif
     /* pvr_list_begin acquires the store queues and programs QACR for TA input.
-       pvr_dr_init is a deprecated no-op in current KOS. */
+       pvr_dr_init is a deprecated no-op in current KOS. In N4 the configured
+       list uses cached RAM instead, so no SQ lock/QACR ownership is expected. */
     return result;
 }
 
@@ -2680,6 +3121,14 @@ void SceneListBegin(GPUList list) {
 }
 
 int SceneListFinishChecked(void) {
+#if GLDC_N4_VERTEX_DMA
+    gl_assert(n4_output_open);
+    if(!n4_output_open) return -1;
+    const size_t bytes = (size_t)(n4_output_cursor - n4_output_start);
+    pvr_vertbuf_written((pvr_list_t)n4_output_list, bytes);
+    n4_output_open = false;
+    n4_output_cursor = n4_output_limit = n4_output_start = 0u;
+#endif
     return pvr_list_finish();
 }
 
@@ -2688,6 +3137,9 @@ void SceneListFinish() {
 }
 
 int SceneFinishChecked(void) {
+#if GLDC_N4_VERTEX_DMA
+    gl_assert(!n4_output_open);
+#endif
     return pvr_scene_finish();
 }
 
@@ -2779,9 +3231,7 @@ void _glS3SubmitOpTail(void) {
     if(n >= 4) {
         SceneListSubmit(start, (int)n);
     } else {
-        PVR_SET(SPAN_SORT_CFG, 0x0);
-        *PVR_LMMODE0 = 0;
-        *PVR_LMMODE1 = 0;
+        _glPrepareSubmissionRegisters();
         sq_dest_addr = (uintptr_t)SQ_MASK_DEST(PVR_TA_INPUT);
         SceneListSubmitGeneric(start, (int)n, false);
         sq_wait();

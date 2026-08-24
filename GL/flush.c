@@ -79,7 +79,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.24-0912-stats0-glt0-nbench0-n3]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.24-1136-stats0-glt1-nbench0-n30-n4dma0]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -91,6 +91,9 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 #endif
 #if GLDC_S3_SEGMENTED_OP
     printf("GLdc: [ CANARY ] S3 segmented OP drain ENABLED\n");
+#endif
+#if GLDC_N4_VERTEX_DMA
+    printf("GLdc: [ CANARY ] N4 direct KOS vertex-DMA sink ENABLED\n");
 #endif
 
     InitGPU(config->autosort_enabled, config->fsaa_enabled);
@@ -244,6 +247,32 @@ static GLboolean list_has_content(PolyList* l) {
     return GL_FALSE;
 }
 
+#if GLDC_N4_VERTEX_DMA
+static size_t n4_list_record_budget(PolyList* l) {
+    const int records = (int)aligned_vector_size(&l->vector);
+    const int sprites = (int)aligned_vector_size(&l->sprites);
+    const Vertex* const vertices = records > 0
+        ? (const Vertex*)aligned_vector_front(&l->vector) : NULL;
+    return SceneListRecordBudget(vertices, records, sprites);
+}
+
+static void n4_begin_queued_scene(void) {
+    SceneBeginSized(
+        n4_list_record_budget(&OP_LIST),
+        n4_list_record_budget(&PT_LIST),
+        n4_list_record_budget(&TR_LIST));
+}
+
+static void n4_begin_queued_scene_to_texture(
+        void* tex, unsigned int w, unsigned int h) {
+    SceneBeginToTextureSized(
+        tex, w, h,
+        n4_list_record_budget(&OP_LIST),
+        n4_list_record_budget(&PT_LIST),
+        n4_list_record_budget(&TR_LIST));
+}
+#endif
+
 static void clear_lists(void) {
     aligned_vector_clear(&OP_LIST.vector);
     aligned_vector_clear(&PT_LIST.vector);
@@ -320,7 +349,14 @@ GLint APIENTRY glKosPvrSubmitExclusiveScene(
         return GL_KOS_PVR_QUEUE_NOT_EMPTY;
     }
 
+#if GLDC_N4_VERTEX_DMA
+    if(SceneBeginSizedChecked(
+           (size_t)scene->opaque.record_count,
+           (size_t)scene->punch_through.record_count,
+           (size_t)scene->translucent.record_count) < 0) {
+#else
     if(SceneBeginChecked() < 0) {
+#endif
         GLDC_STAT_INC(pvr_exclusive_rejects);
         return GL_KOS_PVR_PVR_ERROR;
     }
@@ -447,9 +483,14 @@ void APIENTRY glKosSwapBuffers() {
         }
     }
 #else
-    /* NOTE: the "wait" bucket is SceneBegin = pvr_wait_ready + deferred fog-table
-       apply + pvr_scene_begin, not the PVR fence alone. */
+    /* In the SQ build, wait= retains SceneBegin's previous-frame TA fence.
+       In N4 it is list-budgeting plus only the exceptional growth/fog fence;
+       the ordinary readiness wait moves to fin= where KOS launches DMA. */
+#if GLDC_N4_VERTEX_DMA
+    GT_MARK(_gt_wait_us, n4_begin_queued_scene());
+#else
     GT_MARK(_gt_wait_us, SceneBegin());
+#endif
 
     if(list_has_content(&OP_LIST)) {
         SceneListBegin(GPU_LIST_OP_POLY);
@@ -551,7 +592,11 @@ void APIENTRY glKosFlushToTexture(void* tex, unsigned int w, unsigned int h) {
     }
 #endif
 
+#if GLDC_N4_VERTEX_DMA
+    n4_begin_queued_scene_to_texture(tex, w, h);
+#else
     SceneBeginToTexture(tex, w, h);
+#endif
         if(list_has_content(&OP_LIST)) {
             SceneListBegin(GPU_LIST_OP_POLY);
             submit_list(&OP_LIST);

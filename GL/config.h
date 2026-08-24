@@ -20,10 +20,43 @@
 #define GLDC_S3_SEGMENTED_OP 0
 #endif
 
+/* N4 direct vertex-DMA sink (2026-08-24): final OP/PT/TR TA records are
+   constructed straight into KOS's double-buffered per-list system-RAM
+   buffers. pvr_scene_finish() then launches the list-major DMA chain while
+   the CPU starts the next game frame. Capacity is derived from the queued
+   scene before it begins and the buffers grow only at a safe TA boundary.
+
+   This is deliberately an opt-in hardware experiment. N2 + F1 remains the
+   production route until whole-frame hardware A/B proves that hiding the TA
+   transfer outweighs cached-RAM construction and DMA setup:
+       make all GLDC_N4_VERTEX_DMA=1 */
+#ifndef GLDC_N4_VERTEX_DMA
+#define GLDC_N4_VERTEX_DMA 0
+#endif
+
+#if GLDC_N4_VERTEX_DMA && !defined(_arch_dreamcast)
+#error "GLDC_N4_VERTEX_DMA is a Dreamcast-only platform route"
+#endif
+
 /* N2 swap-stable descriptors are now part of every Dreamcast build. S3 owns
    an open OP list mid-frame and cannot preserve descriptor chronology. */
 #if defined(_arch_dreamcast) && GLDC_S3_SEGMENTED_OP
 #error "Permanent N2 descriptors and GLDC_S3_SEGMENTED_OP cannot be combined"
+#endif
+
+/* S3 owns an open hardware list during game-frame construction; N4 instead
+   owns complete list-major RAM buffers and starts their DMA at scene finish.
+   KOS has no mid-list DMA flush, so the ownership models cannot mix. */
+#if defined(_arch_dreamcast) && GLDC_N4_VERTEX_DMA && GLDC_S3_SEGMENTED_OP
+#error "GLDC_N4_VERTEX_DMA and GLDC_S3_SEGMENTED_OP cannot be combined"
+#endif
+
+/* The existing N0/N1/N3 harness contains intentional direct-SQ baselines.
+   Enabling global KOS vertex DMA changes pvr_list_begin ownership underneath
+   those baselines, so a dedicated N4 harness must be used instead. */
+#if defined(_arch_dreamcast) && GLDC_N4_VERTEX_DMA && \
+    defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+#error "GLDC_N4_VERTEX_DMA is incompatible with the N0/N1/N3 native benchmark"
 #endif
 
 /* B2 GOLD-BLOCK quad writer (2026-07-24, HyperSolar perf ledger B2): the city

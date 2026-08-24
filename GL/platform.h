@@ -265,6 +265,18 @@ typedef float Matrix4x4[16] __attribute__((aligned(32)));
 void SceneBegin();
 int SceneBeginChecked(void);
 void SceneBeginToTexture(void* tex, unsigned int w, unsigned int h);
+/* N4 preflights each list before scene begin so its double-buffered KOS DMA
+   half is guaranteed to hold the final record stream plus KOS's terminator.
+   Only the Dreamcast N4 build calls these extended platform entry points. */
+size_t SceneListRecordBudget(
+    const Vertex* vertices, int n, int sprite_records);
+void SceneBeginSized(
+    size_t op_records, size_t pt_records, size_t tr_records);
+int SceneBeginSizedChecked(
+    size_t op_records, size_t pt_records, size_t tr_records);
+void SceneBeginToTextureSized(
+    void* tex, unsigned int w, unsigned int h,
+    size_t op_records, size_t pt_records, size_t tr_records);
 
 void SceneListBegin(GPUList list);
 int SceneListBeginChecked(GPUList list);
