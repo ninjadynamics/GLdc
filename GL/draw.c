@@ -1385,7 +1385,10 @@ static void _glBakePolygonOffset(Vertex* v, GLuint count) {
    exact idea for multitexture in the commented block at the end of submitVertices.
    Captures hold INDICES (the vectors realloc as they grow) and are invalidated every swap
    (the lists are cleared then — a stale replay would read recycled memory). */
-#define GLDC_CAPTURE_SLOTS 8
+/* HyperSolar's two rows of four facade materials can each expose two live
+   chunk runs. Sixteen tiny span descriptors preserve transform-once replay
+   for all eight materials; this is bookkeeping only, not retained geometry. */
+#define GLDC_CAPTURE_SLOTS 16
 
 typedef struct {
     PolyList* list;
