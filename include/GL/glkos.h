@@ -104,9 +104,9 @@ GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
 
 /* SoA form of the same deferred contract for persistent renderer-owned
  * streams. Arrays are tightly packed P3F, T2F and four-byte BGRA records;
- * every pointer must remain immutable through the next drain. OFF and
- * BLEND_PRECOMPUTED radial fog are accepted, with the latter consuming the
- * already-resolved fog amount from source color alpha. */
+ * every pointer must remain immutable through the next drain. With radial fog
+ * OFF this form may target OP, PT or TR. BLEND_PRECOMPUTED fog remains an
+ * opaque-list route and consumes its amount from source color alpha. */
 GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
     const GLfloat* positions, const GLfloat* texcoords,
     const GLubyte* bgra, GLsizei count);
@@ -114,8 +114,8 @@ GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
 /* Active-list constant-color sibling used by persistent two-material geometry.
  * The source arrays remain borrowed through the next drain; the MVP and
  * constant color are snapshotted before returning. Every emitted vertex
- * receives `constant_bgra`. Unlike the opaque SoA entry above, this form may
- * target OP, PT or TR; radial vertex fog must be OFF. Unsupported state returns
+ * receives `constant_bgra`. Like the SoA entry above, this form may target OP,
+ * PT or TR; radial vertex fog must be OFF. Unsupported state returns
  * GL_FALSE without list/header mutation. */
 GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
     const GLfloat* positions, const GLfloat* texcoords,
@@ -533,14 +533,16 @@ GLAPI GLsizei APIENTRY glKosDrawQuadStripsArrays(
    (vs four 32-byte vertices), color in a shared header emitted on change,
    transform+divide done at call time (bypasses the submit finalizer). pos =
    12 floats/quad in ring order, colors read at [quad*4] (the glow scratch
-   layout, BGRA bytes = ARGB word). ADDITIVE/order-free content only (records
-   land at the list tail); quads crossing the near plane are DROPPED whole
-   (no sprite clip path). Draws nothing off Dreamcast. See draw.c. */
+   layout, BGRA bytes = ARGB word). Records land at the list tail: additive
+   content is order-independent; ordinary alpha content must be appended after
+   every earlier TR family it is intended to cover. Quads crossing the near
+   plane are DROPPED whole (no sprite clip path). Draws nothing off Dreamcast.
+   See draw.c. */
 GLAPI void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLsizei quads);
 /* Homogeneous TA-sprite family: centers is 3 floats/sprite, colors is one
    packed word/sprite, and u/v are the shared object-space half axes. This is
    the low-bandwidth glow path: transform each axis once and one center per
-   sprite instead of three corners. Same additive/near-plane contract above. */
+   sprite instead of three corners. Same tail-order/near-plane contract above. */
 GLAPI void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* colors,
                                            GLsizei sprites,
                                            GLfloat ux, GLfloat uy, GLfloat uz,

@@ -79,7 +79,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.27-1121-stats0-glt0-nbench0-n30-n4dma0-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.30-2115-stats0-glt0-nbench0-n30-n4dma0-zamv070]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -215,11 +215,11 @@ static int _gt_frames;
 #define GT_MARK(var, expr) expr
 #endif
 
-/* One list's full submission: vertex stream then the sprite sidecar. Sprites
-   are ADDITIVE-only by contract: tail placement reorders them against any
-   non-additive TR records (alpha blends) — accepted for the glow lane, not a
-   general guarantee. Begin/finish are the caller's — it decides whether the
-   list opens at all. */
+/* One list's full submission: vertex stream then the sprite sidecar. Tail
+   placement is order-independent for additive sprites. Alpha-blended sprites
+   are permitted only as an explicit tail layer and must be appended after any
+   earlier sidecar family they are meant to cover. Begin/finish are the
+   caller's — it decides whether the list opens at all. */
 static void submit_list(PolyList* l) {
     const GLboolean has_deferred =
 #ifdef _arch_dreamcast

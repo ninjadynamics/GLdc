@@ -2737,7 +2737,8 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
         DEFERRED_REJECT(deferred_reject_capture);
     }
     const GLint radial_mode = _glRadialVertexFog()->mode;
-    if((!constant_color && _glActivePolyList() != _glOpaquePolyList()) ||
+    if((!constant_color && _glActivePolyList() != _glOpaquePolyList() &&
+        (!arrays || radial_mode != GL_KOS_VERTEX_FOG_OFF)) ||
        IMMEDIATE_MODE_ACTIVE || _glTnlEffectsActive() ||
        _glIsScissorTestEnabled() ||
        (constant_color ? radial_mode != GL_KOS_VERTEX_FOG_OFF :
@@ -3855,8 +3856,10 @@ GLsizei APIENTRY glKosDrawQuadStripsArrays(
    finalizer entirely. Sprites have NO clip path: a quad with any corner past
    the near plane is DROPPED whole. Contract: 12 floats per quad (ring order,
    matching the glow scratch), one color word per quad read at colors[q*4]
-   (the scratch's 4-equal-words layout), current texture/blend/depth state,
-   ADDITIVE/order-free content only (records land at the list tail). */
+   (the scratch's 4-equal-words layout), current texture/blend/depth state.
+   Records land at the list tail: additive content is order-independent;
+   ordinary alpha content is valid only when the caller deliberately wants it
+   after every earlier TR family. */
 void APIENTRY glKosDrawSpriteQuads(const GLfloat* pos, const GLuint* colors, GLsizei quads) {
     TRACE();
 
