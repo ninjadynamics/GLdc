@@ -419,6 +419,33 @@ GLAPI void APIENTRY glKosResetStats(void);
 GLAPI const GLdcStats* APIENTRY glKosGetStats(void);
 GLAPI void APIENTRY glKosPrintStats(void);
 
+/* Swap telemetry is consumed by the game's single compact telemetry window.
+ * Keeping the counters behind a take/reset API avoids an autonomous GLdc
+ * fprintf burst and lets renderer, city and PVR timings describe the same
+ * frames. The symbol remains available when GLDC_SWAP_TELEMETRY is disabled;
+ * in that build it returns GL_FALSE and a zeroed snapshot. */
+#define GL_KOS_SWAP_TELEMETRY_ABI_VERSION 1u
+typedef struct {
+    GLuint struct_size;
+    GLuint abi_version;
+    GLuint frames;
+    unsigned long long wait_us;
+    unsigned long long s3_us;
+    unsigned long long op_us;
+    unsigned long long pt_us;
+    unsigned long long tr_us;
+    unsigned long long finish_us;
+    unsigned long long op_vertices;
+    unsigned long long tr_vertices;
+    GLuint sprite_headers;
+    GLuint sprite_records;
+    GLuint sprite_call_us;
+    GLuint sprite_grows;
+} GLKosSwapTelemetry;
+
+GLAPI GLboolean APIENTRY glKosTakeSwapTelemetry(
+    GLKosSwapTelemetry *out, GLuint out_size);
+
 
 /*
  * Dreamcast specific compressed + twiddled formats.

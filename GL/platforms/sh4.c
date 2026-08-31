@@ -2660,9 +2660,9 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
    sprite-lane builders (pools use SceneSpriteCenters, glare/traffic/signals
    use SceneSpriteCentersPlane) and mid-frame sprite-lane capacity growths
    (each growth memcpys the whole accumulated lane — the multi-ms submit
-   spike suspect). Read + reset by the [GLDC-T] print. The delta between the
-   game's submit brackets and this number is bind/state preamble outside the
-   sprite path. */
+   spike suspect). Read + reset through glKosTakeSwapTelemetry(). The delta
+   between the game's submit brackets and this number is bind/state preamble
+   outside the sprite path. */
 uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
 
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
@@ -2792,7 +2792,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
 /* H1 (HyperSolar PERFAUDIT): headers-vs-records truth for the sprite lanes.
    If hdr ~= rec the caller's colors are unsorted and bucket-driven emission
    is the win; if hdr << rec the cost is the 64-byte record writes and color
-   sorting would buy nothing. Read by flush.c's [GLDC-T] print. */
+   sorting would buy nothing. Read through flush.c's telemetry snapshot. */
 uint32_t _glSpriteHdrCount = 0, _glSpriteRecCount = 0;
 
 void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
@@ -3167,7 +3167,7 @@ const VideoMode* GetVideoMode() {
 static int      s3_scene_open = 0;
 static int      s3_op_open = 0;
 static uint32_t s3_op_drained = 0;
-uint64_t        _glS3DrainUs = 0;    /* summed drain time; printed by [GLDC-T] */
+uint64_t        _glS3DrainUs = 0;    /* summed drain time; snapshot at HT1 window */
 
 int _glS3SceneOpen(void) { return s3_scene_open; }
 

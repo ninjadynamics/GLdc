@@ -75,12 +75,12 @@
 #define GLDC_GOLD_BLOCK 0
 #endif
 
-/* [GLDC-T] swap-time telemetry (2026-07-15/31 investigations): flush.c's
-   wait/op/pt/tr/fin split + the sh4.c sprite-lane timers (sprcall=). Lives
-   here (not flush.c) so BOTH files compile it out together — the sprite
-   timers used to run unconditionally (Audit #001 OPA-12). 0 removes the
-   timer sampling and the print; the cheap event counters (grow=, hdr/rec)
-   still tick. HyperSolar forwards the switch without editing this file:
+/* Swap-time telemetry (2026-07-15/31 investigations): flush.c's
+   wait/op/pt/tr/fin split + the sh4.c sprite-lane timers. Lives here (not
+   flush.c) so BOTH files compile it out together — the sprite timers used to
+   run unconditionally (Audit #001 OPA-12). 0 removes timer sampling;
+   glKosTakeSwapTelemetry() still exists and returns an empty snapshot. The
+   cheap event counters (grow/header/record) still tick. HyperSolar forwards:
    make all GLDC_SWAP_TELEMETRY=1 (or make gldc with the same switch). */
 #ifndef GLDC_SWAP_TELEMETRY
 #define GLDC_SWAP_TELEMETRY 0   /* returned to 0 (2026-08-06, quiet/ship profile) after the 2026-07-31 hunt */

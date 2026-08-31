@@ -79,7 +79,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.08.30-2115-stats0-glt0-nbench0-n30-n4dma0-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.01-0023-stats0-glt1-nbench0-n30-n4dma0-zamv070]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -195,9 +195,10 @@ extern void _glProcessDeferredFrees(void);   /* texture.c: aged texture-VRAM rel
 /* Swap-time decomposition (2026-07-15 investigation): the game's `swap=` telemetry lumps
    pvr_wait_ready (previous-frame PVR wait) together with the three SceneListSubmit walks
    and scene finish — a submission win is invisible until these are split. Rate-limited
-   aggregate print every 600 swaps; near-zero cost otherwise.
+   aggregate snapshot is taken and reset by the game's compact telemetry
+   window; near-zero cost otherwise.
    GLDC_SWAP_TELEMETRY lives in config.h (sh4.c's sprite-lane timers share it —
-   Audit #001 OPA-12); 0 compiles the sampling AND the [GLDC-T] print out entirely. */
+   Audit #001 OPA-12); 0 compiles the sampling out entirely. */
 #if GLDC_SWAP_TELEMETRY
 #include <arch/timer.h>
 #include <stdio.h>
@@ -214,6 +215,43 @@ static int _gt_frames;
 #else
 #define GT_MARK(var, expr) expr
 #endif
+
+GLboolean APIENTRY glKosTakeSwapTelemetry(
+        GLKosSwapTelemetry *out, GLuint out_size) {
+    if(!out || out_size < sizeof(*out)) return GL_FALSE;
+    memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+    out->abi_version = GL_KOS_SWAP_TELEMETRY_ABI_VERSION;
+#if GLDC_SWAP_TELEMETRY
+    out->frames = (GLuint)_gt_frames;
+    out->wait_us = _gt_wait_us;
+#if GLDC_S3_SEGMENTED_OP
+    out->s3_us = _glS3DrainUs;
+#endif
+    out->op_us = _gt_op_us;
+    out->pt_us = _gt_pt_us;
+    out->tr_us = _gt_tr_us;
+    out->finish_us = _gt_fin_us;
+    out->op_vertices = _gt_op_verts;
+    out->tr_vertices = _gt_tr_verts;
+    out->sprite_headers = _glSpriteHdrCount;
+    out->sprite_records = _glSpriteRecCount;
+    out->sprite_call_us = _glSpriteCallUs;
+    out->sprite_grows = _glSpriteGrowCount;
+
+    _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
+    _gt_op_verts = _gt_tr_verts = 0;
+#if GLDC_S3_SEGMENTED_OP
+    _glS3DrainUs = 0;
+#endif
+    _glSpriteHdrCount = _glSpriteRecCount = 0;
+    _glSpriteCallUs = _glSpriteGrowCount = 0;
+    _gt_frames = 0;
+    return GL_TRUE;
+#else
+    return GL_FALSE;
+#endif
+}
 
 /* One list's full submission: vertex stream then the sprite sidecar. Tail
    placement is order-independent for additive sprites. Alpha-blended sprites
@@ -531,35 +569,7 @@ void APIENTRY glKosSwapBuffers() {
     GT_MARK(_gt_fin_us, SceneFinish());
 
 #if GLDC_SWAP_TELEMETRY
-    if(++_gt_frames >= 600) {
-        const float inv = 1.0f / (1000.0f * (float)_gt_frames);
-#if GLDC_S3_SEGMENTED_OP
-        /* s3= the mid-frame drains (incl. the first drain's pvr_wait_ready);
-           op= only the swap-time OP tail. Compare s3+op vs the flag-off op. */
-        fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f s3=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f (%d swaps)\n",
-                (float)_gt_wait_us * inv, (float)_glS3DrainUs * inv, (float)_gt_op_us * inv,
-                (float)_gt_pt_us * inv, (float)_gt_tr_us * inv, (float)_gt_fin_us * inv, _gt_frames);
-        _glS3DrainUs = 0;
-#else
-        fprintf(stderr, "[GLDC-T] swap ms avg: wait=%.2f op=%.2f pt=%.2f tr=%.2f fin=%.2f"
-                " | op %luv %.0fns/v tr %luv | sp %luh/%lur"
-                " sprcall=%.3fms grow=%lu (%d swaps)\n",
-                (float)_gt_wait_us * inv, (float)_gt_op_us * inv, (float)_gt_pt_us * inv,
-                (float)_gt_tr_us * inv, (float)_gt_fin_us * inv,
-                (unsigned long)(_gt_op_verts / (uint64_t)_gt_frames),
-                _gt_op_verts ? (float)_gt_op_us * 1000.0f / (float)_gt_op_verts : 0.0f,
-                (unsigned long)(_gt_tr_verts / (uint64_t)_gt_frames),
-                (unsigned long)(_glSpriteHdrCount / (uint32_t)_gt_frames),
-                (unsigned long)(_glSpriteRecCount / (uint32_t)_gt_frames),
-                (float)_glSpriteCallUs * inv,
-                (unsigned long)_glSpriteGrowCount, _gt_frames);
-#endif
-        _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
-        _gt_op_verts = _gt_tr_verts = 0;
-        _glSpriteHdrCount = _glSpriteRecCount = 0;
-        _glSpriteCallUs = _glSpriteGrowCount = 0;
-        _gt_frames = 0;
-    }
+    _gt_frames++;
 #endif  /* GLDC_SWAP_TELEMETRY */
 
     clear_lists();
