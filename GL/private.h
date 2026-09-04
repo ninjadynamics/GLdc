@@ -131,7 +131,8 @@ typedef struct {
 typedef enum GLdcDeferredP3T2BGRAPrimitive {
     GLDC_DEFERRED_P3T2BGRA_QUADS = 0,
     GLDC_DEFERRED_P3T2BGRA_MULTISTRIPS = 1,
-    GLDC_DEFERRED_P3T2BGRA_TRIANGLES = 2
+    GLDC_DEFERRED_P3T2BGRA_TRIANGLES = 2,
+    GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS = 3
 } GLdcDeferredP3T2BGRAPrimitive;
 
 typedef struct __attribute__((aligned(32))) GLdcDeferredP3T2BGRA {

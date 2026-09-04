@@ -19,6 +19,7 @@ extern const char* GLDC_VERSION;
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_MULTISTRIPS 1
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_TRIANGLES 1
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_ARRAY_COLOR 1
+#define GL_KOS_HAS_DEFERRED_P3T2BGRA_PLANAR_QUADS 1
 #define GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA (1u << 0)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_QUADS (1u << 1)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAYS (1u << 2)
@@ -28,6 +29,7 @@ extern const char* GLDC_VERSION;
 #define GL_KOS_FAST_PATH_FINAL_INTERLEAVED_P3T2BGRA (1u << 6)
 #define GL_KOS_FAST_PATH_PVR_PACKETS (1u << 7)
 #define GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA (1u << 8)
+#define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_PLANAR_QUADS (1u << 9)
 #if defined(_arch_dreamcast)
 #define GL_KOS_FAST_PATH_CAPABILITIES \
     (GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA | \
@@ -38,7 +40,8 @@ extern const char* GLDC_VERSION;
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR | \
      GL_KOS_FAST_PATH_FINAL_INTERLEAVED_P3T2BGRA | \
      GL_KOS_FAST_PATH_PVR_PACKETS | \
-     GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA)
+     GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA | \
+     GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_PLANAR_QUADS)
 #else
 #define GL_KOS_FAST_PATH_CAPABILITIES GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA
 #endif
@@ -108,6 +111,13 @@ GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
  * OFF this form may target OP, PT or TR. BLEND_PRECOMPUTED fog remains an
  * opaque-list route and consumes its amount from source color alpha. */
 GLAPI GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
+    const GLfloat* positions, const GLfloat* texcoords,
+    const GLubyte* bgra, GLsizei count);
+
+/* Planar sibling of the immutable SoA route. Every four input vertices must
+ * satisfy D=A+C-B. Fully visible quads transform A/B/C and derive D in clip
+ * space; a near-plane quad retains the ordinary four-corner clipping path. */
+GLAPI GLboolean APIENTRY glKosTryDeferPlanarQuadsP3T2BGRAArraysSwapStable(
     const GLfloat* positions, const GLfloat* texcoords,
     const GLubyte* bgra, GLsizei count);
 

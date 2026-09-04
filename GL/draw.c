@@ -2692,7 +2692,8 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
         const GLKosVertexP3T2BGRA* vertices,
         const GLfloat* positions, const GLfloat* texcoords,
         const GLubyte* colors, const GLubyte* constant_bgra,
-        GLsizei count, GLboolean arrays, GLboolean constant_color) {
+        GLsizei count, GLboolean arrays, GLboolean constant_color,
+        GLboolean planar) {
     TRACE();
     GLDC_STAT_INC(deferred_quad_attempts);
     if(arrays) GLDC_STAT_INC(deferred_array_attempts);
@@ -2715,6 +2716,7 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
     (void)colors;
     (void)constant_bgra;
     (void)count;
+    (void)planar;
     DEFERRED_REJECT(deferred_reject_disabled);
 #else
     /* Every rejection precedes matrix/header/list mutation. In particular,
@@ -2784,7 +2786,9 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
     descriptor->strips = NULL;
     descriptor->strip_count = 0;
     descriptor->polygon_offset_inv = 1.0f / _glPolygonOffsetMul;
-    descriptor->primitive = GLDC_DEFERRED_P3T2BGRA_QUADS;
+    descriptor->primitive = planar
+        ? GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS
+        : GLDC_DEFERRED_P3T2BGRA_QUADS;
     descriptor->list = out;
 
     const GLuint vector_size = aligned_vector_size(&out->vector);
@@ -2820,7 +2824,8 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
         GLDC_STAT_ADD(deferred_array_vertices, (GLuint)count);
     }
     GLDC_STAT_INC(submit_vertices_calls);
-    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
+    GLDC_STAT_ADD(vertices_transformed,
+        (GLuint)(planar ? count - count / 4 : count));
     if(_glPolygonOffsetMul != 1.0f) {
         GLDC_STAT_ADD(polygon_offset_vertices, (GLuint)count);
     }
@@ -2832,14 +2837,24 @@ static GLboolean _glTryDeferQuadsP3T2BGRASwapStable(
 GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRASwapStable(
         const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
     return _glTryDeferQuadsP3T2BGRASwapStable(
-        vertices, NULL, NULL, NULL, NULL, count, GL_FALSE, GL_FALSE);
+        vertices, NULL, NULL, NULL, NULL, count,
+        GL_FALSE, GL_FALSE, GL_FALSE);
 }
 
 GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysSwapStable(
         const GLfloat* positions, const GLfloat* texcoords,
         const GLubyte* bgra, GLsizei count) {
     return _glTryDeferQuadsP3T2BGRASwapStable(
-        NULL, positions, texcoords, bgra, NULL, count, GL_TRUE, GL_FALSE);
+        NULL, positions, texcoords, bgra, NULL, count,
+        GL_TRUE, GL_FALSE, GL_FALSE);
+}
+
+GLboolean APIENTRY glKosTryDeferPlanarQuadsP3T2BGRAArraysSwapStable(
+        const GLfloat* positions, const GLfloat* texcoords,
+        const GLubyte* bgra, GLsizei count) {
+    return _glTryDeferQuadsP3T2BGRASwapStable(
+        NULL, positions, texcoords, bgra, NULL, count,
+        GL_TRUE, GL_FALSE, GL_TRUE);
 }
 
 GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
@@ -2848,7 +2863,7 @@ GLboolean APIENTRY glKosTryDeferQuadsP3T2BGRAArraysColorSwapStable(
         GLsizei count) {
     return _glTryDeferQuadsP3T2BGRASwapStable(
         NULL, positions, texcoords, source_bgra, constant_bgra,
-        count, GL_TRUE, GL_TRUE);
+        count, GL_TRUE, GL_TRUE, GL_FALSE);
 }
 
 /* Conservative object-space classifier used before an all-visible

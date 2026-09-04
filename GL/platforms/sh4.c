@@ -2087,6 +2087,56 @@ static void _glDeferredSubmitVisibleArrayQuads(
     }
 }
 
+/* Same final records as the ordinary array lane, but a planar quad's fourth
+   homogeneous corner is exactly A+C-B. Footprints are immutable through the
+   drain, so deriving D here removes one SH-4 transform per quad without moving
+   work back into the frame's submission phase. */
+static void _glDeferredSubmitVisiblePlanarArrayQuads(
+        const GLdcDeferredP3T2BGRA* descriptor,
+        int first, int count, bool vertex_fog) {
+    const float* p = descriptor->input.arrays.positions + first * 3;
+    const float* u = descriptor->input.arrays.texcoords + first * 2;
+    const uint32_t* c = (const uint32_t*)(
+        descriptor->input.arrays.colors + first * 4);
+    uintptr_t d = _glOutputReserveRecords((size_t)count);
+    const float offset_inv = descriptor->polygon_offset_inv;
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
+    for(int i = 0; i < count;
+        i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
+        if(i + 4 < count) {
+            PREFETCH(p + 12);
+            PREFETCH(u + 8);
+            PREFETCH(c + 4);
+        }
+        float axyz[3], bxyz[3], cxyz[3], aw, bw, cw;
+        TransformVertex2(p[0], p[1], p[2], axyz, &aw,
+                         p[3], p[4], p[5], bxyz, &bw);
+        TransformVertex(p[6], p[7], p[8], 1.0f, cxyz, &cw);
+        const float dxyz[3] = {
+            axyz[0] + cxyz[0] - bxyz[0],
+            axyz[1] + cxyz[1] - bxyz[1],
+            axyz[2] + cxyz[2] - bxyz[2]
+        };
+        const float dw = aw + cw - bw;
+
+        _glDeferredFillArrayRecordSQ(
+            u, c[0], d, GPU_CMD_VERTEX,
+            axyz[0], axyz[1], axyz[2], aw, offset_inv, vertex_fog);
+        _glDeferredFillArrayRecordSQ(
+            u + 2, c[1], d + 32, GPU_CMD_VERTEX,
+            bxyz[0], bxyz[1], bxyz[2], bw, offset_inv, vertex_fog);
+        _glDeferredFillArrayRecordSQ(
+            u + 6, c[3], d + 64, GPU_CMD_VERTEX,
+            dxyz[0], dxyz[1], dxyz[2], dw, offset_inv, vertex_fog);
+        _glDeferredFillArrayRecordSQ(
+            u + 4, c[2], d + 96, GPU_CMD_VERTEX_EOL,
+            cxyz[0], cxyz[1], cxyz[2], cw, offset_inv, vertex_fog);
+    }
+}
+
 static void _glDeferredSubmitNearArrayQuad(
         const GLdcDeferredP3T2BGRA* descriptor,
         int first, bool vertex_fog) {
@@ -2157,6 +2207,41 @@ static void _glSubmitDeferredArrayP3T2BGRA(
     }
 }
 
+static void _glSubmitDeferredPlanarArrayP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
+    const int count = (int)descriptor->count;
+    int run_first = 0;
+    int run_count = 0;
+
+    for(int first = 0; first < count; first += 4) {
+        const bool all_visible =
+            _glDeferredArrayQuadAllVisible(descriptor, first);
+        if(all_visible) {
+            if(run_count == 0) run_first = first;
+            run_count += 4;
+            if(run_count < GLDC_DEFERRED_CLASSIFY_RECORDS &&
+               first + 4 < count) {
+                continue;
+            }
+        }
+
+        if(run_count > 0) {
+            _glDeferredSubmitVisiblePlanarArrayQuads(
+                descriptor, run_first, run_count, vertex_fog);
+            run_count = 0;
+        }
+        if(!all_visible) {
+            /* The enqueue-side accounting charged three transforms per
+               planar quad. Near geometry deliberately takes the ordinary
+               four-corner clip path, so account for its one extra transform
+               here without pessimizing the common visible run. */
+            GLDC_STAT_INC(vertices_transformed);
+            _glDeferredSubmitNearArrayQuad(
+                descriptor, first, vertex_fog);
+        }
+    }
+}
+
 static void _glSubmitDeferredP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     UploadMatrix4x4(&descriptor->mvp);
@@ -2167,6 +2252,11 @@ static void _glSubmitDeferredP3T2BGRA(
     } else if(descriptor->primitive == GLDC_DEFERRED_P3T2BGRA_MULTISTRIPS) {
         gl_assert(!descriptor->arrays && !vertex_fog);
         _glSubmitDeferredMultiStripsP3T2BGRA(descriptor);
+    } else if(descriptor->primitive ==
+              GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS) {
+        gl_assert(descriptor->arrays);
+        GLDC_STAT_INC(deferred_array_descriptors_submitted);
+        _glSubmitDeferredPlanarArrayP3T2BGRA(descriptor, vertex_fog);
     } else if(descriptor->arrays) {
         GLDC_STAT_INC(deferred_array_descriptors_submitted);
         if(descriptor->constant_color) {
@@ -2280,7 +2370,9 @@ size_t SceneListRecordBudget(
                 gl_assert(valid);
                 if(!valid) return SIZE_MAX;
 
-                if(descriptor->primitive != GLDC_DEFERRED_P3T2BGRA_QUADS) {
+                if(descriptor->primitive != GLDC_DEFERRED_P3T2BGRA_QUADS &&
+                   descriptor->primitive !=
+                       GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS) {
                     budget = _glN4BudgetAdd(
                         budget, (size_t)descriptor->count);
                 } else {
@@ -2528,7 +2620,13 @@ void _glCompileCurrentSpriteHeader(PolyList* out, pvr_sprite_hdr_t* header) {
     pvr_sprite_compile(header, &sc);
 }
 
+/* Total time/growth accounting is shared by every direct TA-sprite lane. */
+uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
+
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
+#if GLDC_SWAP_TELEMETRY
+    const uint64_t spr_t0 = timer_us_gettime64();
+#endif
     PolyList* out = _glActivePolyList();
 #if GLDC_S3_SEGMENTED_OP
     if(out != _glOpaquePolyList()) _glS3DrainOP();   /* leaving OP: hot-drain it */
@@ -2580,6 +2678,12 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 
     uint32_t last_argb = 0;
     int have_hdr = 0;
+    const uint32_t base_blocks = aligned_vector_size(sv);
+    const uint32_t cap_before = aligned_vector_capacity(sv);
+    uint32_t* const batch = (uint32_t*) aligned_vector_extend(
+        sv, (uint32_t)quads * 3u);  /* worst case: header + 64-byte sprite */
+    if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
+    uint32_t used_blocks = 0;
 
     for(int q = 0; q < quads; q += 2) {
         const int n = (q + 1 < quads) ? 2 : 1;
@@ -2619,15 +2723,19 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
            header wants. */
         uint32_t argb = colors[(q + k) * 4];
         if(!have_hdr || argb != last_argb) {
-            uint32_t* h = (uint32_t*) aligned_vector_extend(sv, 1);
-            memcpy(h, &shdr, 32);
-            h[4] = argb;   /* sprite base color (header words 4/5) */
-            h[5] = 0;      /* oargb */
+            uint32_t* h = batch + used_blocks * 8u;
+            VERTEX_CACHE_ALLOC(h);
+            _glWriteSpriteHeader(h, &shdr, argb);
+            used_blocks++;
             last_argb = argb;
             have_hdr = 1;
         }
 
-        pvr_sprite_txr_t* s = (pvr_sprite_txr_t*) aligned_vector_extend(sv, 2);
+        pvr_sprite_txr_t* s =
+            (pvr_sprite_txr_t*) (batch + used_blocks * 8u);
+        used_blocks += 2;
+        VERTEX_CACHE_ALLOC(s);
+        VERTEX_CACHE_ALLOC((uint8_t*)s + 32);
         const float fa = _glFastInvert(w[k][0]);
         const float fb = _glFastInvert(w[k][1]);
         const float fc = _glFastInvert(w[k][2]);
@@ -2651,6 +2759,10 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
         s->cuv = 0x3F803F80;
         }
     }
+    aligned_vector_resize(sv, base_blocks + used_blocks);
+#if GLDC_SWAP_TELEMETRY
+    _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
+#endif
 }
 
 /* Homogeneous sprite family. The two object-space half axes are common to the
@@ -2663,8 +2775,6 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
    spike suspect). Read + reset through glKosTakeSwapTelemetry(). The delta
    between the game's submit brackets and this number is bind/state preamble
    outside the sprite path. */
-uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
-
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
