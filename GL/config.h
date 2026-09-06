@@ -3,6 +3,15 @@
 /* This figure is derived from the needs of Quake 1 */
 #define MAX_TEXTURE_COUNT 1088
 
+/* Last-completed-frame telemetry is separate from window aggregates so its
+   bounded per-swap bookkeeping can be A/B'd while aggregate timers stay on. */
+#ifndef GLDC_SWAP_FRAME_TELEMETRY
+#define GLDC_SWAP_FRAME_TELEMETRY 1
+#endif
+#if GLDC_SWAP_FRAME_TELEMETRY != 0 && GLDC_SWAP_FRAME_TELEMETRY != 1
+#error "GLDC_SWAP_FRAME_TELEMETRY must be 0 or 1"
+#endif
+
 /* Exact N2 SoA pair preparation experiment: share the polygon-offset guard
    and prepare both independent reciprocals before committing the first SQ.
    Set to 0 for the original per-vertex preparation schedule during hardware

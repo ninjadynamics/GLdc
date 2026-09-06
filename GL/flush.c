@@ -69,6 +69,7 @@ void APIENTRY glKosInitConfig(GLdcConfig* config) {
 }
 
 static bool _initialized = false;
+static void _glResetLastSwapTelemetry(void);
 
 void APIENTRY glKosInitEx(GLdcConfig* config) {
     if(_initialized) {
@@ -79,7 +80,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.06-0824-stats0-glt1-nbench0-n30-n4dma0-n2pair1-n2batch1-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.06-1641-stats0-glt1-slow1-nbench0-n30-n4dma0-n2pair1-n2batch1-zamv070]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -143,6 +144,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
     _glResetDeferredP3T2BGRA();
     _glInitPvrPackets();
 #endif
+    _glResetLastSwapTelemetry();
 }
 
 extern void _glInvalidateCapturedArrays(void);  /* draw.c: captures die with the cleared lists */
@@ -182,6 +184,7 @@ void APIENTRY glKosShutdown() {
 
     ShutdownGPU();
     _initialized = false;
+    _glResetLastSwapTelemetry();
 }
 
 void APIENTRY glKosInit() {
@@ -208,6 +211,59 @@ extern uint32_t _glSpriteHdrCount, _glSpriteRecCount;   /* sprite-lane split (sh
 extern uint32_t _glSpriteCallUs, _glSpriteGrowCount;    /* lamp-budget dissection (sh4.c) */
 static int _gt_frames;
 GLdcSwapWorkCounters _glSwapWork;
+#if GLDC_SWAP_FRAME_TELEMETRY
+static GLKosSwapFrameTelemetry _gt_last_swap, _gt_frame_base;
+static GLboolean _gt_last_swap_valid;
+
+#if GLDC_S3_SEGMENTED_OP
+#define GT_S3_TOTAL _glS3DrainUs
+#else
+#define GT_S3_TOTAL 0ull
+#endif
+/* One field map keeps frame deltas and aggregate-reset rebasing in sync.
+   These are existing totals; no additional timers or per-vertex hooks. */
+#define GT_FRAME_FIELDS(X) \
+    X(wait_us, _gt_wait_us) \
+    X(s3_us, GT_S3_TOTAL) \
+    X(op_us, _gt_op_us) \
+    X(pt_us, _gt_pt_us) \
+    X(tr_us, _gt_tr_us) \
+    X(finish_us, _gt_fin_us) \
+    X(op_vertices, _gt_op_verts) \
+    X(tr_vertices, _gt_tr_verts) \
+    X(sprite_headers, _glSpriteHdrCount) \
+    X(sprite_records, _glSpriteRecCount) \
+    X(sprite_call_us, _glSpriteCallUs) \
+    X(sprite_grows, _glSpriteGrowCount) \
+    X(ordinary_scan_vertices, _glSwapWork.ordinary_scan_vertices) \
+    X(ordinary_divided_records, _glSwapWork.ordinary_divided_records) \
+    X(deferred_direct_vertices, _glSwapWork.deferred_direct_vertices) \
+    X(deferred_near_quads, _glSwapWork.deferred_near_quads) \
+    X(generic_output_records, _glSwapWork.generic_output_records) \
+    X(context_builds, _glSwapWork.context_builds)
+
+static void _glPublishLastSwapTelemetry(void) {
+#define GT_PUBLISH(field, total) \
+    _gt_last_swap.field = (total) - _gt_frame_base.field; \
+    _gt_frame_base.field = (total);
+    GT_FRAME_FIELDS(GT_PUBLISH)
+#undef GT_PUBLISH
+    _gt_last_swap.struct_size = sizeof(_gt_last_swap);
+    _gt_last_swap.abi_version = GL_KOS_SWAP_FRAME_TELEMETRY_ABI_VERSION;
+    ++_gt_last_swap.sequence;
+    _gt_last_swap_valid = GL_TRUE;
+}
+
+static void _glRebaseLastSwapTelemetry(void) {
+    /* Take/reset can occur between draws, not just after swap. Subtract the
+       consumed totals from the unsigned baselines before zeroing them. Then
+       next_total - rebased_base retains unfinished-frame contributions, even
+       across repeated resets or natural unsigned counter wrap. */
+#define GT_REBASE(field, total) _gt_frame_base.field -= (total);
+    GT_FRAME_FIELDS(GT_REBASE)
+#undef GT_REBASE
+}
+#endif /* GLDC_SWAP_FRAME_TELEMETRY */
 #define GT_MARK(var, expr) do { \
         uint64_t _t0 = timer_us_gettime64(); \
         expr; \
@@ -216,6 +272,31 @@ GLdcSwapWorkCounters _glSwapWork;
 #else
 #define GT_MARK(var, expr) expr
 #endif
+
+static void _glResetLastSwapTelemetry(void) {
+#if GLDC_SWAP_TELEMETRY && GLDC_SWAP_FRAME_TELEMETRY
+    memset(&_gt_last_swap, 0, sizeof(_gt_last_swap));
+    _gt_last_swap_valid = GL_FALSE;
+#define GT_BASELINE(field, total) _gt_frame_base.field = (total);
+    GT_FRAME_FIELDS(GT_BASELINE)
+#undef GT_BASELINE
+#endif
+}
+
+GLboolean APIENTRY glKosGetLastSwapTelemetry(
+        GLKosSwapFrameTelemetry *out, GLuint out_size) {
+    if(!out || out_size < sizeof(*out)) return GL_FALSE;
+    memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+    out->abi_version = GL_KOS_SWAP_FRAME_TELEMETRY_ABI_VERSION;
+#if GLDC_SWAP_TELEMETRY && GLDC_SWAP_FRAME_TELEMETRY
+    if(!_gt_last_swap_valid) return GL_FALSE;
+    *out = _gt_last_swap;
+    return GL_TRUE;
+#else
+    return GL_FALSE;
+#endif
+}
 
 GLboolean APIENTRY glKosTakeSwapTelemetry(
         GLKosSwapTelemetry *out, GLuint out_size) {
@@ -245,6 +326,9 @@ GLboolean APIENTRY glKosTakeSwapTelemetry(
     out->deferred_near_quads = _glSwapWork.deferred_near_quads;
     out->generic_output_records = _glSwapWork.generic_output_records;
     out->context_builds = _glSwapWork.context_builds;
+#if GLDC_SWAP_FRAME_TELEMETRY
+    _glRebaseLastSwapTelemetry();
+#endif
     memset(&_glSwapWork, 0, sizeof(_glSwapWork));
 
     _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
@@ -599,6 +683,9 @@ void APIENTRY glKosSwapBuffers() {
 
     _glProcessDeferredFrees();   /* release texture VRAM queued >= 2 swaps ago */
     _glInvalidateCapturedArrays();
+#if GLDC_SWAP_TELEMETRY && GLDC_SWAP_FRAME_TELEMETRY
+    _glPublishLastSwapTelemetry();
+#endif
 }
 
 /* Render everything submitted so far into a VRAM texture instead of the screen,

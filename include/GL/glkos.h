@@ -466,6 +466,44 @@ typedef struct {
 GLAPI GLboolean APIENTRY glKosTakeSwapTelemetry(
     GLKosSwapTelemetry *out, GLuint out_size);
 
+/* Non-resetting snapshot of the last completed glKosSwapBuffers call. All
+ * values belong to that frame, including caller-side sprite construction
+ * since the previous swap. Timings retain the aggregate API's scope: list
+ * times are CPU submission, wait is SceneBegin, not a GPU/vsync-only timer.
+ * Call on the GL thread after swap; sequence advances independently of
+ * aggregate take/reset and lets a caller reject stale repeated reads.
+ * Returns GL_FALSE before the first swap after init/shutdown or when swap
+ * telemetry or GLDC_SWAP_FRAME_TELEMETRY is disabled; valid-sized outputs
+ * then contain zero values plus
+ * the size/version header. Existing aggregate ABI 2 is unchanged. */
+#define GL_KOS_SWAP_FRAME_TELEMETRY_ABI_VERSION 1u
+typedef struct {
+    GLuint struct_size;
+    GLuint abi_version;
+    GLuint sequence;
+    unsigned long long wait_us;
+    unsigned long long s3_us;
+    unsigned long long op_us;
+    unsigned long long pt_us;
+    unsigned long long tr_us;
+    unsigned long long finish_us;
+    unsigned long long op_vertices;
+    unsigned long long tr_vertices;
+    GLuint sprite_headers;
+    GLuint sprite_records;
+    GLuint sprite_call_us;
+    GLuint sprite_grows;
+    GLuint ordinary_scan_vertices;
+    GLuint ordinary_divided_records;
+    GLuint deferred_direct_vertices;
+    GLuint deferred_near_quads;
+    GLuint generic_output_records;
+    GLuint context_builds;
+} GLKosSwapFrameTelemetry;
+
+GLAPI GLboolean APIENTRY glKosGetLastSwapTelemetry(
+    GLKosSwapFrameTelemetry *out, GLuint out_size);
+
 
 /*
  * Dreamcast specific compressed + twiddled formats.
