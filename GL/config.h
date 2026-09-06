@@ -3,6 +3,24 @@
 /* This figure is derived from the needs of Quake 1 */
 #define MAX_TEXTURE_COUNT 1088
 
+/* Exact N2 SoA pair preparation experiment: share the polygon-offset guard
+   and prepare both independent reciprocals before committing the first SQ.
+   Set to 0 for the original per-vertex preparation schedule during hardware
+   A/B; transforms, record order, depth and fog expressions are unchanged. */
+#ifndef GLDC_N2_ARRAY_PAIR_PREP
+#define GLDC_N2_ARRAY_PAIR_PREP 1
+#endif
+
+/* Classify the existing bounded SoA run with one scalar loop. Neutral polygon
+   offset selects its equivalent single near-plane test once per run. Set to
+   0 for the previous per-quad classifier and scheduling during hardware A/B. */
+#ifndef GLDC_N2_BATCH_CLASSIFY
+#define GLDC_N2_BATCH_CLASSIFY 1
+#endif
+#if GLDC_N2_BATCH_CLASSIFY != 0 && GLDC_N2_BATCH_CLASSIFY != 1
+#error "GLDC_N2_BATCH_CLASSIFY must be 0 or 1"
+#endif
+
 /* S3 segmented hot drain (2026-07-23, HyperSolar perf ledger A3): when 1, the
    OPAQUE list's buffered records are drained to the TA incrementally at each
    OP -> non-OP draw transition — opportunistically (only when pvr_check_ready

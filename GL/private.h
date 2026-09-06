@@ -30,6 +30,24 @@ extern void* memcpy4 (void *dest, const void *src, size_t count);
 #define GL_NO_INLINE __attribute__((noinline))
 #define _GL_UNUSED(x) (void)(x)
 
+/* Compact telemetry deliberately avoids the full per-vertex stats surface.
+   Producers add at strip/run/output-group boundaries; take/reset owns the
+   synchronized window. Compile every update away in ordinary glt0 builds. */
+#if GLDC_SWAP_TELEMETRY
+typedef struct {
+    GLuint ordinary_scan_vertices;
+    GLuint ordinary_divided_records;
+    GLuint deferred_direct_vertices;
+    GLuint deferred_near_quads;
+    GLuint generic_output_records;
+    GLuint context_builds;
+} GLdcSwapWorkCounters;
+extern GLdcSwapWorkCounters _glSwapWork;
+#define GLDC_SWAP_WORK_ADD(field, n) (_glSwapWork.field += (GLuint)(n))
+#else
+#define GLDC_SWAP_WORK_ADD(field, n) ((void)0)
+#endif
+
 #define _PACK4(v) ((v * 0xF) / 0xFF)
 #define PACK_ARGB4444(a,r,g,b) (_PACK4(a) << 12) | (_PACK4(r) << 8) | (_PACK4(g) << 4) | (_PACK4(b))
 #define PACK_ARGB8888(a,r,g,b) ( ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF) )
@@ -591,6 +609,7 @@ GLboolean _glNearZClippingEnabled();
 GLboolean _glGPUStateIsDirty();
 void _glGPUStateMarkClean();
 void _glGPUStateMarkDirty();
+GLboolean _glHasPendingScene(void);
 const GLdcRadialFogState* _glRadialVertexFog(void);
 void _glSetRadialVertexFogColor(GLfloat r, GLfloat g, GLfloat b);
 

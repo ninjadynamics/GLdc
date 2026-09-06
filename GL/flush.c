@@ -79,7 +79,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.04-1036-stats0-glt0-nbench0-n30-n4dma0-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.06-0824-stats0-glt1-nbench0-n30-n4dma0-n2pair1-n2batch1-zamv070]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -207,6 +207,7 @@ static uint64_t _gt_op_verts, _gt_tr_verts;   /* walked records: op= scales with
 extern uint32_t _glSpriteHdrCount, _glSpriteRecCount;   /* sprite-lane split (sh4.c) */
 extern uint32_t _glSpriteCallUs, _glSpriteGrowCount;    /* lamp-budget dissection (sh4.c) */
 static int _gt_frames;
+GLdcSwapWorkCounters _glSwapWork;
 #define GT_MARK(var, expr) do { \
         uint64_t _t0 = timer_us_gettime64(); \
         expr; \
@@ -238,6 +239,13 @@ GLboolean APIENTRY glKosTakeSwapTelemetry(
     out->sprite_records = _glSpriteRecCount;
     out->sprite_call_us = _glSpriteCallUs;
     out->sprite_grows = _glSpriteGrowCount;
+    out->ordinary_scan_vertices = _glSwapWork.ordinary_scan_vertices;
+    out->ordinary_divided_records = _glSwapWork.ordinary_divided_records;
+    out->deferred_direct_vertices = _glSwapWork.deferred_direct_vertices;
+    out->deferred_near_quads = _glSwapWork.deferred_near_quads;
+    out->generic_output_records = _glSwapWork.generic_output_records;
+    out->context_builds = _glSwapWork.context_builds;
+    memset(&_glSwapWork, 0, sizeof(_glSwapWork));
 
     _gt_wait_us = _gt_op_us = _gt_pt_us = _gt_tr_us = _gt_fin_us = 0;
     _gt_op_verts = _gt_tr_verts = 0;
@@ -283,6 +291,16 @@ static GLboolean list_has_content(PolyList* l) {
     if(_glPvrPacketListCount(l) > 0) return GL_TRUE;
 #endif
     return GL_FALSE;
+}
+
+/* A completion wait cannot retire CPU headers or an unfinished segmented TA
+   scene. Used only by exceptional texture reclamation, never by the draw path. */
+GLboolean _glHasPendingScene(void) {
+#if GLDC_S3_SEGMENTED_OP
+    if(_glS3SceneOpen()) return GL_TRUE;
+#endif
+    return list_has_content(&OP_LIST) || list_has_content(&PT_LIST) ||
+           list_has_content(&TR_LIST);
 }
 
 #if GLDC_N4_VERTEX_DMA

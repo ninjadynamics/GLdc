@@ -10,7 +10,7 @@
 
 #include "GL/alloc/alloc.h"
 
-static inline int round_up(int n, int multiple)
+static inline uintptr_t round_up(uintptr_t n, uintptr_t multiple)
 {
     assert(multiple);
     return ((n + multiple - 1) / multiple) * multiple;
@@ -21,17 +21,20 @@ static inline int round_up(int n, int multiple)
 class AllocatorTests : public test::TestCase {
 public:
     uint8_t* pool = NULL;
+    void* pool_storage = NULL;
 
     std::vector<std::pair<void*, void*>> defrag_moves;
 
     void set_up() {
-        pool = (uint8_t*) memalign(2048, POOL_SIZE);
+        pool_storage = malloc(POOL_SIZE + 2047);
+        assert(pool_storage);
+        pool = (uint8_t*) round_up((uintptr_t)pool_storage, 2048);
         assert(((intptr_t) pool) % 2048 == 0);
     }
 
     void tear_down() {
         alloc_shutdown(pool);
-        free(pool);
+        free(pool_storage);
     }
 
     static void on_defrag(void* src, void* dst, void* user_data) {
@@ -139,6 +142,41 @@ public:
         ) / 2048;
 
         assert_equal(alloc_block_count(pool), expected_blocks);
+    }
+
+    void test_fallback_bitmap_conservation() {
+        /* Force exactly one free interval. Every starting offset and fitting
+         * count must allocate that interval, including cross-block fallback,
+         * without leaving its tail available or damaging occupied neighbors. */
+        const unsigned int subblocks = POOL_SIZE / 256;
+        for(unsigned int offset = 0; offset < 8; ++offset) {
+            for(unsigned int count = 1; count <= subblocks - offset; ++count) {
+                alloc_init(pool, POOL_SIZE);
+                void* cells[POOL_SIZE / 256];
+                for(unsigned int i = 0; i < subblocks; ++i) {
+                    cells[i] = alloc_malloc(pool, 256);
+                    assert_equal(cells[i], pool + i * 256);
+                }
+                for(unsigned int i = offset; i < offset + count; ++i)
+                    alloc_free(pool, cells[i]);
+
+                assert_equal(alloc_count_free(pool), size_t(count * 256));
+                void* interval = alloc_malloc(pool, count * 256);
+                assert_equal(interval, pool + offset * 256);
+                assert_equal(alloc_count_free(pool), size_t(0));
+                assert_is_null(alloc_malloc(pool, 256));
+
+                alloc_free(pool, interval);
+                assert_equal(alloc_count_free(pool), size_t(count * 256));
+                for(unsigned int i = 0; i < subblocks; ++i) {
+                    if(i < offset || i >= offset + count)
+                        alloc_free(pool, cells[i]);
+                }
+                assert_equal(alloc_count_free(pool), size_t(POOL_SIZE));
+                assert_equal(alloc_count_continuous(pool), size_t(POOL_SIZE));
+                alloc_shutdown(pool);
+            }
+        }
     }
 
     void test_complex_case() {

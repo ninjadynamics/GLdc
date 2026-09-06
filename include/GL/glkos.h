@@ -434,7 +434,7 @@ GLAPI void APIENTRY glKosPrintStats(void);
  * fprintf burst and lets renderer, city and PVR timings describe the same
  * frames. The symbol remains available when GLDC_SWAP_TELEMETRY is disabled;
  * in that build it returns GL_FALSE and a zeroed snapshot. */
-#define GL_KOS_SWAP_TELEMETRY_ABI_VERSION 1u
+#define GL_KOS_SWAP_TELEMETRY_ABI_VERSION 2u
 typedef struct {
     GLuint struct_size;
     GLuint abi_version;
@@ -451,6 +451,16 @@ typedef struct {
     GLuint sprite_records;
     GLuint sprite_call_us;
     GLuint sprite_grows;
+    /* ABI 2: window totals, independent of GLDC_ENABLE_STATS. Ordinary
+       divided records include headers; scan/direct counts are vertices.
+       Generic output includes clipping duplicates. Sprite totals above now
+       cover every builder: one header is 32 bytes, one sprite is 64 bytes. */
+    GLuint ordinary_scan_vertices;
+    GLuint ordinary_divided_records;
+    GLuint deferred_direct_vertices;
+    GLuint deferred_near_quads;
+    GLuint generic_output_records;
+    GLuint context_builds;
 } GLKosSwapTelemetry;
 
 GLAPI GLboolean APIENTRY glKosTakeSwapTelemetry(

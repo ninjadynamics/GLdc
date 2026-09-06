@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include "config.h"
 #include "platform.h"
@@ -89,17 +90,16 @@ static uint32_t twid_scatter(uint32_t v, uint32_t mask) {
 
 
 static void _glDrainDeferredFrees(void);   /* defined with the queue below */
+void _glResetDeferredFrees(void);
 
 static void* alloc_malloc_and_defrag(size_t size) {
     void* ret = alloc_malloc(ALLOC_BASE, size);
 
     if(!ret) {
-        /* Under pressure the deferred texture frees (the 2-swap aging queue that
-           protects in-flight PVR frames) are the FIRST thing to reclaim: a full
-           game reset unloads + reloads everything without a swap in between, so
-           the whole old texture set can still sit queued (2026-07-15 reset OOM).
-           Draining early risks only the old one-frame artifact - infinitely
-           better than failing the allocation. */
+        /* A swap-less reset may retain the entire old texture set. Reclaim it
+           only after submitted GPU work completes and no pending CPU/TA scene
+           can still name those addresses. Mid-frame pressure must not turn an
+           allocation failure into silent texture corruption. */
         _glDrainDeferredFrees();
         ret = alloc_malloc(ALLOC_BASE, size);
     }
@@ -682,8 +682,9 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
    the very next glTexImage recycle memory the IN-FLIGHT render is still sampling — one
    visibly corrupted frame on every stage/mode transition (it surfaced once HyperSolar's
    loads got fast: VQ .tex + romdisk). glFinish() is a stub here, so instead of stalling
-   we age the frees: the block is released only after GLDC_DEFER_FRAMES swaps, when every
-   list that could reference it has rendered. PVR palette slots ride the same queue
+   we age the frees: two swaps protect the previously submitted scene; deletion
+   with queued current-frame draws needs three (the next swap only starts that
+   scene). PVR palette slots ride the same queue
    (palette RAM is just as live to the in-flight frame); the CPU-side heap copies are
    freed immediately as before (the PVR never reads them). Changed-spec re-specs of a
    live id ride the queue too. NOTE: SAME-spec glTexImage2D / any TexSubImage / mip-chain
@@ -691,7 +692,7 @@ void APIENTRY glGenTextures(GLsizei n, GLuint *textures) {
    copy-on-write storage, out of scope until someone actually streams texture updates
    mid-frame. */
 #define GLDC_DEFERRED_FREES 96
-#define GLDC_DEFER_FRAMES   2
+#define GLDC_DEFER_FRAMES   3
 
 typedef struct {
     void*    data;          /* alloc_free(ALLOC_BASE, ..) payload, or NULL */
@@ -700,45 +701,47 @@ typedef struct {
     GLubyte  age;
 } DeferredFree;
 
-static DeferredFree DEFERRED_FREES[GLDC_DEFERRED_FREES];
+static DeferredFree DEFERRED_FREE_INLINE[GLDC_DEFERRED_FREES];
+static DeferredFree* DEFERRED_FREES = DEFERRED_FREE_INLINE;
+static int DEFERRED_FREE_CAPACITY = GLDC_DEFERRED_FREES;
 static int DEFERRED_FREE_COUNT = 0;
 
 static void _glDeferFree(void* data, GLshort bank, GLushort size) {
-    if(DEFERRED_FREE_COUNT >= GLDC_DEFERRED_FREES) {
-        /* Overflow: fall back to the old immediate free — worst case is the old
-           one-frame artifact for this texture, never a leak. Say so ONCE:
-           silent overflow would reintroduce the corruption the queue exists to
-           prevent with no way to observe the ceiling, but a full-reset bulk
-           unload overflows per-texture and a print per record would stall the
-           teardown for hundreds of ms over dcload (Audit #001). */
-        static GLboolean warned = GL_FALSE;
-        if(!warned) {
-            warned = GL_TRUE;
-            fprintf(stderr, "[GLDC] deferred-free queue overflow (cap %d): immediate free\n",
-                    GLDC_DEFERRED_FREES);
+    if(DEFERRED_FREE_COUNT >= DEFERRED_FREE_CAPACITY) {
+        _glDrainDeferredFrees();
+        if(DEFERRED_FREE_COUNT >= DEFERRED_FREE_CAPACITY) {
+            /* Pending draws forbid draining. Keep their ownership records;
+               the exceptional spill allocates CPU metadata, never live VRAM. */
+            gl_assert(DEFERRED_FREE_CAPACITY <= INT_MAX / 2);
+            size_t capacity = (size_t)DEFERRED_FREE_CAPACITY * 2;
+            gl_assert(capacity <= SIZE_MAX / sizeof(DeferredFree));
+            DeferredFree* grown = malloc(capacity * sizeof(DeferredFree));
+            gl_assert(grown && "Out of deferred texture ownership metadata");
+            memcpy(grown, DEFERRED_FREES,
+                   DEFERRED_FREE_COUNT * sizeof(DeferredFree));
+            if(DEFERRED_FREES != DEFERRED_FREE_INLINE) free(DEFERRED_FREES);
+            DEFERRED_FREES = grown;
+            DEFERRED_FREE_CAPACITY = (int)capacity;
         }
-        if(data) alloc_free(ALLOC_BASE, data);
-        if(bank > -1) _glReleasePaletteSlot(bank, size);
-        return;
     }
     DeferredFree* df = &DEFERRED_FREES[DEFERRED_FREE_COUNT++];
     df->data = data;
     df->palette_bank = bank;
     df->palette_size = size;
-    df->age = 0;
+    df->age = _glHasPendingScene() ? 0 : 1;
 }
 
-/* Called once per glKosSwapBuffers: everything queued two swaps ago is now
-   guaranteed un-referenced by any in-flight scene — release it. */
-/* Free EVERYTHING queued, regardless of age - the allocation-pressure escape
-   hatch used by alloc_malloc_and_defrag above. */
+/* Free everything only at a proven completion boundary. A cold caller with
+   unfinished draws cannot safely reclaim or move their referenced storage. */
 static void _glDrainDeferredFrees(void) {
+    if(!DEFERRED_FREE_COUNT || _glHasPendingScene()) return;
+    if(SceneTextureFence() < 0) return;
     for(int i = 0; i < DEFERRED_FREE_COUNT; ++i) {
         DeferredFree* df = &DEFERRED_FREES[i];
         if(df->data) alloc_free(ALLOC_BASE, df->data);
         if(df->palette_bank > -1) _glReleasePaletteSlot(df->palette_bank, df->palette_size);
     }
-    DEFERRED_FREE_COUNT = 0;
+    _glResetDeferredFrees();
 }
 
 void _glProcessDeferredFrees(void) {
@@ -753,12 +756,17 @@ void _glProcessDeferredFrees(void) {
             ++i;
         }
     }
+    if(!DEFERRED_FREE_COUNT && DEFERRED_FREES != DEFERRED_FREE_INLINE)
+        _glResetDeferredFrees();
 }
 
 /* Shutdown/re-init: the VRAM heap the records point into is being torn down
    whole — drop the records, free nothing. */
 void _glResetDeferredFrees(void) {
     DEFERRED_FREE_COUNT = 0;
+    if(DEFERRED_FREES != DEFERRED_FREE_INLINE) free(DEFERRED_FREES);
+    DEFERRED_FREES = DEFERRED_FREE_INLINE;
+    DEFERRED_FREE_CAPACITY = GLDC_DEFERRED_FREES;
 }
 
 void APIENTRY glDeleteTextures(GLsizei n, GLuint *textures) {
@@ -1581,14 +1589,13 @@ GLboolean _glIsMipmapComplete(const TextureObject* obj) {
         return GL_FALSE;
     }
 
-    GLsizei i = 0;
-    for(; i < (GLubyte) obj->mipmapCount; ++i) {
-        if((obj->mipmap & (1 << i)) == 0) {
-            return GL_FALSE;
-        }
-    }
-
-    return GL_TRUE;
+    /* The supplied-level field has exactly 16 bits. Test its required prefix
+       once instead of walking every level each time a polygon/sprite header
+       is compiled. Counts above 16 cannot be complete, and must not shift by
+       an unbounded caller-provided count. No cached state to invalidate. */
+    if(obj->mipmapCount > 16) return GL_FALSE;
+    const GLuint required = (1u << obj->mipmapCount) - 1u;
+    return (obj->mipmap & required) == required;
 }
 
 GLboolean _glAllocateSpaceForMipmaps(TextureObject* active) {
@@ -2690,7 +2697,18 @@ static void update_data_pointer(void* src, void* dst, void* data) {
 }
 
 GLAPI GLvoid APIENTRY glDefragmentTextureMemory_KOS(void) {
+    /* Retargeting TextureObjects cannot retarget already captured polygon
+       headers, descriptor headers, or an open segmented TA list. */
+    if(_glHasPendingScene()) {
+        _glKosThrowError(GL_INVALID_OPERATION, __func__);
+        return;
+    }
+    if(SceneTextureFence() < 0) {
+        _glKosThrowError(GL_INVALID_OPERATION, __func__);
+        return;
+    }
     alloc_run_defrag(ALLOC_BASE, update_data_pointer, 5, NULL);
+    _glGPUStateMarkDirty();
 }
 
 GLAPI void APIENTRY glGetTexImage(GLenum tex, GLint lod, GLenum format, GLenum type, GLvoid* img) {

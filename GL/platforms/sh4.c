@@ -1185,8 +1185,9 @@ static inline bool is_header(const Vertex* v) {
     return v->flags < (uint32_t)GPU_CMD_VERTEX;
 }
 
-/* The ORIGINAL per-triangle submission loop, kept bit-for-bit as the exact
-   fallback for strips that cross the near plane (or are malformed). The fast
+/* The exact per-triangle clipping/output fallback for strips that cross the
+   near plane (or are malformed). Visibility classification is reused between
+   neighboring triangles; clipping/divide/output arithmetic is unchanged. The fast
    wrapper below feeds it single header-less strip spans, so the minimum
    renderable span here is 3 vertices, not header+3. */
 static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
@@ -1208,6 +1209,18 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
     }
 #endif
 
+#if GLDC_SWAP_TELEMETRY
+    /* Count in a local across SQ memory barriers, then publish once. A global
+       update per clipped output group would perturb the work being measured. */
+    GLuint output_records = 0;
+#define PUSH_GENERIC_RECORDS(v, count) do { \
+    output_records += (GLuint)(count); \
+    _glPushHeaderOrVertex((v), (count)); \
+} while(0)
+#else
+#define PUSH_GENERIC_RECORDS(v, count) _glPushHeaderOrVertex((v), (count))
+#endif
+
     submit_vertex_fog = vertex_fog;
 
     /* This is a bit cumbersome - in some cases (particularly case 2)
@@ -1227,9 +1240,10 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
     do { queued_vertex = &qv; memcpy_vertex(queued_vertex, (v)); } while(0)
 
 #define SUBMIT_QUEUED_VERTEX(sflags) \
-    do { if(queued_vertex) { queued_vertex->flags = (sflags); _glPushHeaderOrVertex(queued_vertex, 1); queued_vertex = NULL; } } while(0)
+    do { if(queued_vertex) { queued_vertex->flags = (sflags); PUSH_GENERIC_RECORDS(queued_vertex, 1); queued_vertex = NULL; } } while(0)
 
     int visible_mask = 0;
+    bool first_triangle = true;
 
     /* Hoisted out of the loop: stable address across iterations (a queued
      * pointer into scratch must remain valid into the next iter's submit),
@@ -1243,8 +1257,9 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
         if(likely(v0 + 2 < vend)) PREFETCH(v0 + 2);
 
         if(unlikely(is_header(v0))) {
-            _glPushHeaderOrVertex(v0, 1);
+            PUSH_GENERIC_RECORDS(v0, 1);
             visible_mask = 0;
+            first_triangle = true;
             GLDC_STAT_INC(scene_headers_seen);
             continue;
         }
@@ -1270,7 +1285,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
 
                 _glPerspectiveDivideVertex(v0, 2);
                 v1->flags = GPU_CMD_VERTEX_EOL;
-                _glPushHeaderOrVertex(v0, 2);
+                PUSH_GENERIC_RECORDS(v0, 2);
             } else {
                 // If the previous triangle wasn't all visible, and we
                 // queued a vertex - we force it to be EOL and submit
@@ -1280,14 +1295,22 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
             i++;
             v0++;
             visible_mask = 0;
+            first_triangle = true;
             continue;
         }
 
-        visible_mask = (
-            (v0->xyz[2] >= -v0->w) << 0 |
-            (v1->xyz[2] >= -v1->w) << 1 |
-            (v2->xyz[2] >= -v2->w) << 2
-        );
+        /* Adjacent strip triangles share two still-unmodified input vertices.
+           The cases below divide only v0 in place; v1/v2 use scratch copies.
+           Reuse their classifications instead of loading/comparing Z/W three
+           times per triangle. Headers and strip tails reset the rolling mask. */
+        if(first_triangle) {
+            visible_mask = (v0->xyz[2] >= -v0->w) |
+                           ((v1->xyz[2] >= -v1->w) << 1);
+            first_triangle = false;
+        } else {
+            visible_mask >>= 1;
+        }
+        visible_mask |= (v2->xyz[2] >= -v2->w) << 2;
 
         /* Phase 0: Clipping instrumentation */
         GLDC_STAT_INC(clip_triangles_tested);
@@ -1334,10 +1357,10 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                PUSH_GENERIC_RECORDS(v0, 1);
 
                 _glPerspectiveDivideVertex(a, 2);
-                _glPushHeaderOrVertex(a, 2);
+                PUSH_GENERIC_RECORDS(a, 2);
 
                 QUEUE_VERTEX(b);
             break;
@@ -1351,9 +1374,9 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = v2->flags;
 
                 _glPerspectiveDivideVertex(a, 3);
-                _glPushHeaderOrVertex(a, 1);
+                PUSH_GENERIC_RECORDS(a, 1);
 
-                _glPushHeaderOrVertex(c, 1);
+                PUSH_GENERIC_RECORDS(c, 1);
 
                 QUEUE_VERTEX(b);
             break;
@@ -1367,7 +1390,7 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(a, 3);
-                _glPushHeaderOrVertex(a, 2);
+                PUSH_GENERIC_RECORDS(a, 2);
 
                 QUEUE_VERTEX(c);
             break;
@@ -1378,16 +1401,16 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                PUSH_GENERIC_RECORDS(v0, 1);
 
                 _glClipEdge(v1, v2, a);
                 a->flags = v2->flags;
 
                 _glPerspectiveDivideVertex(a, 3);
 
-                _glPushHeaderOrVertex(c, 1);
+                PUSH_GENERIC_RECORDS(c, 1);
 
-                _glPushHeaderOrVertex(b, 2);
+                PUSH_GENERIC_RECORDS(b, 2);
 
                 QUEUE_VERTEX(a);
             break;
@@ -1402,11 +1425,11 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(a, 4);
-                _glPushHeaderOrVertex(a, 1);
+                PUSH_GENERIC_RECORDS(a, 1);
 
-                _glPushHeaderOrVertex(c, 1);
+                PUSH_GENERIC_RECORDS(c, 1);
 
-                _glPushHeaderOrVertex(b, 2);
+                PUSH_GENERIC_RECORDS(b, 2);
 
                 QUEUE_VERTEX(d);
             break;
@@ -1421,14 +1444,14 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 b->flags = GPU_CMD_VERTEX;
 
                 _glPerspectiveDivideVertex(v0, 1);
-                _glPushHeaderOrVertex(v0, 1);
+                PUSH_GENERIC_RECORDS(v0, 1);
 
                 _glPerspectiveDivideVertex(a, 3);
-                _glPushHeaderOrVertex(a, 1);
+                PUSH_GENERIC_RECORDS(a, 1);
 
-                _glPushHeaderOrVertex(c, 1);
+                PUSH_GENERIC_RECORDS(c, 1);
 
-                _glPushHeaderOrVertex(b, 1);
+                PUSH_GENERIC_RECORDS(b, 1);
 
                 QUEUE_VERTEX(c);
             break;
@@ -1440,6 +1463,10 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
     SUBMIT_QUEUED_VERTEX(GPU_CMD_VERTEX_EOL);
     submit_vertex_fog = false;
 
+    GLDC_SWAP_WORK_ADD(generic_output_records, output_records);
+#undef PUSH_GENERIC_RECORDS
+#undef SUBMIT_QUEUED_VERTEX
+#undef QUEUE_VERTEX
     _glOutputWait();
 }
 
@@ -1656,6 +1683,7 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
     /* One input record becomes exactly one TA record on this all-visible
        path, so the run length is also its actual output count. */
     GLDC_STAT_ADD(scene_divided_records, (GLuint)n);
+    GLDC_SWAP_WORK_ADD(ordinary_divided_records, n);
     uintptr_t d = _glOutputReserveRecords((size_t)n);
     bool vertex_fog = initial_vertex_fog;
     for(; n--; ++v, d += 32) {
@@ -1791,6 +1819,7 @@ static void _glDeferredSubmitVisibleQuads(
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
     GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
     for(int i = 0; i < count; i += 4, d += 4 * 32) {
         PREFETCH(in + i + 2);
         _glDeferredPackPairSQ(in + i, in + i + 1, d, d + 32,
@@ -1830,6 +1859,7 @@ static void _glDeferredSubmitNearQuad(
     }
 
     GLDC_STAT_INC(deferred_near_quads);
+    GLDC_SWAP_WORK_ADD(deferred_near_quads, 1u);
     SceneListSubmitGeneric(quad, 4, vertex_fog);
 }
 
@@ -1883,6 +1913,7 @@ static void _glSubmitDeferredTrianglesP3T2BGRA(
     GLDC_STAT_INC(deferred_triangle_descriptors_submitted);
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
     GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
     GLDC_STAT_ADD(deferred_triangle_direct_vertices, (GLuint)count);
 
     for(; count - i >= 6; i += 6, d += 6 * 32) {
@@ -1924,6 +1955,7 @@ static void _glDeferredSubmitVisibleStrip(
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
     GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
     GLDC_STAT_ADD(deferred_multistrip_direct_vertices, (GLuint)count);
 
     for(; count - i >= 8; i += 6, d += 6 * 32) {
@@ -2002,17 +2034,57 @@ GL_FORCE_INLINE bool _glDeferredArrayQuadAllVisible(
     return true;
 }
 
-GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
-        const float* uv, uint32_t bgra, uintptr_t destination,
-        uint32_t flags, float x, float y, float z, float w,
-        float offset_inv, bool vertex_fog) {
-    if(unlikely(w != 1.0f && offset_inv != 1.0f)) {
-        x *= offset_inv;
-        y *= offset_inv;
-        w *= offset_inv;
+#if GLDC_N2_BATCH_CLASSIFY
+/* Return only complete visible quads from the existing bounded classify-ahead
+   window. Keeping this scalar scan out of the SQ writer's large dispatcher
+   hoists matrix/offset setup across the run without a transformed-vertex cache.
+   It must not touch XMTRX: the following writer uses the already loaded matrix.
+   The first failing vertex ends the scan; its whole quad takes the old clipper. */
+static GL_NO_INLINE int _glDeferredArrayVisiblePrefix(
+        const GLdcDeferredP3T2BGRA* descriptor, int first, int count) {
+    const float* const m = descriptor->mvp;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    const float* p = descriptor->input.arrays.positions + first * 3;
+
+    /* At identity offset both original near tests are identical. Dispatch
+       once per window, retaining the original scalar Z/W and margin order. */
+    if(offset_inv == 1.0f) {
+        for(int i = 0; i < count; ++i, p += 3) {
+            const float x = p[0];
+            const float y = p[1];
+            const float z0 = p[2];
+            const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
+            const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
+            const float near_plain = z + w;
+            const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
+                                (1.0f + __builtin_fabsf(1.0f)) + 1.0f;
+            const float margin = 32.0f * FLT_EPSILON * scale;
+            if(!(near_plain > margin)) return i & ~3;
+        }
+        return count;
     }
 
-    const float f = _glFastInvert(w);
+    for(int i = 0; i < count; ++i, p += 3) {
+        const float x = p[0];
+        const float y = p[1];
+        const float z0 = p[2];
+        const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
+        const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
+        const float near_plain = z + w;
+        const float near_offset = z + w * offset_inv;
+        const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
+                            (1.0f + __builtin_fabsf(offset_inv)) + 1.0f;
+        const float margin = 32.0f * FLT_EPSILON * scale;
+        if(!(near_plain > margin) || !(near_offset > margin)) return i & ~3;
+    }
+    return count;
+}
+#endif
+
+GL_FORCE_INLINE void _glDeferredWriteArrayRecordSQ(
+        const float* uv, uint32_t bgra, uintptr_t destination,
+        uint32_t flags, float x, float y, float z, float w,
+        float f, bool vertex_fog) {
     uint32_t* const q = (uint32_t*)destination;
     _glOutputAllocateRecord(destination);
     q[0] = flags;
@@ -2032,6 +2104,21 @@ GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
     _glOutputCommitRecord(destination);
 }
 
+GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
+        const float* uv, uint32_t bgra, uintptr_t destination,
+        uint32_t flags, float x, float y, float z, float w,
+        float offset_inv, bool vertex_fog) {
+    if(unlikely(w != 1.0f && offset_inv != 1.0f)) {
+        x *= offset_inv;
+        y *= offset_inv;
+        w *= offset_inv;
+    }
+
+    const float f = _glFastInvert(w);
+    _glDeferredWriteArrayRecordSQ(uv, bgra, destination, flags,
+                                    x, y, z, w, f, vertex_fog);
+}
+
 GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
         const float* pa, const float* pb,
         const float* ua, const float* ub,
@@ -2041,12 +2128,31 @@ GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
     float axyz[3], bxyz[3], aw, bw;
     TransformVertex2(pa[0], pa[1], pa[2], axyz, &aw,
                      pb[0], pb[1], pb[2], bxyz, &bw);
+#if GLDC_N2_ARRAY_PAIR_PREP
+    /* Offset policy is shared by the pair; keep each original W==1
+       exception when it is active. Prepare both independent reciprocals
+       before the first SQ commit so their latency can overlap. Every
+       vertex retains the original multiply/FSRRA/depth operation order. */
+    if(unlikely(offset_inv != 1.0f)) {
+        if(aw != 1.0f) {
+            axyz[0] *= offset_inv; axyz[1] *= offset_inv; aw *= offset_inv;
+        }
+        if(bw != 1.0f) {
+            bxyz[0] *= offset_inv; bxyz[1] *= offset_inv; bw *= offset_inv;
+        }
+    }
+    const float af = _glFastInvert(aw);
+    const float bf = _glFastInvert(bw);
+    _glDeferredWriteArrayRecordSQ(ua, ca, da, fa,
+                                  axyz[0], axyz[1], axyz[2], aw, af, vertex_fog);
+    _glDeferredWriteArrayRecordSQ(ub, cb, db, fb,
+                                  bxyz[0], bxyz[1], bxyz[2], bw, bf, vertex_fog);
+#else
     _glDeferredFillArrayRecordSQ(ua, ca, da, fa,
-                                 axyz[0], axyz[1], axyz[2], aw,
-                                 offset_inv, vertex_fog);
+        axyz[0], axyz[1], axyz[2], aw, offset_inv, vertex_fog);
     _glDeferredFillArrayRecordSQ(ub, cb, db, fb,
-                                 bxyz[0], bxyz[1], bxyz[2], bw,
-                                 offset_inv, vertex_fog);
+        bxyz[0], bxyz[1], bxyz[2], bw, offset_inv, vertex_fog);
+#endif
 }
 
 static void _glDeferredSubmitVisibleArrayQuads(
@@ -2058,11 +2164,17 @@ static void _glDeferredSubmitVisibleArrayQuads(
         descriptor->input.arrays.colors + first * 4);
     uintptr_t d = _glOutputReserveRecords((size_t)count);
     const float offset_inv = descriptor->polygon_offset_inv;
+    /* The descriptor is immutable throughout this drain. Keep these fields
+       in locals: SQ commit's memory barrier otherwise forces descriptor
+       reloads on each quad even though the hardware cannot modify them. */
+    const GLboolean constant_color = descriptor->constant_color;
+    const GLuint constant_bgra = descriptor->constant_bgra;
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
     GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
     GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
-    if(descriptor->constant_color)
+    if(constant_color)
         GLDC_STAT_ADD(deferred_color_array_direct_vertices, (GLuint)count);
     for(int i = 0; i < count;
         i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
@@ -2072,12 +2184,12 @@ static void _glDeferredSubmitVisibleArrayQuads(
         if(i + 4 < count) {
             PREFETCH(p + 12);
             PREFETCH(u + 8);
-            if(!descriptor->constant_color) PREFETCH(c + 4);
+            if(!constant_color) PREFETCH(c + 4);
         }
-        const uint32_t c0 = descriptor->constant_color ? descriptor->constant_bgra : c[0];
-        const uint32_t c1 = descriptor->constant_color ? descriptor->constant_bgra : c[1];
-        const uint32_t c2 = descriptor->constant_color ? descriptor->constant_bgra : c[2];
-        const uint32_t c3 = descriptor->constant_color ? descriptor->constant_bgra : c[3];
+        const uint32_t c0 = constant_color ? constant_bgra : c[0];
+        const uint32_t c1 = constant_color ? constant_bgra : c[1];
+        const uint32_t c2 = constant_color ? constant_bgra : c[2];
+        const uint32_t c3 = constant_color ? constant_bgra : c[3];
         _glDeferredPackArrayPairSQ(
             p, p + 3, u, u + 2, c0, c1, d, d + 32,
             GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv, vertex_fog);
@@ -2103,6 +2215,7 @@ static void _glDeferredSubmitVisiblePlanarArrayQuads(
 
     GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
     GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
     GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
     for(int i = 0; i < count;
         i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
@@ -2171,6 +2284,7 @@ static void _glDeferredSubmitNearArrayQuad(
     }
 
     GLDC_STAT_INC(deferred_near_quads);
+    GLDC_SWAP_WORK_ADD(deferred_near_quads, 1u);
     GLDC_STAT_INC(deferred_array_near_quads);
     if(descriptor->constant_color)
         GLDC_STAT_INC(deferred_color_array_near_quads);
@@ -2180,6 +2294,24 @@ static void _glDeferredSubmitNearArrayQuad(
 static void _glSubmitDeferredArrayP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     const int count = (int)descriptor->count;
+#if GLDC_N2_BATCH_CLASSIFY
+    for(int first = 0; first < count;) {
+        int limit = count - first;
+        if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
+            limit = GLDC_DEFERRED_CLASSIFY_RECORDS;
+        const int visible =
+            _glDeferredArrayVisiblePrefix(descriptor, first, limit);
+        if(visible > 0) {
+            _glDeferredSubmitVisibleArrayQuads(
+                descriptor, first, visible, vertex_fog);
+            first += visible;
+        }
+        if(visible < limit) {
+            _glDeferredSubmitNearArrayQuad(descriptor, first, vertex_fog);
+            first += 4;
+        }
+    }
+#else
     int run_first = 0;
     int run_count = 0;
 
@@ -2205,11 +2337,32 @@ static void _glSubmitDeferredArrayP3T2BGRA(
                 descriptor, first, vertex_fog);
         }
     }
+#endif
 }
 
 static void _glSubmitDeferredPlanarArrayP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     const int count = (int)descriptor->count;
+#if GLDC_N2_BATCH_CLASSIFY
+    for(int first = 0; first < count;) {
+        int limit = count - first;
+        if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
+            limit = GLDC_DEFERRED_CLASSIFY_RECORDS;
+        const int visible =
+            _glDeferredArrayVisiblePrefix(descriptor, first, limit);
+        if(visible > 0) {
+            _glDeferredSubmitVisiblePlanarArrayQuads(
+                descriptor, first, visible, vertex_fog);
+            first += visible;
+        }
+        if(visible < limit) {
+            /* Near planar quads retain all four original transforms. */
+            GLDC_STAT_INC(vertices_transformed);
+            _glDeferredSubmitNearArrayQuad(descriptor, first, vertex_fog);
+            first += 4;
+        }
+    }
+#else
     int run_first = 0;
     int run_count = 0;
 
@@ -2240,6 +2393,7 @@ static void _glSubmitDeferredPlanarArrayP3T2BGRA(
                 descriptor, first, vertex_fog);
         }
     }
+#endif
 }
 
 static void _glSubmitDeferredP3T2BGRA(
@@ -2518,6 +2672,8 @@ void SceneListSubmit(Vertex* vertices, int n) {
             --strip_end;              /* last real vertex of the span */
         }
 
+        GLDC_SWAP_WORK_ADD(ordinary_scan_vertices, strip_end - v + 1);
+
         if(all_visible) {
             /* Divide is FUSED into the run flush (_glDivideSubmitRun) — the
                strip stays in clip space until submitted. */
@@ -2621,7 +2777,10 @@ void _glCompileCurrentSpriteHeader(PolyList* out, pvr_sprite_hdr_t* header) {
 }
 
 /* Total time/growth accounting is shared by every direct TA-sprite lane. */
+#if GLDC_SWAP_TELEMETRY
 uint32_t _glSpriteCallUs = 0, _glSpriteGrowCount = 0;
+uint32_t _glSpriteHdrCount = 0, _glSpriteRecCount = 0;
+#endif
 
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 #if GLDC_SWAP_TELEMETRY
@@ -2679,11 +2838,18 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     uint32_t last_argb = 0;
     int have_hdr = 0;
     const uint32_t base_blocks = aligned_vector_size(sv);
+#if GLDC_SWAP_TELEMETRY
     const uint32_t cap_before = aligned_vector_capacity(sv);
+#endif
     uint32_t* const batch = (uint32_t*) aligned_vector_extend(
         sv, (uint32_t)quads * 3u);  /* worst case: header + 64-byte sprite */
+#if GLDC_SWAP_TELEMETRY
     if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
+#endif
     uint32_t used_blocks = 0;
+#if GLDC_SWAP_TELEMETRY
+    uint32_t hdrs = 0;
+#endif
 
     for(int q = 0; q < quads; q += 2) {
         const int n = (q + 1 < quads) ? 2 : 1;
@@ -2727,6 +2893,9 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
             VERTEX_CACHE_ALLOC(h);
             _glWriteSpriteHeader(h, &shdr, argb);
             used_blocks++;
+#if GLDC_SWAP_TELEMETRY
+            hdrs++;
+#endif
             last_argb = argb;
             have_hdr = 1;
         }
@@ -2761,6 +2930,8 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     }
     aligned_vector_resize(sv, base_blocks + used_blocks);
 #if GLDC_SWAP_TELEMETRY
+    _glSpriteHdrCount += hdrs;
+    _glSpriteRecCount += (used_blocks - hdrs) >> 1;
     _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
 #endif
 }
@@ -2807,11 +2978,18 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     uint32_t last_argb = 0;
     int have_hdr = 0;
     const uint32_t base_blocks = aligned_vector_size(sv);
+#if GLDC_SWAP_TELEMETRY
     const uint32_t cap_before = aligned_vector_capacity(sv);
+#endif
     uint32_t* const batch = (uint32_t*) aligned_vector_extend(
         sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+#if GLDC_SWAP_TELEMETRY
     if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
+#endif
     uint32_t used_blocks = 0;
+#if GLDC_SWAP_TELEMETRY
+    uint32_t hdrs = 0;
+#endif
     for(int q = 0; q < sprites; q += 2) {
         const int n = (q + 1 < sprites) ? 2 : 1;
         float tc[2][3], cw[2];
@@ -2846,6 +3024,9 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                 VERTEX_CACHE_ALLOC(h);
                 _glWriteSpriteHeader(h, &shdr, argb);
                 used_blocks++;
+#if GLDC_SWAP_TELEMETRY
+            hdrs++;
+#endif
                 last_argb = argb;
                 have_hdr = 1;
             }
@@ -2889,6 +3070,8 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
     }
     aligned_vector_resize(sv, base_blocks + used_blocks);
 #if GLDC_SWAP_TELEMETRY
+    _glSpriteHdrCount += hdrs;
+    _glSpriteRecCount += (used_blocks - hdrs) >> 1;
     _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
 #endif
 }
@@ -2899,11 +3082,7 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
    transformed axis Z/W extents remain in the conservative near test so tiny
    floating-point camera-basis residue can only drop a boundary sprite, never
    leak a corner through the near plane. */
-/* H1 (HyperSolar PERFAUDIT): headers-vs-records truth for the sprite lanes.
-   If hdr ~= rec the caller's colors are unsorted and bucket-driven emission
-   is the win; if hdr << rec the cost is the 64-byte record writes and color
-   sorting would buy nothing. Read through flush.c's telemetry snapshot. */
-uint32_t _glSpriteHdrCount = 0, _glSpriteRecCount = 0;
+
 
 void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                              const float* half_sizes, const float* uv_rects,
@@ -2977,13 +3156,19 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     }
 
     const uint32_t base_blocks = aligned_vector_size(sv);
+#if GLDC_SWAP_TELEMETRY
     const uint32_t cap_before = aligned_vector_capacity(sv);
+#endif
     uint32_t* const batch = (uint32_t*) aligned_vector_extend(
         sv, (uint32_t)sprites * 3u);  /* worst case: header + 64-byte sprite */
+#if GLDC_SWAP_TELEMETRY
     if(aligned_vector_capacity(sv) != cap_before) _glSpriteGrowCount++;
+#endif
     uint32_t used_blocks = 0;
     uint32_t last_argb = 0;
+#if GLDC_SWAP_TELEMETRY
     uint32_t hdrs = 0;
+#endif
     int have_hdr = 0;
 
     for(int q = 0; q < sprites; q += 2) {
@@ -3010,7 +3195,9 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
                 VERTEX_CACHE_ALLOC(h);
                 _glWriteSpriteHeader(h, &shdr, argb);
                 used_blocks++;
+#if GLDC_SWAP_TELEMETRY
                 hdrs++;
+#endif
                 last_argb = argb;
                 have_hdr = 1;
             }
@@ -3065,9 +3252,9 @@ void SceneSpriteCentersPlane(const float* centers, const uint32_t* colors,
     }
 
     aligned_vector_resize(sv, base_blocks + used_blocks);
+#if GLDC_SWAP_TELEMETRY
     _glSpriteHdrCount += hdrs;
     _glSpriteRecCount += (used_blocks - hdrs) >> 1;
-#if GLDC_SWAP_TELEMETRY
     _glSpriteCallUs += (uint32_t)(timer_us_gettime64() - spr_t0);
 #endif
 }
@@ -3255,6 +3442,15 @@ int SceneFinishChecked(void) {
 
 void SceneFinish() {
     (void)SceneFinishChecked();
+}
+
+int SceneTextureFence(void) {
+    /* Caller has excluded an open/unfinished scene. Waiting only for render
+       done misses a closed TA scene that has not started rendering yet.
+       KOS clears ta_busy AFTER starting that render, then clears render_busy
+       at render completion. Both waits propagate their timeout failures. */
+    if(pvr_wait_ready() < 0) return -1;
+    return pvr_wait_render_done();
 }
 
 const VideoMode* GetVideoMode() {

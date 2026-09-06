@@ -285,6 +285,7 @@ void SceneListSubmitFinal(const void* records, int record_count);
 void SceneListFinish();
 int SceneListFinishChecked(void);
 int SceneFinishChecked(void);
+int SceneTextureFence(void);
 
 enum SceneFinalBuildResult {
     SCENE_FINAL_BUILD_OK = 0,

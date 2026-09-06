@@ -453,6 +453,7 @@ int SceneBeginChecked(void) { SceneBegin(); return 0; }
 int SceneListBeginChecked(GPUList list) { SceneListBegin(list); return 0; }
 int SceneListFinishChecked(void) { SceneListFinish(); return 0; }
 int SceneFinishChecked(void) { SceneFinish(); return 0; }
+int SceneTextureFence(void) { return 0; } /* Software submission is synchronous. */
 
 int SceneBuildFinalP3T2BGRA(
         unsigned int mode, const void* vertices, int count, Vertex* output) {

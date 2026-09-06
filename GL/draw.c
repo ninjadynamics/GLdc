@@ -1242,6 +1242,7 @@ GL_FORCE_INLINE int _calc_pvr_depth_test() {
    196-byte bulk copy to EVERY header emitted (2026-07-16 audit, confirmed in
    the ELF as an out-of-line __movmem call). */
 void _glBuildPolyContext(PolyContext* out_ctx, PolyList* activePolyList, GLshort textureUnit) {
+    GLDC_SWAP_WORK_ADD(context_builds, 1u);
 #define ctx (*out_ctx)
     memset(&ctx, 0, sizeof(PolyContext));
 

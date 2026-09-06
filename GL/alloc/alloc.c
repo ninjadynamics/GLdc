@@ -306,6 +306,13 @@ static void* alloc_malloc_internal(void* pool, size_t size, bool for_defrag) {
     void* ret = alloc_next_available_ex(pool, size, &start_subblock, &required_subblocks);
 
     if(ret) {
+        /* Reserve CPU metadata before committing VRAM bits or the byte ledger.
+         * Defrag reuses the existing entry and must not allocate a new one. */
+        struct AllocEntry* new_entry = NULL;
+        if(!for_defrag) {
+            new_entry = (struct AllocEntry*) malloc(sizeof(struct AllocEntry));
+            if(!new_entry) return NULL;
+        }
         const size_t allocated_bytes = required_subblocks * 256;
         size_t block;
         uint8_t offset;
@@ -317,7 +324,7 @@ static void* alloc_malloc_internal(void* pool, size_t size, bool for_defrag) {
         DBG_MSG("Alloc: size: %d, rs: %d, sb: %d, b: %d, off: %d\n", size, required_subblocks, start_subblock, start_subblock / 8, start_subblock % 8);
 
         /* Toggle any bits for the first block */
-        int c = (required_subblocks < 8) ? required_subblocks : 8;
+        int c = (required_subblocks < (size_t)(8 - offset)) ? required_subblocks : (size_t)(8 - offset);
         for(int i = 0; i < c; ++i) {
             mask |= (1 << (7 - (offset + i)));
             required_subblocks--;
@@ -353,7 +360,6 @@ static void* alloc_malloc_internal(void* pool, size_t size, bool for_defrag) {
         /* Insert allocations in the list by size descending so that when we
          * defrag we can move the larger blocks before the smaller ones without
          * much effort */
-        struct AllocEntry* new_entry = (struct AllocEntry*) malloc(sizeof(struct AllocEntry));
         new_entry->pointer = ret;
         new_entry->size = size;
         new_entry->next = NULL;
@@ -408,7 +414,7 @@ static void alloc_release_blocks(struct AllocEntry* it) {
     DBG_MSG("Free: size: %d, us: %d, sb: %d, off: %d\n", it->size, used_subblocks, block, offset);
 
     /* Wipe out any leading subblocks */
-    int c = (used_subblocks < 8) ? used_subblocks : 8;
+    int c = (used_subblocks < (size_t)(8 - offset)) ? used_subblocks : (size_t)(8 - offset);
     for(int i = 0; i < c; ++i) {
         mask |= (1 << (7 - (offset + i)));
         used_subblocks--;

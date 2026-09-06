@@ -9,6 +9,8 @@ option(BUILD_TESTS   "Build test executables" ON)
 option(USE_SH4ZAM    "Use SH4ZAM optimized Dreamcast math" OFF)
 option(GLDC_ENABLE_STATS "Enable GLdc performance counters" OFF)
 option(GLDC_NATIVE_BENCH "Enable isolated N0/N1 native-PVR benchmark ABI" OFF)
+option(GLDC_N2_ARRAY_PAIR_PREP "Prepare exact N2 SoA offset and reciprocals per pair" ON)
+option(GLDC_N2_BATCH_CLASSIFY "Classify bounded N2 SoA runs in one scalar loop" ON)
 
 # set the default backend
 if(PLATFORM_DREAMCAST)
@@ -141,6 +143,9 @@ else()
 endif()
 
 add_library(GL STATIC ${SOURCES})
+
+target_compile_definitions(GL PRIVATE GLDC_N2_ARRAY_PAIR_PREP=$<BOOL:${GLDC_N2_ARRAY_PAIR_PREP}>)
+target_compile_definitions(GL PRIVATE GLDC_N2_BATCH_CLASSIFY=$<BOOL:${GLDC_N2_BATCH_CLASSIFY}>)
 
 if(GLDC_ENABLE_STATS)
     target_compile_definitions(GL PUBLIC GLDC_ENABLE_STATS)
