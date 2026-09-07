@@ -2034,7 +2034,6 @@ GL_FORCE_INLINE bool _glDeferredArrayQuadAllVisible(
     return true;
 }
 
-#if GLDC_N2_BATCH_CLASSIFY
 /* Return only complete visible quads from the existing bounded classify-ahead
    window. Keeping this scalar scan out of the SQ writer's large dispatcher
    hoists matrix/offset setup across the run without a transformed-vertex cache.
@@ -2079,7 +2078,6 @@ static GL_NO_INLINE int _glDeferredArrayVisiblePrefix(
     }
     return count;
 }
-#endif
 
 GL_FORCE_INLINE void _glDeferredWriteArrayRecordSQ(
         const float* uv, uint32_t bgra, uintptr_t destination,
@@ -2128,7 +2126,6 @@ GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
     float axyz[3], bxyz[3], aw, bw;
     TransformVertex2(pa[0], pa[1], pa[2], axyz, &aw,
                      pb[0], pb[1], pb[2], bxyz, &bw);
-#if GLDC_N2_ARRAY_PAIR_PREP
     /* Offset policy is shared by the pair; keep each original W==1
        exception when it is active. Prepare both independent reciprocals
        before the first SQ commit so their latency can overlap. Every
@@ -2147,12 +2144,6 @@ GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
                                   axyz[0], axyz[1], axyz[2], aw, af, vertex_fog);
     _glDeferredWriteArrayRecordSQ(ub, cb, db, fb,
                                   bxyz[0], bxyz[1], bxyz[2], bw, bf, vertex_fog);
-#else
-    _glDeferredFillArrayRecordSQ(ua, ca, da, fa,
-        axyz[0], axyz[1], axyz[2], aw, offset_inv, vertex_fog);
-    _glDeferredFillArrayRecordSQ(ub, cb, db, fb,
-        bxyz[0], bxyz[1], bxyz[2], bw, offset_inv, vertex_fog);
-#endif
 }
 
 static void _glDeferredSubmitVisibleArrayQuads(
@@ -2294,7 +2285,6 @@ static void _glDeferredSubmitNearArrayQuad(
 static void _glSubmitDeferredArrayP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     const int count = (int)descriptor->count;
-#if GLDC_N2_BATCH_CLASSIFY
     for(int first = 0; first < count;) {
         int limit = count - first;
         if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
@@ -2311,39 +2301,11 @@ static void _glSubmitDeferredArrayP3T2BGRA(
             first += 4;
         }
     }
-#else
-    int run_first = 0;
-    int run_count = 0;
-
-    for(int first = 0; first < count; first += 4) {
-        const bool all_visible =
-            _glDeferredArrayQuadAllVisible(descriptor, first);
-        if(all_visible) {
-            if(run_count == 0) run_first = first;
-            run_count += 4;
-            if(run_count < GLDC_DEFERRED_CLASSIFY_RECORDS &&
-               first + 4 < count) {
-                continue;
-            }
-        }
-
-        if(run_count > 0) {
-            _glDeferredSubmitVisibleArrayQuads(
-                descriptor, run_first, run_count, vertex_fog);
-            run_count = 0;
-        }
-        if(!all_visible) {
-            _glDeferredSubmitNearArrayQuad(
-                descriptor, first, vertex_fog);
-        }
-    }
-#endif
 }
 
 static void _glSubmitDeferredPlanarArrayP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     const int count = (int)descriptor->count;
-#if GLDC_N2_BATCH_CLASSIFY
     for(int first = 0; first < count;) {
         int limit = count - first;
         if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
@@ -2362,38 +2324,6 @@ static void _glSubmitDeferredPlanarArrayP3T2BGRA(
             first += 4;
         }
     }
-#else
-    int run_first = 0;
-    int run_count = 0;
-
-    for(int first = 0; first < count; first += 4) {
-        const bool all_visible =
-            _glDeferredArrayQuadAllVisible(descriptor, first);
-        if(all_visible) {
-            if(run_count == 0) run_first = first;
-            run_count += 4;
-            if(run_count < GLDC_DEFERRED_CLASSIFY_RECORDS &&
-               first + 4 < count) {
-                continue;
-            }
-        }
-
-        if(run_count > 0) {
-            _glDeferredSubmitVisiblePlanarArrayQuads(
-                descriptor, run_first, run_count, vertex_fog);
-            run_count = 0;
-        }
-        if(!all_visible) {
-            /* The enqueue-side accounting charged three transforms per
-               planar quad. Near geometry deliberately takes the ordinary
-               four-corner clip path, so account for its one extra transform
-               here without pessimizing the common visible run. */
-            GLDC_STAT_INC(vertices_transformed);
-            _glDeferredSubmitNearArrayQuad(
-                descriptor, first, vertex_fog);
-        }
-    }
-#endif
 }
 
 static void _glSubmitDeferredP3T2BGRA(
