@@ -84,6 +84,15 @@
 #define GLDC_GOLD_BLOCK 0
 #endif
 
+/* Deferred N2 quads: transform each quad once and classify it on those FTRV
+   results with the generic clipper's own near predicate (z >= -w after the
+   polygon-offset bake). 0 keeps the classify-ahead window, which recomputes
+   Z/W with scalar dots and a cancellation margin before transforming again.
+   A/B with: make gldc GLDC_DEFERRED_FUSED_CLASSIFY=0 */
+#ifndef GLDC_DEFERRED_FUSED_CLASSIFY
+#define GLDC_DEFERRED_FUSED_CLASSIFY 1
+#endif
+
 /* Swap-time telemetry (2026-07-15/31 investigations): flush.c's
    wait/op/pt/tr/fin split + the sh4.c sprite-lane timers. Lives here (not
    flush.c) so BOTH files compile it out together — the sprite timers used to

@@ -2326,6 +2326,220 @@ static void _glSubmitDeferredPlanarArrayP3T2BGRA(
     }
 }
 
+/* Bake the polygon offset exactly as the writers and the near fallback do,
+   then apply the generic clipper's own visibility predicate to the same FTRV
+   result. A NaN compares false and takes the exact path. */
+GL_FORCE_INLINE bool _glDeferredBakeVisible(
+        float* xyz, float* w, float offset_inv) {
+    if(unlikely(offset_inv != 1.0f) && *w != 1.0f) {
+        xyz[0] *= offset_inv;
+        xyz[1] *= offset_inv;
+        *w *= offset_inv;
+    }
+    return xyz[2] >= -*w;
+}
+
+/* One pass per quad: both FTRV pairs, the exact near test, then the four
+   records the classify-ahead writers produce (a, b, d, c; EOL on c). A quad
+   with any vertex behind the near plane re-enters the unchanged exact path,
+   which transforms it again from the immutable source. */
+static void _glSubmitDeferredArrayFusedP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
+    const int count = (int)descriptor->count;
+    const float* p = descriptor->input.arrays.positions;
+    const float* u = descriptor->input.arrays.texcoords;
+    const uint32_t* c = (const uint32_t*)descriptor->input.arrays.colors;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    const GLboolean constant_color = descriptor->constant_color;
+    const GLuint constant_bgra = descriptor->constant_bgra;
+    int direct = 0;
+
+    for(int i = 0; i < count; i += 4, p += 12, u += 8, c += 4) {
+        /* Two quads ahead: positions advance 1.5 lines per quad. */
+        if(i + 8 < count) {
+            PREFETCH(p + 24);
+            PREFETCH(p + 32);
+            PREFETCH(u + 16);
+            if(!constant_color) PREFETCH(c + 8);
+        }
+        float axyz[3], bxyz[3], cxyz[3], dxyz[3], aw, bw, cw, dw;
+        TransformVertex2(p[0], p[1], p[2], axyz, &aw,
+                         p[3], p[4], p[5], bxyz, &bw);
+        TransformVertex2(p[9], p[10], p[11], dxyz, &dw,
+                         p[6], p[7], p[8], cxyz, &cw);
+        const bool visible =
+            _glDeferredBakeVisible(axyz, &aw, offset_inv) &
+            _glDeferredBakeVisible(bxyz, &bw, offset_inv) &
+            _glDeferredBakeVisible(dxyz, &dw, offset_inv) &
+            _glDeferredBakeVisible(cxyz, &cw, offset_inv);
+        if(unlikely(!visible)) {
+            _glDeferredSubmitNearArrayQuad(descriptor, i, vertex_fog);
+            continue;
+        }
+        const float af = _glFastInvert(aw);
+        const float bf = _glFastInvert(bw);
+        const float df = _glFastInvert(dw);
+        const float cf = _glFastInvert(cw);
+        const uintptr_t d = _glOutputReserveRecords(4u);
+        _glDeferredWriteArrayRecordSQ(
+            u, constant_color ? constant_bgra : c[0], d, GPU_CMD_VERTEX,
+            axyz[0], axyz[1], axyz[2], aw, af, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 2, constant_color ? constant_bgra : c[1], d + 32,
+            GPU_CMD_VERTEX,
+            bxyz[0], bxyz[1], bxyz[2], bw, bf, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 6, constant_color ? constant_bgra : c[3], d + 64,
+            GPU_CMD_VERTEX,
+            dxyz[0], dxyz[1], dxyz[2], dw, df, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 4, constant_color ? constant_bgra : c[2], d + 96,
+            GPU_CMD_VERTEX_EOL,
+            cxyz[0], cxyz[1], cxyz[2], cw, cf, vertex_fog);
+        direct += 4;
+    }
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)direct);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)direct);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, direct);
+    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)direct);
+    if(constant_color)
+        GLDC_STAT_ADD(deferred_color_array_direct_vertices, (GLuint)direct);
+}
+
+/* Planar sibling: D = A + C - B in homogeneous space (from the unbaked
+   transforms, as the classify-ahead planar writer derives it). */
+static void _glSubmitDeferredPlanarArrayFusedP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
+    const int count = (int)descriptor->count;
+    const float* p = descriptor->input.arrays.positions;
+    const float* u = descriptor->input.arrays.texcoords;
+    const uint32_t* c = (const uint32_t*)descriptor->input.arrays.colors;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    int direct = 0;
+
+    for(int i = 0; i < count; i += 4, p += 12, u += 8, c += 4) {
+        if(i + 8 < count) {
+            PREFETCH(p + 24);
+            PREFETCH(p + 32);
+            PREFETCH(u + 16);
+            PREFETCH(c + 8);
+        }
+        float axyz[3], bxyz[3], cxyz[3], aw, bw, cw;
+        TransformVertex2(p[0], p[1], p[2], axyz, &aw,
+                         p[3], p[4], p[5], bxyz, &bw);
+        TransformVertex(p[6], p[7], p[8], 1.0f, cxyz, &cw);
+        float dxyz[3] = {
+            axyz[0] + cxyz[0] - bxyz[0],
+            axyz[1] + cxyz[1] - bxyz[1],
+            axyz[2] + cxyz[2] - bxyz[2]
+        };
+        float dw = aw + cw - bw;
+        const bool visible =
+            _glDeferredBakeVisible(axyz, &aw, offset_inv) &
+            _glDeferredBakeVisible(bxyz, &bw, offset_inv) &
+            _glDeferredBakeVisible(dxyz, &dw, offset_inv) &
+            _glDeferredBakeVisible(cxyz, &cw, offset_inv);
+        if(unlikely(!visible)) {
+            /* Near planar quads retain all four original transforms. */
+            GLDC_STAT_INC(vertices_transformed);
+            _glDeferredSubmitNearArrayQuad(descriptor, i, vertex_fog);
+            continue;
+        }
+        const float af = _glFastInvert(aw);
+        const float bf = _glFastInvert(bw);
+        const float df = _glFastInvert(dw);
+        const float cf = _glFastInvert(cw);
+        const uintptr_t d = _glOutputReserveRecords(4u);
+        _glDeferredWriteArrayRecordSQ(
+            u, c[0], d, GPU_CMD_VERTEX,
+            axyz[0], axyz[1], axyz[2], aw, af, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 2, c[1], d + 32, GPU_CMD_VERTEX,
+            bxyz[0], bxyz[1], bxyz[2], bw, bf, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 6, c[3], d + 64, GPU_CMD_VERTEX,
+            dxyz[0], dxyz[1], dxyz[2], dw, df, vertex_fog);
+        _glDeferredWriteArrayRecordSQ(
+            u + 4, c[2], d + 96, GPU_CMD_VERTEX_EOL,
+            cxyz[0], cxyz[1], cxyz[2], cw, cf, vertex_fog);
+        direct += 4;
+    }
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)direct);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)direct);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, direct);
+    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)direct);
+}
+
+/* Interleaved sibling: q[6] carries the source color and q[7] the baked W,
+   exactly as _glDeferredFillRecordSQ writes them (no vertex fog here). */
+GL_FORCE_INLINE void _glDeferredWriteInterleavedRecordSQ(
+        const GLKosVertexP3T2BGRA* in, uintptr_t destination,
+        uint32_t flags, const float* xyz, float w, float f) {
+    uint32_t* const q = (uint32_t*)destination;
+    _glOutputAllocateRecord(destination);
+    q[0] = flags;
+    ((float*)q)[1] = xyz[0] * f;
+    ((float*)q)[2] = xyz[1] * f;
+    ((float*)q)[3] = unlikely(w == 1.0f)
+        ? _glFastInvert(1.0001f + xyz[2]) : f;
+    ((float*)q)[4] = in->u;
+    ((float*)q)[5] = in->v;
+    q[6] = in->bgra;
+    ((float*)q)[7] = w;
+    _glOutputCommitRecord(destination);
+}
+
+static void _glSubmitDeferredInterleavedFusedP3T2BGRA(
+        const GLdcDeferredP3T2BGRA* descriptor) {
+    const GLKosVertexP3T2BGRA* in = descriptor->input.interleaved;
+    const int count = (int)descriptor->count;
+    const float offset_inv = descriptor->polygon_offset_inv;
+    int direct = 0;
+
+    for(int i = 0; i < count; i += 4, in += 4) {
+        /* Two quads ahead: one quad spans three 32-byte lines. */
+        if(i + 8 < count) {
+            PREFETCH(in + 8);
+            PREFETCH(in + 10);
+            PREFETCH(in + 11);
+        }
+        float axyz[3], bxyz[3], cxyz[3], dxyz[3], aw, bw, cw, dw;
+        TransformVertex2(in[0].x, in[0].y, in[0].z, axyz, &aw,
+                         in[1].x, in[1].y, in[1].z, bxyz, &bw);
+        TransformVertex2(in[3].x, in[3].y, in[3].z, dxyz, &dw,
+                         in[2].x, in[2].y, in[2].z, cxyz, &cw);
+        const bool visible =
+            _glDeferredBakeVisible(axyz, &aw, offset_inv) &
+            _glDeferredBakeVisible(bxyz, &bw, offset_inv) &
+            _glDeferredBakeVisible(dxyz, &dw, offset_inv) &
+            _glDeferredBakeVisible(cxyz, &cw, offset_inv);
+        if(unlikely(!visible)) {
+            _glDeferredSubmitNearQuad(descriptor, in, false);
+            continue;
+        }
+        const float af = _glFastInvert(aw);
+        const float bf = _glFastInvert(bw);
+        const float df = _glFastInvert(dw);
+        const float cf = _glFastInvert(cw);
+        const uintptr_t d = _glOutputReserveRecords(4u);
+        _glDeferredWriteInterleavedRecordSQ(
+            in, d, GPU_CMD_VERTEX, axyz, aw, af);
+        _glDeferredWriteInterleavedRecordSQ(
+            in + 1, d + 32, GPU_CMD_VERTEX, bxyz, bw, bf);
+        _glDeferredWriteInterleavedRecordSQ(
+            in + 3, d + 64, GPU_CMD_VERTEX, dxyz, dw, df);
+        _glDeferredWriteInterleavedRecordSQ(
+            in + 2, d + 96, GPU_CMD_VERTEX_EOL, cxyz, cw, cf);
+        direct += 4;
+    }
+
+    GLDC_STAT_ADD(scene_divided_records, (GLuint)direct);
+    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)direct);
+    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, direct);
+}
+
 static void _glSubmitDeferredP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     UploadMatrix4x4(&descriptor->mvp);
@@ -2340,17 +2554,26 @@ static void _glSubmitDeferredP3T2BGRA(
               GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS) {
         gl_assert(descriptor->arrays);
         GLDC_STAT_INC(deferred_array_descriptors_submitted);
-        _glSubmitDeferredPlanarArrayP3T2BGRA(descriptor, vertex_fog);
+        if(GLDC_DEFERRED_FUSED_CLASSIFY)
+            _glSubmitDeferredPlanarArrayFusedP3T2BGRA(descriptor, vertex_fog);
+        else
+            _glSubmitDeferredPlanarArrayP3T2BGRA(descriptor, vertex_fog);
     } else if(descriptor->arrays) {
         GLDC_STAT_INC(deferred_array_descriptors_submitted);
         if(descriptor->constant_color) {
             gl_assert(!vertex_fog);
             GLDC_STAT_INC(deferred_color_array_descriptors_submitted);
         }
-        _glSubmitDeferredArrayP3T2BGRA(descriptor, vertex_fog);
+        if(GLDC_DEFERRED_FUSED_CLASSIFY)
+            _glSubmitDeferredArrayFusedP3T2BGRA(descriptor, vertex_fog);
+        else
+            _glSubmitDeferredArrayP3T2BGRA(descriptor, vertex_fog);
     } else {
         gl_assert(!vertex_fog);
-        _glSubmitDeferredInterleavedP3T2BGRA(descriptor);
+        if(GLDC_DEFERRED_FUSED_CLASSIFY)
+            _glSubmitDeferredInterleavedFusedP3T2BGRA(descriptor);
+        else
+            _glSubmitDeferredInterleavedP3T2BGRA(descriptor);
     }
 }
 
