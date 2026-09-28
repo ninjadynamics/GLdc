@@ -287,25 +287,6 @@ int SceneListFinishChecked(void);
 int SceneFinishChecked(void);
 int SceneTextureFence(void);
 
-enum SceneFinalBuildResult {
-    SCENE_FINAL_BUILD_OK = 0,
-    SCENE_FINAL_BUILD_NEAR = 1 << 0,
-    SCENE_FINAL_BUILD_INVALID = 1 << 1
-};
-
-/* Current-XMTRX object-space P3/T2/BGRA -> final 32-byte TA records. The
-   caller owns state validation and output capacity. */
-int SceneBuildFinalP3T2BGRA(
-    unsigned int mode, const void* vertices, int count,
-    Vertex* output);
-
-/* Lean trusted sibling: callers guarantee finite transformed clip Z/W and
-   finite final X/Y/UV plus positive finite reciprocal depth for accepted
-   records. Near classification is still retained for exact fallback. */
-int SceneBuildTrustedFinalP3T2BGRA(
-    unsigned int mode, const void* vertices, int count,
-    Vertex* output);
-
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 /* N0/N1 RAM sinks. Public validation/state ownership stays in draw.c. */
 int SceneNativeBenchBuildP3T2BGRA(

@@ -69,7 +69,7 @@ GLAPI GLint APIENTRY glKosPvrPacketCancel(
  * deferred-free queue, capture invalidation, and frame reset. Raw texture or
  * palette VRAM named by caller-authored headers is not GLdc-owned and must stay
  * live until the next PVR-ready fence after this call. This call rejects any
- * queued ordinary/N2/N3/sprite work. The paired raylib external state barrier
+ * queued ordinary/N2/packet/sprite work. The paired raylib external state barrier
  * must be called before entering this API. */
 typedef struct GLKosPvrListPacket {
     const GLKosPvrRecord* records;

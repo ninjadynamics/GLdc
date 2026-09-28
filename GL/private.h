@@ -140,7 +140,7 @@ typedef struct {
    before is_header() at finalization. */
 /* Both deferred object-space draws and final-record packet segments use the
    same rare in-list marker.  word[3] is the discriminator: legacy/N2
-   descriptors are zero-filled there, while an N3 packet carries its non-zero
+   descriptors are zero-filled there, while a packet segment carries its non-zero
    reservation token.  Keeping one marker preserves the ordinary F1 drain's
    single per-record sentinel comparison. */
 #define GLDC_DEFERRED_P3T2BGRA_SENTINEL 0xd3f20001u

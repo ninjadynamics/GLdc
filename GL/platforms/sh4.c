@@ -407,9 +407,7 @@ GL_FORCE_INLINE void _glPerspectiveDivideVertex(Vertex* vertex, int count) {
     }
 }
 
-/* N1 proved this RAM finalizer byte-exact against the classic path. N3 makes
-   that kernel permanent: transient callers write final records into GLdc-owned
-   packet RAM, while the benchmark and production lane share this one body. */
+/* N1 proved this RAM finalizer byte-exact against the classic path. */
 typedef char FinalP3T2BGRAInputSizeMustBe24[
     sizeof(GLKosVertexP3T2BGRA) == 24 ? 1 : -1];
 
@@ -427,166 +425,9 @@ typedef char FinalP3T2BGRAInputSizeMustBe24[
      NATIVE_BENCH_TA_CLOSE_RECORDS)
 #endif
 
-/* The sole final-record fill body. RAM and store-queue sinks differ only in
-   cache-line allocation / queue firing around this function, keeping every
-   word and every SH4 reciprocal operation identical. */
-GL_FORCE_INLINE uint32_t _glFinalFloatWord(float value) {
-    uint32_t bits;
-    __builtin_memcpy(&bits, &value, sizeof(bits));
-    return bits;
-}
-
-GL_FORCE_INLINE bool _glFinalWordFinite(uint32_t bits) {
-    return (bits & 0x7f800000u) != 0x7f800000u;
-}
-
-GL_FORCE_INLINE bool _glFinalFloatFinite(float value) {
-    return _glFinalWordFinite(_glFinalFloatWord(value));
-}
-
-GL_FORCE_INLINE bool _glFinalWordPositiveFinite(uint32_t bits) {
-    const uint32_t magnitude = bits & 0x7fffffffu;
-    return ((bits >> 31) == 0u) & (magnitude != 0u) &
-           ((magnitude & 0x7f800000u) != 0x7f800000u);
-}
-
-GL_FORCE_INLINE int _glFinalFillRecord(
-        const GLKosVertexP3T2BGRA* in, uint32_t* q, uint32_t flags,
-        float x, float y, float z, float w) {
-    int result = (z >= -w) ? SCENE_FINAL_BUILD_OK
-                           : SCENE_FINAL_BUILD_NEAR;
-    const float f = _glFastInvert(w);
-    q[0] = flags;
-    ((float*)q)[1] = x * f;
-    ((float*)q)[2] = y * f;
-    ((float*)q)[3] = unlikely(w == 1.0f)
-        ? _glFastInvert(1.0001f + z)
-        : f;
-    ((float*)q)[4] = in->u;
-    ((float*)q)[5] = in->v;
-    q[6] = in->bgra;
-    ((float*)q)[7] = w;
-
-    /* These are exactly the finite fields the TA consumes and the public raw
-       packet API validates.  z is also checked because it owns near-plane
-       classification but is not otherwise retained in the final record.
-       Bitwise OR keeps one cold INVALID decision under -ffast-math. */
-    const bool invalid =
-        !_glFinalFloatFinite(z) |
-        !_glFinalWordFinite(q[1]) |
-        !_glFinalWordFinite(q[2]) |
-        !_glFinalWordPositiveFinite(q[3]) |
-        !_glFinalWordFinite(q[4]) |
-        !_glFinalWordFinite(q[5]);
-    result |= ((int)invalid << 1);
-    return result;
-}
-
-GL_FORCE_INLINE int _glFinalPack(
-        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags,
-        float x, float y, float z, float w) {
-    VERTEX_CACHE_ALLOC(out);
-    return _glFinalFillRecord(in, (uint32_t*)out, flags, x, y, z, w);
-}
-
-GL_FORCE_INLINE int _glFinalPackPair(
-        const GLKosVertexP3T2BGRA* a, const GLKosVertexP3T2BGRA* b,
-        Vertex* da, Vertex* db, uint32_t fa, uint32_t fb) {
-    float axyz[3], bxyz[3], aw, bw;
-    TransformVertex2(a->x, a->y, a->z, axyz, &aw,
-                     b->x, b->y, b->z, bxyz, &bw);
-    const int ar = _glFinalPack(
-        a, da, fa, axyz[0], axyz[1], axyz[2], aw);
-    const int br = _glFinalPack(
-        b, db, fb, bxyz[0], bxyz[1], bxyz[2], bw);
-    return ar | br;
-}
-
-GL_FORCE_INLINE int _glFinalPackSingle(
-        const GLKosVertexP3T2BGRA* in, Vertex* out, uint32_t flags) {
-    float xyz[3], w;
-    TransformVertex(in->x, in->y, in->z, 1.0f, xyz, &w);
-    return _glFinalPack(in, out, flags, xyz[0], xyz[1], xyz[2], w);
-}
-
-int SceneBuildFinalP3T2BGRA(
-        unsigned int mode, const void* vertices, int count, Vertex* output) {
-    const GLKosVertexP3T2BGRA* in =
-        (const GLKosVertexP3T2BGRA*)vertices;
-
-    if(mode == GL_TRIANGLES) {
-        int i = 0;
-        /* Six records = two complete triangles. Fixed flags eliminate the
-           old loop-carried modulo/EOL decision and retain dual-FTRV issue. */
-        for(; count - i >= 6; i += 6) {
-            if(count - i > 2) PREFETCH(in + i + 2);
-            const int r0 = _glFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            const int r1 = _glFinalPackPair(
-                in + i + 2, in + i + 3, output + i + 2, output + i + 3,
-                GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
-            const int r2 = _glFinalPackPair(
-                in + i + 4, in + i + 5, output + i + 4, output + i + 5,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
-            /* A rejected reservation is cancelled wholesale.  Stop at the
-               first complete unrolled block whose records cannot be queued;
-               later output would be unobservable and only delays F1. */
-            const int block_result = r0 | r1 | r2;
-            if(unlikely(block_result != SCENE_FINAL_BUILD_OK))
-                return block_result;
-        }
-        if(i < count) {  /* valid triangle input leaves exactly three */
-            if(count - i > 2) PREFETCH(in + i + 2);
-            const int pair_result = _glFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            return pair_result | _glFinalPackSingle(
-                in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
-        }
-        return SCENE_FINAL_BUILD_OK;
-    }
-
-    if(mode == GL_QUADS) {
-        for(int i = 0; i < count; i += 4) {
-            if(count - i > 4) PREFETCH(in + i + 4);
-            const int r0 = _glFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            const int r1 = _glFinalPackPair(
-                in + i + 3, in + i + 2, output + i + 2, output + i + 3,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
-            const int block_result = r0 | r1;
-            if(unlikely(block_result != SCENE_FINAL_BUILD_OK))
-                return block_result;
-        }
-        return SCENE_FINAL_BUILD_OK;
-    }
-
-    /* Long strips are their own benchmark topology. One EOL is stamped on
-       the final record, matching _glWriteFusedVertices(GL_FALSE). */
-    int i = 0;
-    for(; count - i >= 2; i += 2) {
-        if(count - i > 2) PREFETCH(in + i + 2);
-        const uint32_t fb = (count - i == 2)
-            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
-        const int pair_result = _glFinalPackPair(
-            in + i, in + i + 1, output + i, output + i + 1,
-            GPU_CMD_VERTEX, fb);
-        if(unlikely(pair_result != SCENE_FINAL_BUILD_OK))
-            return pair_result;
-    }
-    if(i < count) {
-        return _glFinalPackSingle(in + i, output + i, GPU_CMD_VERTEX_EOL);
-    }
-    return SCENE_FINAL_BUILD_OK;
-}
-
-/* Trusted N3 record writer shared by production and the retained N1 hardware
-   control. It intentionally omits the checked constructor's per-record finite
-   scan: callers own the documented finite-input/matrix/depth contract. Near
-   classification remains inside this writer so an ambiguous batch can cancel
-   its private reservation and take the exact clipping fallback. */
+/* Final-record writer for the retained N1 hardware control. It omits a
+   per-record finite scan: callers own the finite-input/matrix/depth contract.
+   Near classification stays inside the writer. */
 GL_FORCE_INLINE bool _glTrustedFinalFillRecord(
         const GLKosVertexP3T2BGRA* in, uint32_t* q, uint32_t flags,
         float x, float y, float z, float w) {
@@ -700,74 +541,6 @@ int SceneNativeBenchBuildP3T2BGRA(
                        : GL_KOS_NATIVE_BENCH_NEAR_CLIP;
 }
 #endif
-
-/* Production trusted N3 writer. It retains complete-block early near
-   rejection so a declined transient batch does not pay a second full
-   transform before the exact F1 fallback. Partial output is private
-   reservation RAM and is discarded by the caller on rejection. */
-int SceneBuildTrustedFinalP3T2BGRA(
-        unsigned int mode, const void* vertices, int count, Vertex* output) {
-    const GLKosVertexP3T2BGRA* in =
-        (const GLKosVertexP3T2BGRA*)vertices;
-
-    if(mode == GL_TRIANGLES) {
-        int i = 0;
-        for(; count - i >= 6; i += 6) {
-            if(count - i > 2) PREFETCH(in + i + 2);
-            const bool r0 = _glTrustedFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            const bool r1 = _glTrustedFinalPackPair(
-                in + i + 2, in + i + 3, output + i + 2, output + i + 3,
-                GPU_CMD_VERTEX_EOL, GPU_CMD_VERTEX);
-            const bool r2 = _glTrustedFinalPackPair(
-                in + i + 4, in + i + 5, output + i + 4, output + i + 5,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
-            if(unlikely(!(r0 & r1 & r2))) return SCENE_FINAL_BUILD_NEAR;
-        }
-        if(i < count) {
-            if(count - i > 2) PREFETCH(in + i + 2);
-            const bool r0 = _glTrustedFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            const bool r1 = _glTrustedFinalPackSingle(
-                in + i + 2, output + i + 2, GPU_CMD_VERTEX_EOL);
-            if(unlikely(!(r0 & r1))) return SCENE_FINAL_BUILD_NEAR;
-        }
-        return SCENE_FINAL_BUILD_OK;
-    }
-
-    if(mode == GL_QUADS) {
-        for(int i = 0; i < count; i += 4) {
-            if(count - i > 4) PREFETCH(in + i + 4);
-            const bool r0 = _glTrustedFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX);
-            const bool r1 = _glTrustedFinalPackPair(
-                in + i + 3, in + i + 2, output + i + 2, output + i + 3,
-                GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL);
-            if(unlikely(!(r0 & r1))) return SCENE_FINAL_BUILD_NEAR;
-        }
-        return SCENE_FINAL_BUILD_OK;
-    }
-
-    int i = 0;
-    for(; count - i >= 2; i += 2) {
-        if(count - i > 2) PREFETCH(in + i + 2);
-        const uint32_t fb = (count - i == 2)
-            ? GPU_CMD_VERTEX_EOL : GPU_CMD_VERTEX;
-        if(unlikely(!_glTrustedFinalPackPair(
-                in + i, in + i + 1, output + i, output + i + 1,
-                GPU_CMD_VERTEX, fb))) {
-            return SCENE_FINAL_BUILD_NEAR;
-        }
-    }
-    if(i < count && unlikely(!_glTrustedFinalPackSingle(
-            in + i, output + i, GPU_CMD_VERTEX_EOL))) {
-        return SCENE_FINAL_BUILD_NEAR;
-    }
-    return SCENE_FINAL_BUILD_OK;
-}
 
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
 int SceneNativeBenchFinalizeClassic(Vertex* vertices, int count) {
@@ -896,7 +669,7 @@ static uintptr_t sq_dest_addr = 0;
 static bool submit_vertex_fog = false;
 static inline bool is_header(const Vertex* v);
 
-/* One final-record sink shared by F1, N2, N3 packets, clipped geometry and
+/* One final-record sink shared by F1, N2, expert packets, clipped geometry and
    sprite sidecars. The production build retains the original TA-bound store
    queues exactly. N4 reserves aligned cached RAM in the active KOS list half;
    SceneListFinishChecked publishes the aggregate byte count once. */
@@ -1725,11 +1498,6 @@ static void _glDivideSubmitRun(Vertex* v, int n, bool initial_vertex_fog) {
 }
 
 #ifdef _arch_dreamcast
-/* Keep the classify-ahead window inside the SH4's data cache. The input side
-   is 24 bytes/record, so 128 records occupy 3 KiB and are still hot when the
-   direct writer immediately consumes the accepted run. */
-#define GLDC_DEFERRED_CLASSIFY_RECORDS 128
-
 GL_FORCE_INLINE bool _glDeferredQuadAllVisible(
         const GLdcDeferredP3T2BGRA* descriptor,
         const GLKosVertexP3T2BGRA* in) {
@@ -1811,25 +1579,6 @@ GL_FORCE_INLINE void _glDeferredPackSingleSQ(
                             xyz[0], xyz[1], xyz[2], w, offset_inv);
 }
 
-static void _glDeferredSubmitVisibleQuads(
-        const GLdcDeferredP3T2BGRA* descriptor,
-        const GLKosVertexP3T2BGRA* in, int count) {
-    uintptr_t d = _glOutputReserveRecords((size_t)count);
-    const float offset_inv = descriptor->polygon_offset_inv;
-
-    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
-    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
-    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
-    for(int i = 0; i < count; i += 4, d += 4 * 32) {
-        PREFETCH(in + i + 2);
-        _glDeferredPackPairSQ(in + i, in + i + 1, d, d + 32,
-                              GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv);
-        if(i + 4 < count) PREFETCH(in + i + 4);
-        _glDeferredPackPairSQ(in + i + 3, in + i + 2, d + 64, d + 96,
-                              GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, offset_inv);
-    }
-}
-
 static void _glDeferredSubmitNearQuad(
         const GLdcDeferredP3T2BGRA* descriptor,
         const GLKosVertexP3T2BGRA* in, bool vertex_fog) {
@@ -1861,38 +1610,6 @@ static void _glDeferredSubmitNearQuad(
     GLDC_STAT_INC(deferred_near_quads);
     GLDC_SWAP_WORK_ADD(deferred_near_quads, 1u);
     SceneListSubmitGeneric(quad, 4, vertex_fog);
-}
-
-static void _glSubmitDeferredInterleavedP3T2BGRA(
-        const GLdcDeferredP3T2BGRA* descriptor) {
-    const GLKosVertexP3T2BGRA* const vertices =
-        descriptor->input.interleaved;
-    const int count = (int)descriptor->count;
-    int run_first = 0;
-    int run_count = 0;
-
-    for(int first = 0; first < count; first += 4) {
-        const bool all_visible =
-            _glDeferredQuadAllVisible(descriptor, vertices + first);
-        if(all_visible) {
-            if(run_count == 0) run_first = first;
-            run_count += 4;
-            if(run_count < GLDC_DEFERRED_CLASSIFY_RECORDS &&
-               first + 4 < count) {
-                continue;
-            }
-        }
-
-        if(run_count > 0) {
-            _glDeferredSubmitVisibleQuads(
-                descriptor, vertices + run_first, run_count);
-            run_count = 0;
-        }
-        if(!all_visible) {
-            _glDeferredSubmitNearQuad(
-                descriptor, vertices + first, false);
-        }
-    }
 }
 
 /* Independent triangles use the N1 fixed-six schedule: two complete
@@ -2034,51 +1751,6 @@ GL_FORCE_INLINE bool _glDeferredArrayQuadAllVisible(
     return true;
 }
 
-/* Return only complete visible quads from the existing bounded classify-ahead
-   window. Keeping this scalar scan out of the SQ writer's large dispatcher
-   hoists matrix/offset setup across the run without a transformed-vertex cache.
-   It must not touch XMTRX: the following writer uses the already loaded matrix.
-   The first failing vertex ends the scan; its whole quad takes the old clipper. */
-static GL_NO_INLINE int _glDeferredArrayVisiblePrefix(
-        const GLdcDeferredP3T2BGRA* descriptor, int first, int count) {
-    const float* const m = descriptor->mvp;
-    const float offset_inv = descriptor->polygon_offset_inv;
-    const float* p = descriptor->input.arrays.positions + first * 3;
-
-    /* At identity offset both original near tests are identical. Dispatch
-       once per window, retaining the original scalar Z/W and margin order. */
-    if(offset_inv == 1.0f) {
-        for(int i = 0; i < count; ++i, p += 3) {
-            const float x = p[0];
-            const float y = p[1];
-            const float z0 = p[2];
-            const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
-            const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
-            const float near_plain = z + w;
-            const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
-                                (1.0f + __builtin_fabsf(1.0f)) + 1.0f;
-            const float margin = 32.0f * FLT_EPSILON * scale;
-            if(!(near_plain > margin)) return i & ~3;
-        }
-        return count;
-    }
-
-    for(int i = 0; i < count; ++i, p += 3) {
-        const float x = p[0];
-        const float y = p[1];
-        const float z0 = p[2];
-        const float z = x * m[2] + y * m[6] + z0 * m[10] + m[14];
-        const float w = x * m[3] + y * m[7] + z0 * m[11] + m[15];
-        const float near_plain = z + w;
-        const float near_offset = z + w * offset_inv;
-        const float scale = __builtin_fabsf(z) + __builtin_fabsf(w) *
-                            (1.0f + __builtin_fabsf(offset_inv)) + 1.0f;
-        const float margin = 32.0f * FLT_EPSILON * scale;
-        if(!(near_plain > margin) || !(near_offset > margin)) return i & ~3;
-    }
-    return count;
-}
-
 GL_FORCE_INLINE void _glDeferredWriteArrayRecordSQ(
         const float* uv, uint32_t bgra, uintptr_t destination,
         uint32_t flags, float x, float y, float z, float w,
@@ -2100,145 +1772,6 @@ GL_FORCE_INLINE void _glDeferredWriteArrayRecordSQ(
         ((float*)q)[7] = w;
     }
     _glOutputCommitRecord(destination);
-}
-
-GL_FORCE_INLINE void _glDeferredFillArrayRecordSQ(
-        const float* uv, uint32_t bgra, uintptr_t destination,
-        uint32_t flags, float x, float y, float z, float w,
-        float offset_inv, bool vertex_fog) {
-    if(unlikely(w != 1.0f && offset_inv != 1.0f)) {
-        x *= offset_inv;
-        y *= offset_inv;
-        w *= offset_inv;
-    }
-
-    const float f = _glFastInvert(w);
-    _glDeferredWriteArrayRecordSQ(uv, bgra, destination, flags,
-                                    x, y, z, w, f, vertex_fog);
-}
-
-GL_FORCE_INLINE void _glDeferredPackArrayPairSQ(
-        const float* pa, const float* pb,
-        const float* ua, const float* ub,
-        uint32_t ca, uint32_t cb,
-        uintptr_t da, uintptr_t db, uint32_t fa, uint32_t fb,
-        float offset_inv, bool vertex_fog) {
-    float axyz[3], bxyz[3], aw, bw;
-    TransformVertex2(pa[0], pa[1], pa[2], axyz, &aw,
-                     pb[0], pb[1], pb[2], bxyz, &bw);
-    /* Offset policy is shared by the pair; keep each original W==1
-       exception when it is active. Prepare both independent reciprocals
-       before the first SQ commit so their latency can overlap. Every
-       vertex retains the original multiply/FSRRA/depth operation order. */
-    if(unlikely(offset_inv != 1.0f)) {
-        if(aw != 1.0f) {
-            axyz[0] *= offset_inv; axyz[1] *= offset_inv; aw *= offset_inv;
-        }
-        if(bw != 1.0f) {
-            bxyz[0] *= offset_inv; bxyz[1] *= offset_inv; bw *= offset_inv;
-        }
-    }
-    const float af = _glFastInvert(aw);
-    const float bf = _glFastInvert(bw);
-    _glDeferredWriteArrayRecordSQ(ua, ca, da, fa,
-                                  axyz[0], axyz[1], axyz[2], aw, af, vertex_fog);
-    _glDeferredWriteArrayRecordSQ(ub, cb, db, fb,
-                                  bxyz[0], bxyz[1], bxyz[2], bw, bf, vertex_fog);
-}
-
-static void _glDeferredSubmitVisibleArrayQuads(
-        const GLdcDeferredP3T2BGRA* descriptor,
-        int first, int count, bool vertex_fog) {
-    const float* p = descriptor->input.arrays.positions + first * 3;
-    const float* u = descriptor->input.arrays.texcoords + first * 2;
-    const uint32_t* c = (const uint32_t*)(
-        descriptor->input.arrays.colors + first * 4);
-    uintptr_t d = _glOutputReserveRecords((size_t)count);
-    const float offset_inv = descriptor->polygon_offset_inv;
-    /* The descriptor is immutable throughout this drain. Keep these fields
-       in locals: SQ commit's memory barrier otherwise forces descriptor
-       reloads on each quad even though the hardware cannot modify them. */
-    const GLboolean constant_color = descriptor->constant_color;
-    const GLuint constant_bgra = descriptor->constant_bgra;
-
-    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
-    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
-    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
-    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
-    if(constant_color)
-        GLDC_STAT_ADD(deferred_color_array_direct_vertices, (GLuint)count);
-    for(int i = 0; i < count;
-        i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
-        /* Classify-ahead has already warmed positions. Prime the next quad's
-           three source lines without reading beyond the borrowed extents on
-           the final quad. */
-        if(i + 4 < count) {
-            PREFETCH(p + 12);
-            PREFETCH(u + 8);
-            if(!constant_color) PREFETCH(c + 4);
-        }
-        const uint32_t c0 = constant_color ? constant_bgra : c[0];
-        const uint32_t c1 = constant_color ? constant_bgra : c[1];
-        const uint32_t c2 = constant_color ? constant_bgra : c[2];
-        const uint32_t c3 = constant_color ? constant_bgra : c[3];
-        _glDeferredPackArrayPairSQ(
-            p, p + 3, u, u + 2, c0, c1, d, d + 32,
-            GPU_CMD_VERTEX, GPU_CMD_VERTEX, offset_inv, vertex_fog);
-        _glDeferredPackArrayPairSQ(
-            p + 9, p + 6, u + 6, u + 4, c3, c2, d + 64, d + 96,
-            GPU_CMD_VERTEX, GPU_CMD_VERTEX_EOL, offset_inv, vertex_fog);
-    }
-}
-
-/* Same final records as the ordinary array lane, but a planar quad's fourth
-   homogeneous corner is exactly A+C-B. Footprints are immutable through the
-   drain, so deriving D here removes one SH-4 transform per quad without moving
-   work back into the frame's submission phase. */
-static void _glDeferredSubmitVisiblePlanarArrayQuads(
-        const GLdcDeferredP3T2BGRA* descriptor,
-        int first, int count, bool vertex_fog) {
-    const float* p = descriptor->input.arrays.positions + first * 3;
-    const float* u = descriptor->input.arrays.texcoords + first * 2;
-    const uint32_t* c = (const uint32_t*)(
-        descriptor->input.arrays.colors + first * 4);
-    uintptr_t d = _glOutputReserveRecords((size_t)count);
-    const float offset_inv = descriptor->polygon_offset_inv;
-
-    GLDC_STAT_ADD(scene_divided_records, (GLuint)count);
-    GLDC_STAT_ADD(deferred_direct_vertices, (GLuint)count);
-    GLDC_SWAP_WORK_ADD(deferred_direct_vertices, count);
-    GLDC_STAT_ADD(deferred_array_direct_vertices, (GLuint)count);
-    for(int i = 0; i < count;
-        i += 4, p += 12, u += 8, c += 4, d += 4 * 32) {
-        if(i + 4 < count) {
-            PREFETCH(p + 12);
-            PREFETCH(u + 8);
-            PREFETCH(c + 4);
-        }
-        float axyz[3], bxyz[3], cxyz[3], aw, bw, cw;
-        TransformVertex2(p[0], p[1], p[2], axyz, &aw,
-                         p[3], p[4], p[5], bxyz, &bw);
-        TransformVertex(p[6], p[7], p[8], 1.0f, cxyz, &cw);
-        const float dxyz[3] = {
-            axyz[0] + cxyz[0] - bxyz[0],
-            axyz[1] + cxyz[1] - bxyz[1],
-            axyz[2] + cxyz[2] - bxyz[2]
-        };
-        const float dw = aw + cw - bw;
-
-        _glDeferredFillArrayRecordSQ(
-            u, c[0], d, GPU_CMD_VERTEX,
-            axyz[0], axyz[1], axyz[2], aw, offset_inv, vertex_fog);
-        _glDeferredFillArrayRecordSQ(
-            u + 2, c[1], d + 32, GPU_CMD_VERTEX,
-            bxyz[0], bxyz[1], bxyz[2], bw, offset_inv, vertex_fog);
-        _glDeferredFillArrayRecordSQ(
-            u + 6, c[3], d + 64, GPU_CMD_VERTEX,
-            dxyz[0], dxyz[1], dxyz[2], dw, offset_inv, vertex_fog);
-        _glDeferredFillArrayRecordSQ(
-            u + 4, c[2], d + 96, GPU_CMD_VERTEX_EOL,
-            cxyz[0], cxyz[1], cxyz[2], cw, offset_inv, vertex_fog);
-    }
 }
 
 static void _glDeferredSubmitNearArrayQuad(
@@ -2282,50 +1815,6 @@ static void _glDeferredSubmitNearArrayQuad(
     SceneListSubmitGeneric(quad, 4, vertex_fog);
 }
 
-static void _glSubmitDeferredArrayP3T2BGRA(
-        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
-    const int count = (int)descriptor->count;
-    for(int first = 0; first < count;) {
-        int limit = count - first;
-        if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
-            limit = GLDC_DEFERRED_CLASSIFY_RECORDS;
-        const int visible =
-            _glDeferredArrayVisiblePrefix(descriptor, first, limit);
-        if(visible > 0) {
-            _glDeferredSubmitVisibleArrayQuads(
-                descriptor, first, visible, vertex_fog);
-            first += visible;
-        }
-        if(visible < limit) {
-            _glDeferredSubmitNearArrayQuad(descriptor, first, vertex_fog);
-            first += 4;
-        }
-    }
-}
-
-static void _glSubmitDeferredPlanarArrayP3T2BGRA(
-        const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
-    const int count = (int)descriptor->count;
-    for(int first = 0; first < count;) {
-        int limit = count - first;
-        if(limit > GLDC_DEFERRED_CLASSIFY_RECORDS)
-            limit = GLDC_DEFERRED_CLASSIFY_RECORDS;
-        const int visible =
-            _glDeferredArrayVisiblePrefix(descriptor, first, limit);
-        if(visible > 0) {
-            _glDeferredSubmitVisiblePlanarArrayQuads(
-                descriptor, first, visible, vertex_fog);
-            first += visible;
-        }
-        if(visible < limit) {
-            /* Near planar quads retain all four original transforms. */
-            GLDC_STAT_INC(vertices_transformed);
-            _glDeferredSubmitNearArrayQuad(descriptor, first, vertex_fog);
-            first += 4;
-        }
-    }
-}
-
 /* Bake the polygon offset exactly as the writers and the near fallback do,
    then apply the generic clipper's own visibility predicate to the same FTRV
    result. A NaN compares false and takes the exact path. */
@@ -2340,7 +1829,7 @@ GL_FORCE_INLINE bool _glDeferredBakeVisible(
 }
 
 /* One pass per quad: both FTRV pairs, the exact near test, then the four
-   records the classify-ahead writers produce (a, b, d, c; EOL on c). A quad
+   strip records (a, b, d, c; EOL on c). A quad
    with any vertex behind the near plane re-enters the unchanged exact path,
    which transforms it again from the immutable source. */
 static void _glSubmitDeferredArrayFusedP3T2BGRA(
@@ -2408,7 +1897,7 @@ static void _glSubmitDeferredArrayFusedP3T2BGRA(
 }
 
 /* Planar sibling: D = A + C - B in homogeneous space (from the unbaked
-   transforms, as the classify-ahead planar writer derives it). */
+   transforms). */
 static void _glSubmitDeferredPlanarArrayFusedP3T2BGRA(
         const GLdcDeferredP3T2BGRA* descriptor, bool vertex_fog) {
     const int count = (int)descriptor->count;
@@ -2554,26 +2043,17 @@ static void _glSubmitDeferredP3T2BGRA(
               GLDC_DEFERRED_P3T2BGRA_PLANAR_QUADS) {
         gl_assert(descriptor->arrays);
         GLDC_STAT_INC(deferred_array_descriptors_submitted);
-        if(GLDC_DEFERRED_FUSED_CLASSIFY)
-            _glSubmitDeferredPlanarArrayFusedP3T2BGRA(descriptor, vertex_fog);
-        else
-            _glSubmitDeferredPlanarArrayP3T2BGRA(descriptor, vertex_fog);
+        _glSubmitDeferredPlanarArrayFusedP3T2BGRA(descriptor, vertex_fog);
     } else if(descriptor->arrays) {
         GLDC_STAT_INC(deferred_array_descriptors_submitted);
         if(descriptor->constant_color) {
             gl_assert(!vertex_fog);
             GLDC_STAT_INC(deferred_color_array_descriptors_submitted);
         }
-        if(GLDC_DEFERRED_FUSED_CLASSIFY)
-            _glSubmitDeferredArrayFusedP3T2BGRA(descriptor, vertex_fog);
-        else
-            _glSubmitDeferredArrayP3T2BGRA(descriptor, vertex_fog);
+        _glSubmitDeferredArrayFusedP3T2BGRA(descriptor, vertex_fog);
     } else {
         gl_assert(!vertex_fog);
-        if(GLDC_DEFERRED_FUSED_CLASSIFY)
-            _glSubmitDeferredInterleavedFusedP3T2BGRA(descriptor);
-        else
-            _glSubmitDeferredInterleavedP3T2BGRA(descriptor);
+        _glSubmitDeferredInterleavedFusedP3T2BGRA(descriptor);
     }
 }
 

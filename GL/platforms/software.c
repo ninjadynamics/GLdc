@@ -455,15 +455,6 @@ int SceneListFinishChecked(void) { SceneListFinish(); return 0; }
 int SceneFinishChecked(void) { SceneFinish(); return 0; }
 int SceneTextureFence(void) { return 0; } /* Software submission is synchronous. */
 
-int SceneBuildFinalP3T2BGRA(
-        unsigned int mode, const void* vertices, int count, Vertex* output) {
-    (void)mode;
-    (void)vertices;
-    (void)count;
-    (void)output;
-    return SCENE_FINAL_BUILD_INVALID;
-}
-
 /* TA sprites are a PVR-hardware path; the software platform draws nothing. */
 void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
     (void) pos; (void) colors; (void) quads;

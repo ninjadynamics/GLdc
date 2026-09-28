@@ -2415,77 +2415,6 @@ GLint APIENTRY glKosPvrPacketCancel(
     return GL_KOS_PVR_OK;
 }
 
-typedef struct GLdcPvrInternalBuild {
-    PolyList* list;
-    Vertex* vertices;
-    GLuint first_record;
-    GLboolean has_header;
-} GLdcPvrInternalBuild;
-
-/* Internal typed producers cannot call back into GL between construction and
-   publication. Reserve exactly the records they need and keep the strict
-   public transaction completely out of this hot path. Header compilation is
-   deferred until a successful build, so a near rejection only rolls back RAM.
-   Public reserve/commit/cancel semantics remain unchanged above. */
-GL_FORCE_INLINE GLint _glPvrBeginInternalPacket(
-        GLsizei capacity, GLdcPvrInternalBuild* build) {
-    GLDC_STAT_INC(pvr_packet_reserve_attempts);
-    if(!PVR_PACKET_INITIALIZED)
-        return GL_KOS_PVR_UNSUPPORTED_STATE;
-    if(PVR_PACKET_RESERVATION.active) {
-        GLDC_STAT_INC(pvr_packet_reject_busy);
-        return GL_KOS_PVR_BUSY;
-    }
-    if(capacity < 3) return GL_KOS_PVR_BAD_ARGUMENT;
-
-    const GLint state = _glPvrReservationState();
-    if(state != GL_KOS_PVR_OK) {
-        GLDC_STAT_INC(pvr_packet_reject_state);
-        return state;
-    }
-
-    PolyList* const list = _glActivePolyList();
-    const GLboolean has_header =
-        !list->header_emitted || _glGPUStateIsDirty();
-    const GLuint header_records = has_header ? 1u : 0u;
-    const GLuint arena_size = aligned_vector_size(&PVR_PACKET_RECORDS);
-    if(PVR_PACKET_COUNT >= GLDC_PVR_PACKET_SEGMENT_CAPACITY ||
-       (GLuint)capacity > GLDC_PVR_PACKET_RECORD_LIMIT - header_records ||
-       arena_size > GLDC_PVR_PACKET_RECORD_LIMIT - header_records -
-                        (GLuint)capacity) {
-        GLDC_STAT_INC(pvr_packet_reject_capacity);
-        return GL_KOS_PVR_CAPACITY;
-    }
-
-    GLKosPvrRecord* const block = (GLKosPvrRecord*)aligned_vector_extend(
-        &PVR_PACKET_RECORDS, header_records + (GLuint)capacity);
-
-    build->list = list;
-    build->vertices = (Vertex*)(block + header_records);
-    build->first_record = arena_size;
-    build->has_header = has_header;
-    GLDC_STAT_INC(pvr_packet_reserve_hits);
-    return GL_KOS_PVR_OK;
-}
-
-GL_FORCE_INLINE void _glPvrCancelInternalPacket(
-        const GLdcPvrInternalBuild* build) {
-    aligned_vector_resize(&PVR_PACKET_RECORDS, build->first_record);
-    GLDC_STAT_INC(pvr_packet_cancels);
-}
-
-GL_FORCE_INLINE void _glPvrCommitInternalPacket(
-        const GLdcPvrInternalBuild* build, GLuint vertices) {
-    const GLuint header_records = build->has_header ? 1u : 0u;
-    if(build->has_header) {
-        PolyHeader* const header = (PolyHeader*)aligned_vector_at(
-            &PVR_PACKET_RECORDS, build->first_record);
-        _glPvrCompileCurrentHeader(header, build->list);
-    }
-    _glPvrPublishPacket(
-        build->first_record, header_records + vertices, vertices,
-        _glPvrNextToken(), build->has_header, build->list);
-}
 #endif
 
 #ifndef _arch_dreamcast
@@ -2529,93 +2458,6 @@ void APIENTRY glKosRequireNativeBenchArchive0(void) {}
 
 void APIENTRY glKosRequireDeferredP3T2BGRA(void) {}
 void APIENTRY glKosRequirePvrPackets(void) {}
-
-#ifdef _arch_dreamcast
-GL_FORCE_INLINE GLboolean _glTryQueueInternalFinalP3T2BGRA(
-        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
-        GLboolean trusted) {
-    const GLboolean triangles =
-        mode == GL_TRIANGLES && count >= 3 && count % 3 == 0;
-    const GLboolean quads =
-        mode == GL_QUADS && count >= 4 && count % 4 == 0;
-    if((!triangles && !quads) || !vertices ||
-       ((uintptr_t)vertices & 3u) != 0) {
-        GLDC_STAT_INC(pvr_typed_fallbacks);
-        return GL_FALSE;
-    }
-
-    GLdcPvrInternalBuild build;
-    if(_glPvrBeginInternalPacket(count, &build) != GL_KOS_PVR_OK) {
-        GLDC_STAT_INC(pvr_typed_fallbacks);
-        return GL_FALSE;
-    }
-
-    _glTnlLoadMatrix();
-    const int result = trusted
-        ? SceneBuildTrustedFinalP3T2BGRA(
-              (unsigned int)mode, vertices, (int)count, build.vertices)
-        : SceneBuildFinalP3T2BGRA(
-              (unsigned int)mode, vertices, (int)count, build.vertices);
-    if(result != SCENE_FINAL_BUILD_OK) {
-        if(result & SCENE_FINAL_BUILD_NEAR)
-            GLDC_STAT_INC(pvr_typed_near_fallbacks);
-        _glPvrCancelInternalPacket(&build);
-        GLDC_STAT_INC(pvr_typed_fallbacks);
-        return GL_FALSE;
-    }
-
-    /* No external GL call exists inside this monolithic transaction, so the
-       preflight state/header is still current. The builder owns final-record
-       grammar and classification; publish only the completed private span. */
-    _glPvrCommitInternalPacket(&build, (GLuint)count);
-    GLDC_STAT_INC(pvr_typed_hits);
-    GLDC_STAT_INC(submit_vertices_calls);
-    GLDC_STAT_ADD(vertices_transformed, (GLuint)count);
-    return GL_TRUE;
-}
-#endif
-
-GLboolean APIENTRY glKosTryQueueFinalInterleavedP3T2BGRA(
-        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
-    TRACE();
-    GLDC_STAT_INC(pvr_typed_attempts);
-
-#ifndef _arch_dreamcast
-    (void)mode;
-    (void)vertices;
-    (void)count;
-    GLDC_STAT_INC(pvr_typed_fallbacks);
-    return GL_FALSE;
-#else
-    return _glTryQueueInternalFinalP3T2BGRA(
-        mode, vertices, count, GL_FALSE);
-#endif
-}
-
-GLboolean APIENTRY glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
-        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
-    TRACE();
-    GLDC_STAT_INC(pvr_typed_attempts);
-
-#ifndef _arch_dreamcast
-    (void)mode;
-    (void)vertices;
-    (void)count;
-    GLDC_STAT_INC(pvr_typed_fallbacks);
-    return GL_FALSE;
-#else
-    return _glTryQueueInternalFinalP3T2BGRA(
-        mode, vertices, count, GL_TRUE);
-#endif
-}
-
-#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-GLboolean APIENTRY glKosNativeBenchTryQueueTrustedFinalP3T2BGRA(
-        GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
-    return glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
-        mode, vertices, count);
-}
-#endif
 
 GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count) {
@@ -3155,14 +2997,6 @@ GLuint APIENTRY glKosNativeBenchArchiveAbiVersion(void) {
     return GL_KOS_NATIVE_BENCH_ABI_VERSION;
 }
 
-static GLint _glNativeBenchMapFinalBuild(int result) {
-    if(result & SCENE_FINAL_BUILD_INVALID)
-        return GL_KOS_NATIVE_BENCH_BAD_ARGUMENT;
-    if(result & SCENE_FINAL_BUILD_NEAR)
-        return GL_KOS_NATIVE_BENCH_NEAR_CLIP;
-    return GL_KOS_NATIVE_BENCH_OK;
-}
-
 static GLint _glNativeBenchCheck(
         GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count,
         const GLKosNativeBenchRecord* output) {
@@ -3318,44 +3152,23 @@ GLint APIENTRY glKosNativeBenchValidateP3T2BGRA(
 
     const size_t bytes = (size_t)count * sizeof(*candidate);
     const GLuint words = (GLuint)count * 8u;
-    for(int kernel = 0; kernel < 3; ++kernel) {
-        if(memcmp(candidate, classic, bytes) != 0) {
-            const GLubyte* a = (const GLubyte*)candidate;
-            const GLubyte* b = (const GLubyte*)classic;
-            for(GLuint i = 0; i < words; ++i) {
-                GLuint aw, bw;
-                memcpy(&aw, a + i * sizeof(GLuint), sizeof(aw));
-                memcpy(&bw, b + i * sizeof(GLuint), sizeof(bw));
-                if(aw != bw) {
-                    if(mismatch_word) *mismatch_word = i;
-                    return GL_KOS_NATIVE_BENCH_MISMATCH;
-                }
+    if(memcmp(candidate, classic, bytes) != 0) {
+        const GLubyte* a = (const GLubyte*)candidate;
+        const GLubyte* b = (const GLubyte*)classic;
+        for(GLuint i = 0; i < words; ++i) {
+            GLuint aw, bw;
+            memcpy(&aw, a + i * sizeof(GLuint), sizeof(aw));
+            memcpy(&bw, b + i * sizeof(GLuint), sizeof(bw));
+            if(aw != bw) {
+                if(mismatch_word) *mismatch_word = i;
+                return GL_KOS_NATIVE_BENCH_MISMATCH;
             }
-            /* Full memcmp differed but no full word did: impossible for
-               32-byte records, retained as a defensive mismatch result. */
-            return GL_KOS_NATIVE_BENCH_MISMATCH;
         }
-
-        if(kernel == 0) {
-            /* The first pass validates the retained N1 control kernel.  Reuse
-               its scratch for checked production N3. */
-            _glTnlLoadMatrix();
-            check = _glNativeBenchMapFinalBuild(SceneBuildFinalP3T2BGRA(
-                (unsigned int)mode, vertices, (int)count,
-                (Vertex*)candidate));
-            if(check != GL_KOS_NATIVE_BENCH_OK) return check;
-        } else if(kernel == 1) {
-            /* The third pass validates the trusted A/B writer independently.
-               All three kernels must remain byte-exact against the ordinary
-               classic finalizer for visible input. */
-            _glTnlLoadMatrix();
-            check = _glNativeBenchMapFinalBuild(
-                SceneBuildTrustedFinalP3T2BGRA(
-                    (unsigned int)mode, vertices, (int)count,
-                    (Vertex*)candidate));
-            if(check != GL_KOS_NATIVE_BENCH_OK) return check;
-        }
+        /* Full memcmp differed but no full word did: impossible for
+           32-byte records, retained as a defensive mismatch result. */
+        return GL_KOS_NATIVE_BENCH_MISMATCH;
     }
+
     if(mismatch_word) *mismatch_word = words;
     return GL_KOS_NATIVE_BENCH_OK;
 }

@@ -9,10 +9,8 @@ extern const char* GLDC_VERSION;
 /* Paired fast-lane ABI shared by GLdc and tightly coupled consumers such as
  * raylib-dc. Bump this whenever a glKos fast-path signature or data contract
  * changes incompatibly; it is deliberately independent of GLDC_VERSION. */
-#define GL_KOS_FAST_PATH_ABI_VERSION 3u
+#define GL_KOS_FAST_PATH_ABI_VERSION 4u
 #define GL_KOS_HAS_INTERLEAVED_P3T2BGRA 1
-#define GL_KOS_HAS_FINAL_INTERLEAVED_P3T2BGRA 1
-#define GL_KOS_HAS_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA 1
 #define GL_KOS_HAS_PVR_PACKETS 1
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_QUADS 1
 #define GL_KOS_HAS_DEFERRED_P3T2BGRA_ARRAYS 1
@@ -26,9 +24,7 @@ extern const char* GLDC_VERSION;
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS (1u << 3)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES (1u << 4)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR (1u << 5)
-#define GL_KOS_FAST_PATH_FINAL_INTERLEAVED_P3T2BGRA (1u << 6)
 #define GL_KOS_FAST_PATH_PVR_PACKETS (1u << 7)
-#define GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA (1u << 8)
 #define GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_PLANAR_QUADS (1u << 9)
 #if defined(_arch_dreamcast)
 #define GL_KOS_FAST_PATH_CAPABILITIES \
@@ -38,9 +34,7 @@ extern const char* GLDC_VERSION;
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_MULTISTRIPS | \
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_TRIANGLES | \
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_ARRAY_COLOR | \
-     GL_KOS_FAST_PATH_FINAL_INTERLEAVED_P3T2BGRA | \
      GL_KOS_FAST_PATH_PVR_PACKETS | \
-     GL_KOS_FAST_PATH_TRUSTED_FINAL_INTERLEAVED_P3T2BGRA | \
      GL_KOS_FAST_PATH_DEFERRED_P3T2BGRA_PLANAR_QUADS)
 #else
 #define GL_KOS_FAST_PATH_CAPABILITIES GL_KOS_FAST_PATH_INTERLEAVED_P3T2BGRA
@@ -74,25 +68,6 @@ GLAPI GLuint APIENTRY glKosGetFastPathCapabilities(void);
  * aligned complete GL_TRIANGLES/GL_QUADS batches, no active TnL effects or
  * glBegin/glEnd, and radial fog OFF or BLEND_PRECOMPUTED. */
 GLAPI GLboolean APIENTRY glKosTryDrawInterleavedP3T2BGRA(
-    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
-
-/* N3 transient lane. Transform and finalize a complete interleaved triangle
- * or quad batch into GLdc-owned packet RAM before returning, so the caller may
- * immediately reuse its input buffer. The final packet is submitted later in
- * exact active-list chronology. Near/ambiguous geometry or unsupported state
- * returns GL_FALSE without list mutation; the caller must take its existing
- * synchronous clipping path. */
-GLAPI GLboolean APIENTRY glKosTryQueueFinalInterleavedP3T2BGRA(
-    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
-
-/* Lean N3 sibling for a trusted transient producer. It preserves all state,
- * capacity, chronology, topology and near-plane checks from the checked entry
- * above, but omits its per-record numeric validation. The caller guarantees
- * finite transformed clip Z/W and finite final X/Y/UV plus positive finite
- * reciprocal depth for every accepted record. GL_FALSE still leaves the exact
- * synchronous clipping fallback live. Do not use for arbitrary/untrusted
- * vertex streams; use glKosTryQueueFinalInterleavedP3T2BGRA() instead. */
-GLAPI GLboolean APIENTRY glKosTryQueueTrustedFinalInterleavedP3T2BGRA(
     GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
 
 /* Queue complete GL_QUADS from immutable borrowed storage for transform and
@@ -168,7 +143,7 @@ GLAPI void APIENTRY glKosRequireNativeBenchArchive1(void);
  * symbol, so a stale synchronous-only libGL fails at link time. */
 GLAPI void APIENTRY glKosRequireDeferredP3T2BGRA(void);
 
-/* Permanent-N3 link canary. */
+/* Expert packet API link canary. */
 GLAPI void APIENTRY glKosRequirePvrPackets(void);
 
 /* N0/N1 hardware-lab ABI. This is deliberately absent from ordinary builds:
@@ -177,7 +152,7 @@ GLAPI void APIENTRY glKosRequirePvrPackets(void);
  * GLdc lane and raylib on identical input. It is not a game rendering API and
  * must never be mixed with a live GLdc scene/list. */
 #if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-#define GL_KOS_NATIVE_BENCH_ABI_VERSION 3u
+#define GL_KOS_NATIVE_BENCH_ABI_VERSION 4u
 
 typedef struct __attribute__((aligned(32))) GLKosNativeBenchRecord {
     GLuint word[8];
@@ -195,12 +170,6 @@ enum {
 
 /* Runtime companion to the link-time canary, for logging and diagnostics. */
 GLAPI GLuint APIENTRY glKosNativeBenchArchiveAbiVersion(void);
-
-/* V3 compatibility entry retained for the accepted same-archive A/B harness.
- * It uses the permanent trusted constructor above; checked and F1 controls
- * remain separate. */
-GLAPI GLboolean APIENTRY glKosNativeBenchTryQueueTrustedFinalP3T2BGRA(
-    GLenum mode, const GLKosVertexP3T2BGRA* vertices, GLsizei count);
 
 /* Compile the current GL state into the exact header used by GLdc. This does
  * not emit a header or mark GL state clean. */
@@ -224,7 +193,7 @@ GLAPI GLint APIENTRY glKosNativeBenchBuildMultiStripsP3T2BGRA(
     const GLsizei* counts, GLsizei strip_count,
     GLKosNativeBenchRecord* output);
 
-/* Build the N1, checked N3 and trusted N3 results plus the classic
+/* Build the N1 result plus the classic
  * transform+finalize result in RAM, then compare all eight words per record.
  * mismatch_word receives the first differing word index, or count*8 on
  * success. */
@@ -274,7 +243,7 @@ GLAPI void APIENTRY glKosNativeBenchResetQueued(void);
  * functions are always linkable; glKosGetStats() returns NULL when
  * GLDC_ENABLE_STATS is disabled. Append fields and bump this version when the
  * snapshot layout changes. */
-#define GL_KOS_STATS_ABI_VERSION 7u
+#define GL_KOS_STATS_ABI_VERSION 8u
 
 typedef struct {
     GLuint struct_size;
@@ -402,8 +371,7 @@ typedef struct {
     GLuint deferred_color_array_direct_vertices;
     GLuint deferred_color_array_near_quads;
 
-    /* GLdc-owned final-record segments (N3). Reserve/cancel are low-level API
-     * traffic; typed_* is the transient P3/T2/BGRA production consumer. */
+    /* GLdc-owned final-record segments (expert packet API traffic). */
     GLuint pvr_packet_reserve_attempts;
     GLuint pvr_packet_reserve_hits;
     GLuint pvr_packet_commits;
@@ -415,10 +383,6 @@ typedef struct {
     GLuint pvr_packet_reject_state;
     GLuint pvr_packet_reject_capacity;
     GLuint pvr_packet_reject_validation;
-    GLuint pvr_typed_attempts;
-    GLuint pvr_typed_hits;
-    GLuint pvr_typed_fallbacks;
-    GLuint pvr_typed_near_fallbacks;
     GLuint pvr_exclusive_scenes;
     GLuint pvr_exclusive_lists;
     GLuint pvr_exclusive_records;

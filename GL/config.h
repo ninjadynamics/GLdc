@@ -60,12 +60,12 @@
 #error "GLDC_N4_VERTEX_DMA and GLDC_S3_SEGMENTED_OP cannot be combined"
 #endif
 
-/* The existing N0/N1/N3 harness contains intentional direct-SQ baselines.
+/* The existing N0/N1 harness contains intentional direct-SQ baselines.
    Enabling global KOS vertex DMA changes pvr_list_begin ownership underneath
    those baselines, so a dedicated N4 harness must be used instead. */
 #if defined(_arch_dreamcast) && GLDC_N4_VERTEX_DMA && \
     defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
-#error "GLDC_N4_VERTEX_DMA is incompatible with the N0/N1/N3 native benchmark"
+#error "GLDC_N4_VERTEX_DMA is incompatible with the N0/N1 native benchmark"
 #endif
 
 /* B2 GOLD-BLOCK quad writer (2026-07-24, HyperSolar perf ledger B2): the city
@@ -82,15 +82,6 @@
        make gldc GLDC_GOLD_BLOCK=1 */
 #ifndef GLDC_GOLD_BLOCK
 #define GLDC_GOLD_BLOCK 0
-#endif
-
-/* Deferred N2 quads: transform each quad once and classify it on those FTRV
-   results with the generic clipper's own near predicate (z >= -w after the
-   polygon-offset bake). 0 keeps the classify-ahead window, which recomputes
-   Z/W with scalar dots and a cancellation margin before transforming again.
-   A/B with: make gldc GLDC_DEFERRED_FUSED_CLASSIFY=0 */
-#ifndef GLDC_DEFERRED_FUSED_CLASSIFY
-#define GLDC_DEFERRED_FUSED_CLASSIFY 1
 #endif
 
 /* Swap-time telemetry (2026-07-15/31 investigations): flush.c's

@@ -164,14 +164,13 @@ void APIENTRY glKosPrintStats(void) {
                s->deferred_reject_capacity);
     }
 
-    /* Line 5: N3 final-packet traffic (if any). */
+    /* Line 5: expert final-packet traffic (if any). */
     if(s->pvr_packet_reserve_attempts > 0 ||
        s->pvr_packet_segments_submitted > 0 ||
-       s->pvr_typed_attempts > 0 ||
        s->pvr_exclusive_scenes > 0 ||
        s->pvr_exclusive_rejects > 0) {
-        printf("[GLdc F#%u] n3: reserve=%u/%u commit=%u cancel=%u v=%u "
-               "drain=%u/%u typed=%u/%u/%u near=%u "
+        printf("[GLdc F#%u] pkt: reserve=%u/%u commit=%u cancel=%u v=%u "
+               "drain=%u/%u "
                "reject=%u/%u/%u/%u exclusive=%u/%u/%u/%u\n",
                s->frame_no,
                s->pvr_packet_reserve_hits,
@@ -181,10 +180,6 @@ void APIENTRY glKosPrintStats(void) {
                s->pvr_packet_vertices,
                s->pvr_packet_segments_submitted,
                s->pvr_packet_records_submitted,
-               s->pvr_typed_attempts,
-               s->pvr_typed_hits,
-               s->pvr_typed_fallbacks,
-               s->pvr_typed_near_fallbacks,
                s->pvr_packet_reject_busy,
                s->pvr_packet_reject_state,
                s->pvr_packet_reject_capacity,
