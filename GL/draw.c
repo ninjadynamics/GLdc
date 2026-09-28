@@ -3722,7 +3722,7 @@ void APIENTRY glKosDrawSpriteCenters(const GLfloat* centers, const GLuint* color
     GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, NULL, NULL, sprites,
-                       ux, uy, uz, vx, vy, vz);
+                       1.0f, ux, uy, uz, vx, vy, vz);
 }
 
 /* Per-sprite half-size and UV rectangle on the center lane. Variable-size,
@@ -3748,7 +3748,32 @@ void APIENTRY glKosDrawSpriteCentersUVRectScale(const GLfloat* centers,
     GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
     _glTnlLoadMatrix();
     SceneSpriteCenters(centers, (const uint32_t*) colors, half_sizes, uv_rects, sprites,
-                       ux, uy, uz, vx, vy, vz);
+                       1.0f, ux, uy, uz, vx, vy, vz);
+}
+
+/* Full-texture sprites cropped to their centered visible square: each sprite
+   keeps its full-size near-plane rejection, then emits corners at
+   half*crop with UVs 0.5 -+ crop/2, the same texel at every drawn pixel. */
+void APIENTRY glKosDrawSpriteCentersCropScale(const GLfloat* centers,
+                                              const GLuint* colors,
+                                              const GLfloat* half_sizes,
+                                              GLsizei sprites, GLfloat crop,
+                                              GLfloat ux, GLfloat uy, GLfloat uz,
+                                              GLfloat vx, GLfloat vy, GLfloat vz) {
+    TRACE();
+
+    if(sprites <= 0) return;
+    if(_glTnlEffectsActive() || IMMEDIATE_MODE_ACTIVE) {
+        GLDC_STAT_INC(sprite_lane_drops);
+        _glSpriteLaneDropWarn();
+        return;
+    }
+
+    GLDC_STAT_INC(sprite_lane_hits);
+    GLDC_STAT_ADD(sprite_items, (GLuint)sprites);
+    _glTnlLoadMatrix();
+    SceneSpriteCenters(centers, (const uint32_t*) colors, half_sizes, NULL, sprites,
+                       crop, ux, uy, uz, vx, vy, vz);
 }
 
 /* Camera-plane sibling of the generic center lane. This is deliberately an

@@ -601,6 +601,14 @@ GLAPI void APIENTRY glKosDrawSpriteCentersUVRectScale(
     const GLfloat* centers, const GLuint* colors,
     const GLfloat* half_sizes, const GLfloat* uv_rects, GLsizei sprites,
     GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
+/* Full-texture sibling cropped to the centered square `crop` (0 < crop <= 1)
+   whose outside texels all read alpha 0: identical pixels, less TA fill.
+   The near-plane rejection still uses the full half-size, and 0.5 -+ crop/2
+   must be exact in 16-bit sprite UVs (e.g. a multiple of 1/16). */
+GLAPI void APIENTRY glKosDrawSpriteCentersCropScale(
+    const GLfloat* centers, const GLuint* colors,
+    const GLfloat* half_sizes, GLsizei sprites, GLfloat crop,
+    GLfloat ux, GLfloat uy, GLfloat uz, GLfloat vx, GLfloat vy, GLfloat vz);
 /* View-plane specialization of the variable-size center lane. The shared u/v
    axes MUST lie in the current camera plane (ordinary and rotated billboards
    both qualify). All four corners then share one homogeneous W, so the SH4

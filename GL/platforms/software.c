@@ -462,8 +462,10 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
+                        float crop,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
     (void) centers; (void) colors; (void) half_sizes; (void) uv_rects; (void) sprites;
+    (void) crop;
     (void) ux; (void) uy; (void) uz; (void) vx; (void) vy; (void) vz;
 }
 

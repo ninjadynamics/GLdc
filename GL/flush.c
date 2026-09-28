@@ -80,7 +80,7 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.28-1223-stats0-glt0-slow1-nbench0-n4dma0-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.28-1425-stats0-glt0-slow1-nbench0-n4dma0-zamv070]\n", GLDC_VERSION);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");

@@ -2581,6 +2581,7 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
    outside the sprite path. */
 void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                         const float* half_sizes, const float* uv_rects, int sprites,
+                        float crop,
                         float ux, float uy, float uz, float vx, float vy, float vz) {
 #if GLDC_SWAP_TELEMETRY
     const uint64_t spr_t0 = timer_us_gettime64();
@@ -2607,6 +2608,11 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
        fabs calls and an add. */
     const float near_extent_scale =
         fabsf(near_u_zw) + fabsf(near_v_zw);
+    /* Full-texture crop (1 = none): corners shrink after the full-size near
+       test, UVs follow (16-bit sprite UVs; callers keep crop exact there). */
+    const uint32_t crop_lo = _glSpriteUV16(0.5f - 0.5f * crop, 0.5f - 0.5f * crop);
+    const uint32_t crop_hi_lo = _glSpriteUV16(0.5f + 0.5f * crop, 0.5f - 0.5f * crop);
+    const uint32_t crop_hi = _glSpriteUV16(0.5f + 0.5f * crop, 0.5f + 0.5f * crop);
 
     uint32_t last_argb = 0;
     int have_hdr = 0;
@@ -2635,16 +2641,17 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
         }
 
         for(int k = 0; k < n; ++k) {
-            const float hs = half_sizes ? half_sizes[q + k] : 1.0f;
+            const float full = half_sizes ? half_sizes[q + k] : 1.0f;
+            /* min over all four (clip-Z + W) corners, algebraically exact for
+               the parallelogram and cheaper than materializing xyz[4]/w[4]. */
+            const float near_extent = near_extent_scale * full;
+            if(tc[k][2] + cw[k] < near_extent)
+                continue;
+            const float hs = full * crop;
             const float sux = tu[0] * hs, suy = tu[1] * hs;
             const float suz = tu[2] * hs, suw = uw * hs;
             const float svx = tv[0] * hs, svy = tv[1] * hs;
             const float svz = tv[2] * hs, svw = vw * hs;
-            /* min over all four (clip-Z + W) corners, algebraically exact for
-               the parallelogram and cheaper than materializing xyz[4]/w[4]. */
-            const float near_extent = near_extent_scale * hs;
-            if(tc[k][2] + cw[k] < near_extent)
-                continue;
 
             const float wa = cw[k] - suw - svw;
             const float wb = cw[k] + suw - svw;
@@ -2694,6 +2701,10 @@ void SceneSpriteCenters(const float* centers, const uint32_t* colors,
                 s->auv = _glSpriteUV16(r[0], r[1]);
                 s->buv = _glSpriteUV16(r[2], r[1]);
                 s->cuv = _glSpriteUV16(r[2], r[3]);
+            } else if(crop != 1.0f) {
+                s->auv = crop_lo;
+                s->buv = crop_hi_lo;
+                s->cuv = crop_hi;
             } else {
                 s->auv = 0x00000000;
                 s->buv = 0x3F800000;
