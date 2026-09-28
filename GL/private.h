@@ -446,6 +446,8 @@ void _glInitImmediateMode(GLuint initial_size);
 void _glInitMatrices();
 void _glInitFramebuffers();
 void _glInitSubmissionTarget();
+void _glShutdownMatrices(void);
+void _glShutdownSubmissionTarget(void);
 
 void _glMatrixLoadNormal();
 void _glMatrixLoadModelView();

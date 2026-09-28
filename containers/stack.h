@@ -13,6 +13,7 @@ typedef struct {
 } Stack;
 
 void init_stack(Stack* stack, unsigned int element_size, unsigned int capacity);
+void free_stack(Stack* stack);
 void* stack_top(Stack* stack);
 void* stack_replace(Stack* stack, const void* element);
 void* stack_push(Stack* stack, const void* element);

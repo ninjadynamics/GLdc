@@ -1524,8 +1524,22 @@ void APIENTRY glKosReplayArrays(GLuint slot, const GLubyte* bgra) {
 #ifdef USE_SH4ZAM
     /* Both sides are 32-byte-aligned Vertex records in aligned_vector storage
        and the size is a multiple of 32: shz_memcpy32's exact contract. Cached
-       RAM destination, so the non-SQ variant. */
-    shz_memcpy32(dst, src, c->count * sizeof(Vertex));
+       RAM destination, so the non-SQ variant. Short spans (most city window
+       spans) copy inline: SH4ZAM releases after 0.7.0 send any span of four or
+       more records through an out-of-line 128-byte copier, which cost the
+       window replay 22 us per frame; 0.7.0 itself inlined spans below eight. */
+    if(c->count >= 8) {
+        shz_memcpy32(dst, src, c->count * sizeof(Vertex));
+    } else {
+        Vertex* d = dst;
+        const Vertex* s = src;
+        Vertex* const end = dst + c->count;
+        for(; d < end; ++d, ++s) {
+            PREFETCH(s + 2);
+            VERTEX_CACHE_ALLOC(d);
+            *d = *s;
+        }
+    }
 #else
     memcpy(dst, src, c->count * sizeof(Vertex));
 #endif
@@ -1575,6 +1589,11 @@ void _glInitSubmissionTarget() {
 
     aligned_vector_init(&VERTEX_EXTRAS, sizeof(VertexExtra));
     target->extras = &VERTEX_EXTRAS;
+}
+
+void _glShutdownSubmissionTarget(void) {
+    aligned_vector_cleanup(&VERTEX_EXTRAS);
+    SUBMISSION_TARGET.extras = NULL;
 }
 
 GL_FORCE_INLINE GLuint calcFinalVertices(GLenum mode, GLuint count) {
@@ -2019,6 +2038,7 @@ static GLdcPvrPacket PVR_PACKETS[GLDC_PVR_PACKET_SEGMENT_CAPACITY];
 static GLuint PVR_PACKET_COUNT;
 static GLuint PVR_PACKET_NEXT_TOKEN = 1u;
 static GLboolean PVR_PACKET_INITIALIZED;
+static GLboolean PVR_PACKET_ARENA_READY;
 static struct {
     GLboolean active;
     GLuint token;
@@ -2138,11 +2158,20 @@ static GLboolean _glPvrPolyHeaderMatchesList(
                (GLuint)expected_list;
 }
 
-void _glInitPvrPackets(void) {
-    if(PVR_PACKET_INITIALIZED) return;
+/* The record arena is reserved on the first packet reservation, not at GL
+   init: production never reserves packets, so it must not pay 256 KiB for
+   the public/native-bench API (AUD-005-CL-18). Until then the arena is an
+   empty vector and every descriptor walk sees PVR_PACKET_COUNT == 0. */
+static void _glPvrEnsurePacketArena(void) {
+    if(PVR_PACKET_ARENA_READY) return;
     aligned_vector_init(&PVR_PACKET_RECORDS, sizeof(GLKosPvrRecord));
     aligned_vector_reserve(
         &PVR_PACKET_RECORDS, GLDC_PVR_PACKET_INITIAL_RECORDS);
+    PVR_PACKET_ARENA_READY = GL_TRUE;
+}
+
+void _glInitPvrPackets(void) {
+    if(PVR_PACKET_INITIALIZED) return;
     PVR_PACKET_INITIALIZED = GL_TRUE;
     _glResetPvrPackets();
 }
@@ -2150,7 +2179,10 @@ void _glInitPvrPackets(void) {
 void _glShutdownPvrPackets(void) {
     if(!PVR_PACKET_INITIALIZED) return;
     gl_assert(!PVR_PACKET_RESERVATION.active);
-    aligned_vector_cleanup(&PVR_PACKET_RECORDS);
+    if(PVR_PACKET_ARENA_READY) {
+        aligned_vector_cleanup(&PVR_PACKET_RECORDS);
+        PVR_PACKET_ARENA_READY = GL_FALSE;
+    }
     memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
     PVR_PACKET_COUNT = 0;
     PVR_PACKET_INITIALIZED = GL_FALSE;
@@ -2159,10 +2191,6 @@ void _glShutdownPvrPackets(void) {
 void _glResetPvrPackets(void) {
     if(!PVR_PACKET_INITIALIZED) return;
     gl_assert(!PVR_PACKET_RESERVATION.active);
-    if(PVR_PACKET_RESERVATION.active) {
-        aligned_vector_resize(
-            &PVR_PACKET_RECORDS, PVR_PACKET_RESERVATION.first_record);
-    }
     memset(&PVR_PACKET_RESERVATION, 0, sizeof(PVR_PACKET_RESERVATION));
     aligned_vector_clear(&PVR_PACKET_RECORDS);
     PVR_PACKET_COUNT = 0;
@@ -2306,6 +2334,7 @@ GLint APIENTRY glKosPvrPacketReserve(
         GLDC_STAT_INC(pvr_packet_reject_state);
         return state;
     }
+    _glPvrEnsurePacketArena();
     const GLuint arena_size = aligned_vector_size(&PVR_PACKET_RECORDS);
     if(PVR_PACKET_COUNT >= GLDC_PVR_PACKET_SEGMENT_CAPACITY ||
        (GLuint)capacity > GLDC_PVR_PACKET_RECORD_LIMIT - 1u ||

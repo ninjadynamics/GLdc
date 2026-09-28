@@ -61,6 +61,12 @@ GLboolean _glIsIdentity(const Matrix4x4* m) {
     return memcmp(m, IDENTITY, sizeof(Matrix4x4)) == 0;
 }
 
+void _glShutdownMatrices(void) {
+    for(int i = 0; i < 4; ++i)
+        free_stack(&MATRIX_STACKS[i]);
+    MATRIX_CUR = NULL;
+}
+
 void _glInitMatrices() {
     init_stack(&MATRIX_STACKS[0], sizeof(Matrix4x4), 32);
     init_stack(&MATRIX_STACKS[1], sizeof(Matrix4x4), 32);

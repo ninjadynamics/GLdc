@@ -1229,7 +1229,9 @@ static void SceneListSubmitGeneric(Vertex* vertices, int n, bool vertex_fog) {
                 QUEUE_VERTEX(c);
             break;
             default:
-                fprintf(stderr, "ERROR\n");
+                /* The rolling mask holds three comparison bits (0..7) and
+                   every value has a case above. */
+                __builtin_unreachable();
         }
     }
 
@@ -2071,7 +2073,6 @@ static GL_NO_INLINE void _glSubmitPvrPacketSegment(
                      descriptor_index ^ packet->token) &&
         packet->record_count >= (packet->has_header ? 4u : 3u);
     gl_assert(sentinel_valid);
-    if(!sentinel_valid) return;
 
     /* Header + already-final records are contiguous/aligned;
        pvr_list_begin has already armed QACR for TA input. */
@@ -2096,7 +2097,6 @@ static GL_NO_INLINE void _glSubmitDeferredSegment(
         words[2] == ~descriptor_index &&
         words[7] == (GLDC_DEFERRED_P3T2BGRA_SENTINEL ^ descriptor_index);
     gl_assert(sentinel_valid);
-    if(!sentinel_valid) return;
 
     /* Replace the physical marker counted by the prologue with the
        object-space records it represents. */
@@ -2395,6 +2395,11 @@ void _glCompileCurrentSpriteHeader(PolyList* out, pvr_sprite_hdr_t* header) {
     sc.depth.comparison = ctx.depth.comparison;
     sc.depth.write      = ctx.depth.write;
     sc.txr.enable       = ctx.txr.enable;
+    /* GLdc pre-encodes GPUFilter as the raw TSP values (0/2/4/6); KOS's sprite
+       compiler FIELD_PREPs LOGICAL PVR_FILTER_* (0/1/2/3). Raw copy read
+       bilinear(2) as trilinear-pass-1, which point-samples on a non-mipped
+       texture (2026-07-16 audit) — the sprite glow shipped nearest-filtered.
+       >>1 restores the vertex path's true filtering. */
     sc.txr.filter       = ctx.txr.filter >> 1;
     sc.txr.mipmap       = ctx.txr.mipmap;
     sc.txr.mipmap_bias  = ctx.txr.mipmap_bias;
@@ -2425,44 +2430,8 @@ void SceneSpriteQuads(const float* pos, const uint32_t* colors, int quads) {
 #endif
     AlignedVector* sv = &out->sprites;
 
-    PolyContext ctx;
-    _glBuildPolyContext(&ctx, out, 0);
-
-    pvr_sprite_cxt_t sc;
-    memset(&sc, 0, sizeof(sc));
-    sc.list_type       = ctx.list_type;
-    sc.gen.alpha       = ctx.gen.alpha;
-    sc.gen.fog_type    = ctx.gen.fog_type;
-    sc.gen.culling     = ctx.gen.culling;
-    sc.gen.color_clamp = ctx.gen.color_clamp;
-    sc.gen.clip_mode   = ctx.gen.clip_mode;
-    sc.gen.specular    = ctx.gen.specular;
-    sc.blend.src        = ctx.blend.src;
-    sc.blend.dst        = ctx.blend.dst;
-    sc.blend.src_enable = ctx.blend.src_enable;
-    sc.blend.dst_enable = ctx.blend.dst_enable;
-    sc.depth.comparison = ctx.depth.comparison;
-    sc.depth.write      = ctx.depth.write;
-    sc.txr.enable      = ctx.txr.enable;
-    /* GLdc pre-encodes GPUFilter as the raw TSP values (0/2/4/6); KOS's sprite
-       compiler FIELD_PREPs LOGICAL PVR_FILTER_* (0/1/2/3). Raw copy read
-       bilinear(2) as trilinear-pass-1, which point-samples on a non-mipped
-       texture (2026-07-16 audit) — the sprite glow shipped nearest-filtered.
-       >>1 restores the vertex path's true filtering. */
-    sc.txr.filter      = ctx.txr.filter >> 1;
-    sc.txr.mipmap      = ctx.txr.mipmap;
-    sc.txr.mipmap_bias = ctx.txr.mipmap_bias;
-    sc.txr.uv_flip     = ctx.txr.uv_flip;
-    sc.txr.uv_clamp    = ctx.txr.uv_clamp;
-    sc.txr.alpha       = ctx.txr.alpha;
-    sc.txr.env         = ctx.txr.env;
-    sc.txr.width       = ctx.txr.width;
-    sc.txr.height      = ctx.txr.height;
-    sc.txr.format      = ctx.txr.format;
-    sc.txr.base        = (pvr_ptr_t) ctx.txr.base;
-
     pvr_sprite_hdr_t shdr;
-    pvr_sprite_compile(&shdr, &sc);
+    _glCompileCurrentSpriteHeader(out, &shdr);
 
     /* GL polygon-offset parity with SceneSpriteCenters: the finalizer that
        normally applies it never sees these records (AUD-001-OPA-09). */

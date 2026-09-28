@@ -1960,13 +1960,6 @@ void APIENTRY glTexImage2D(GLenum target, GLint level, GLint internalFormat,
 
     gl_assert(active->data);
 
-    /* If we run out of PVR memory just return */
-    if(!active->data) {
-        _glKosThrowError(GL_OUT_OF_MEMORY, __func__);
-        gl_assert(active->index == originalId);
-        return;
-    }
-
     /* Mark this level as set in the mipmap bitmask */
     active->mipmap |= (1 << level);
 

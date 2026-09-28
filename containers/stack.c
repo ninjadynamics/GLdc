@@ -19,6 +19,13 @@ void init_stack(Stack* stack, unsigned int element_size, unsigned int capacity) 
     stack->data = (unsigned char*) memalign(0x20, element_size * capacity);
 }
 
+void free_stack(Stack* stack) {
+    free(stack->data);
+    stack->data = NULL;
+    stack->size = 0;
+    stack->capacity = 0;
+}
+
 void* stack_top(Stack* stack) {
     return &stack->data[(stack->size - 1) * stack->element_size];
 }

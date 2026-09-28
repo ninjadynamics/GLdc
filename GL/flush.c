@@ -80,7 +80,24 @@ void APIENTRY glKosInitEx(GLdcConfig* config) {
 
     TRACE();
 
-    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.28-1425-stats0-glt0-slow1-nbench0-n4dma0-zamv070]\n", GLDC_VERSION);
+    printf("\nGLdc: [ CANARY ] Welcome to MODIFIED LOCAL GLdc! Git revision: %s [2026.09.28-2258-stats0-glt0-slow1-nbench0-n4dma0-zamv070]\n", GLDC_VERSION);
+    /* The bracket above is the make-time stamp (request variables); this line
+       reports what this archive was actually compiled with (AUD-005-CL-83). */
+    printf("GLdc: compiled stats=%d swap_telemetry=%d frame_telemetry=%d "
+           "native_bench=%d n4_dma=%d\n",
+#ifdef GLDC_ENABLE_STATS
+           1,
+#else
+           0,
+#endif
+           GLDC_SWAP_TELEMETRY,
+           GLDC_SWAP_FRAME_TELEMETRY,
+#if defined(GLDC_NATIVE_BENCH) && GLDC_NATIVE_BENCH
+           1,
+#else
+           0,
+#endif
+           GLDC_N4_VERTEX_DMA);
 
 #ifdef USE_SH4ZAM
     printf("GLdc: Hello SH4ZAM!\n\n");
@@ -173,6 +190,8 @@ void APIENTRY glKosShutdown() {
 #endif
 
     _glShutdownImmediateMode();
+    _glShutdownSubmissionTarget();   /* VERTEX_EXTRAS: re-init reallocates it */
+    _glShutdownMatrices();           /* the four matrix stacks, likewise */
 
     _glInvalidateCapturedArrays();
     _glResetDeferredFrees();   /* ShutdownGPU tears the whole VRAM heap down anyway */
